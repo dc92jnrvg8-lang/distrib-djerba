@@ -1,0 +1,35 @@
+name: 🏖️ Bootstrap — Extraire Djerba Linux
+
+on:
+  push:
+    paths:
+      - '*.zip'
+  workflow_dispatch:
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extraire le ZIP
+        run: |
+          ZIP=$(ls *.zip 2>/dev/null | head -1)
+          [[ -z "$ZIP" ]] && echo "Aucun ZIP trouvé" && exit 1
+          echo "Extraction de $ZIP..."
+          unzip -o "$ZIP" -d extracted/
+          INNER=$(ls extracted/ | head -1)
+          cp -r extracted/$INNER/. .
+          rm -rf extracted/ "$ZIP"
+          echo "Extraction terminée ✓"
+
+      - name: Commit les fichiers
+        run: |
+          git config user.name "Djerba Bot"
+          git config user.email "bot@djerba-linux"
+          git add -A
+          git commit -m "🏖️ Djerba Linux — fichiers extraits" || echo "Rien à commiter"
+          git push
