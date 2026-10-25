@@ -51,7 +51,7 @@ RUN set -eux; \
         xorriso squashfs-tools mtools dosfstools \
         grub-common grub2-common \
         ${arch_pkgs} \
-        ovmf qemu-efi-aarch64 qemu-utils \
+        ovmf qemu-efi-aarch64 qemu-utils ipxe-qemu \
         python3 python3-yaml python3-jinja2 python3-pil python3-cairo python3-cairosvg \
         python3-pyqt6 python3-pyqt6.qtquick python3-pyqt6.qtsvg python3-dbus \
         qml6-module-qtquick qml6-module-qtquick-window qml6-module-qtquick-layouts \
