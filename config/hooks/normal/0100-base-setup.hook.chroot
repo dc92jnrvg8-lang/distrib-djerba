@@ -15,6 +15,11 @@ APT::Install-Recommends "false";
 APT::Install-Suggests "false";
 CONF
 
+# --- Autorités de certification ------------------------------------------------
+# Intègre les AC supplémentaires éventuellement déposées dans
+# includes.chroot/usr/local/share/ca-certificates/ (proxy d'entreprise…).
+update-ca-certificates
+
 # --- Locales (méthode Ubuntu : locale-gen enregistre les locales demandées
 # dans /var/lib/locales/supported.d/ puis les compile) -----------------------
 locale-gen en_US.UTF-8 fr_FR.UTF-8

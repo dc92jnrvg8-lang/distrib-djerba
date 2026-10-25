@@ -22,7 +22,7 @@ retry() {
 }
 
 # --- Firefox natif depuis le dépôt Mozilla (keyrings + sources.list.d) --------
-retry apt-get update
+retry apt-get update --error-on=any
 retry apt-get install -y --no-install-recommends firefox firefox-l10n-fr
 apt-cache policy firefox | grep -q 'packages.mozilla.org'
 
