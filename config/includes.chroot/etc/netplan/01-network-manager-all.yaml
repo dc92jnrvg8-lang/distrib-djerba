@@ -1,0 +1,4 @@
+# Djerba OS — délègue toute la configuration réseau à NetworkManager.
+network:
+  version: 2
+  renderer: NetworkManager

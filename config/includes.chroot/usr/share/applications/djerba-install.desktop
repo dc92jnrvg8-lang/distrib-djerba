@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Install Djerba OS
+Name[fr]=Installer Djerba OS
+GenericName=System Installer
+GenericName[fr]=Installateur du système
+Comment=Install Djerba OS on this computer
+Comment[fr]=Installer Djerba OS sur cet ordinateur
+Exec=djerba-welcome --install
+Icon=calamares
+Terminal=false
+StartupNotify=true
+Categories=Qt;System;
+Keywords=calamares;installer;djerba;

@@ -1,0 +1,17 @@
+// Djerba OS (session live) — autorise l'utilisateur live, dans sa session
+// locale et active, à lancer l'installateur (action org.djerba.installer,
+// cf. /usr/share/polkit-1/actions/org.djerba.installer.policy) ainsi que
+// l'assistant KPMcore utilisé par Calamares pour partitionner.
+// Supprimé de la cible par Calamares (shellprocess@target-cleanup).
+polkit.addRule(function (action, subject) {
+    var installerActions = [
+        "org.djerba.installer",
+        "org.kde.kpmcore.externalcommand.init"
+    ];
+    if (installerActions.indexOf(action.id) >= 0 &&
+            subject.user === "djerba" &&
+            subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Djerba Welcome
+Name[fr]=Bienvenue dans Djerba OS
+Comment=Welcome assistant for the Djerba OS live session
+Comment[fr]=Assistant d'accueil de la session live Djerba OS
+Exec=djerba-welcome
+Icon=djerba-welcome
+Terminal=false
+OnlyShowIn=KDE;
+X-KDE-autostart-phase=2
+X-KDE-AutostartCondition=djerba-welcomerc:General:Autostart:true
+NoDisplay=true

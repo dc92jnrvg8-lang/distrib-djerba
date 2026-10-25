@@ -1,0 +1,7 @@
+[Daemon]
+Autolock=false
+LockOnResume=true
+Timeout=15
+
+[Greeter][Wallpaper][org.kde.image][General]
+Image=/usr/share/wallpapers/Djerba/contents/images/3840x2160.png

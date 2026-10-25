@@ -1,0 +1,23 @@
+[General]
+ColorScheme=BreezeDark
+font=Inter,10,-1,5,50,0,0,0,0,0
+menuFont=Inter,10,-1,5,50,0,0,0,0,0
+smallestReadableFont=Inter,8,-1,5,50,0,0,0,0,0
+toolBarFont=Inter,10,-1,5,50,0,0,0,0,0
+fixed=DejaVu Sans Mono,10,-1,5,50,0,0,0,0,0
+AccentColor=0,194,203
+
+[Icons]
+Theme=breeze-dark
+
+[KDE]
+LookAndFeelPackage=org.kde.breezedark.desktop
+AnimationDurationFactor=0.5
+SingleClick=false
+widgetStyle=Breeze
+
+[WM]
+activeBackground=11,16,32
+activeForeground=248,250,252
+inactiveBackground=11,16,32
+inactiveForeground=148,163,184

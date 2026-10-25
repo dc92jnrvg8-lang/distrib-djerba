@@ -1,0 +1,60 @@
+# --- Artefacts live-build -------------------------------------------------
+/.build/
+/cache/
+/chroot/
+/binary/
+/local/
+/*.iso
+/*.hybrid.iso
+/*.contents
+/*.files
+/*.packages
+/*.zsync
+/*.log
+/chroot.*
+/binary.*
+/build.log
+/SHA256SUMS
+/artifacts/
+
+# --- Fichiers régénérés par « lb config » (auto/config) ----------------------
+/config/binary
+/config/bootstrap
+/config/chroot
+/config/common
+/config/source
+/config/build
+/config/hooks/live/
+/config/hooks/normal/[1-9]*.hook.chroot
+/config/apt/
+/config/archives/
+/config/debian-installer/
+/config/includes/
+/config/includes.binary/
+/config/includes.bootstrap/
+/config/includes.chroot_after_packages/
+/config/includes.chroot_before_packages/
+/config/includes.installer/
+/config/includes.source/
+/config/packages/
+/config/packages.binary/
+/config/packages.chroot/
+/config/preseed/
+/config/rootfs/
+
+# --- Sorties du générateur d'assets (assets_generator/generate_assets.py) ----
+/config/bootloaders/
+/config/includes.chroot/usr/share/plymouth/themes/djerba/
+/config/includes.chroot/usr/share/sddm/themes/djerba/
+/config/includes.chroot/usr/share/wallpapers/Djerba/
+/config/includes.chroot/usr/share/calamares/branding/djerba/
+/config/includes.chroot/usr/share/icons/hicolor/scalable/apps/djerba-welcome.svg
+/config/includes.chroot/usr/local/share/djerba-welcome/ui/assets/
+/assets_generator/build/
+
+# --- Tests ------------------------------------------------------------------
+/tests/out/
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.pyc

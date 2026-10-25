@@ -1,0 +1,3 @@
+# Djerba OS (session live) — l'utilisateur live administre la machine sans
+# mot de passe. Supprimé de la cible par Calamares (shellprocess@target-cleanup).
+djerba ALL=(ALL) NOPASSWD: ALL
