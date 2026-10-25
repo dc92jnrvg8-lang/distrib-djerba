@@ -98,6 +98,7 @@ else
     fail "Noyau Ubuntu introuvable"
 fi
 check "live-boot" sq_has "/usr/share/initramfs-tools/scripts/live"
+check "user-setup (création de l'utilisateur live)" sq_has "/usr/lib/user-setup/user-setup-apply"
 check "KDE Plasma Wayland" sq_has "/usr/share/wayland-sessions/plasmawayland.desktop"
 check "KWin Wayland" sq_has "/usr/bin/kwin_wayland"
 check "XWayland" sq_has "/usr/bin/Xwayland"

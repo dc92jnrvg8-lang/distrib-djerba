@@ -179,6 +179,15 @@ case "${result}" in
             python3 -c 'import sys; from PIL import Image; Image.open(sys.argv[1]).save(sys.argv[2])' "${PPM}" "${SCREENSHOT}" \
                 && rm -f "${PPM}" && echo "[qemu] capture : ${SCREENSHOT}"
         fi
+        # Une session graphique vivante n'est jamais uniformément noire.
+        if [[ -f "${SCREENSHOT}" ]] && python3 -c 'import sys; from PIL import Image; sys.exit(0 if Image.open(sys.argv[1]).convert("L").getextrema()[1] > 16 else 1)' "${SCREENSHOT}"; then
+            echo "[qemu] session graphique affichée"
+        elif [[ "${ACCEL}" == "kvm" ]]; then
+            echo "[qemu] écran noir après ${DESKTOP_WAIT} s : session graphique absente" >&2
+            exit 1
+        else
+            echo "[qemu] avertissement : écran encore noir (émulation TCG lente)" >&2
+        fi
         grep -aE 'GRUB|Djerba|login:' "${SERIAL_LOG}" | tr -d '\r' | tail -n 5 || true
         exit 0
         ;;

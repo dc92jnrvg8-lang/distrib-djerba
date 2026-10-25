@@ -22,6 +22,11 @@ live-boot-initramfs-tools
 live-config
 live-config-systemd
 live-tools
+# Recommandations de live-config indispensables avec --apt-recommends false :
+# user-setup crée l'utilisateur live (composant 0030-user-setup), iproute2
+# sert aux composants réseau.
+user-setup
+iproute2
 squashfs-tools
 rsync
 initramfs-tools

@@ -246,7 +246,7 @@ sha256sum -c djerba-os-1.0.0-amd64.iso.sha256
 
 ### Session live
 
-* Utilisateur `djerba` (sudo sans mot de passe, connexion automatique dans
+* Utilisateur `djerba` (mot de passe `live`, défaut de live-config ; sudo sans mot de passe ; connexion automatique dans
   **Plasma Wayland**), nom d'hôte `djerba`, français par défaut.
 * L'assistant **Djerba Welcome** s'ouvre au démarrage : présentation, état
   réseau (D-Bus NetworkManager), matériel détecté, accès rapides (Steam,
