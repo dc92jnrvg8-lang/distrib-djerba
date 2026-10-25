@@ -66,13 +66,17 @@ ApplicationWindow {
 
         // Flou calculé une seule fois (contenu statique) puis réutilisé par
         // chaque panneau de verre : aucun recalcul pendant les animations.
-        FastBlur {
-            id: blurredScenery
+        // Absent en rendu logiciel (pas de shaders).
+        Loader {
+            id: blurLoader
             anchors.fill: parent
-            source: sceneryContent
-            radius: 64
-            cached: true
-            visible: false
+            active: !backend.softwareRendering
+            sourceComponent: FastBlur {
+                source: sceneryContent
+                radius: 64
+                cached: true
+                visible: false
+            }
         }
 
         transformOrigin: Item.Center
@@ -84,46 +88,53 @@ ApplicationWindow {
     }
 
     // ================================================================ Écume
-    ParticleSystem {
-        id: foam
+    // Particules : non prises en charge par le rendu logiciel de QtQuick.
+    Loader {
         anchors.fill: parent
-    }
+        active: !backend.softwareRendering
+        sourceComponent: Item {
+            ParticleSystem {
+                id: foam
+                anchors.fill: parent
+            }
 
-    ImageParticle {
-        system: foam
-        source: backend.assetsUrl + "particle.png"
-        color: palette_.aqua
-        colorVariation: 0.2
-        alpha: 0.45
-        alphaVariation: 0.3
-        entryEffect: ImageParticle.Fade
-    }
+            ImageParticle {
+                system: foam
+                source: backend.assetsUrl + "particle.png"
+                color: palette_.aqua
+                colorVariation: 0.2
+                alpha: 0.45
+                alphaVariation: 0.3
+                entryEffect: ImageParticle.Fade
+            }
 
-    Emitter {
-        system: foam
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
-        height: parent.height * 0.3
-        emitRate: 9
-        lifeSpan: 12000
-        lifeSpanVariation: 3000
-        size: 16
-        sizeVariation: 12
-        endSize: 4
-        velocity: AngleDirection {
-            angle: 270
-            angleVariation: 14
-            magnitude: 36
-            magnitudeVariation: 18
+            Emitter {
+                system: foam
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: parent.height * 0.3
+                emitRate: 9
+                lifeSpan: 12000
+                lifeSpanVariation: 3000
+                size: 16
+                sizeVariation: 12
+                endSize: 4
+                velocity: AngleDirection {
+                    angle: 270
+                    angleVariation: 14
+                    magnitude: 36
+                    magnitudeVariation: 18
+                }
+            }
+
+            Wander {
+                system: foam
+                anchors.fill: parent
+                xVariance: 40
+                pace: 30
+            }
         }
-    }
-
-    Wander {
-        system: foam
-        anchors.fill: parent
-        xVariance: 40
-        pace: 30
     }
 
     // ================================================================ Composants
@@ -135,34 +146,49 @@ ApplicationWindow {
         property real tint: 0.10
         property int padding: 26
 
-        ShaderEffectSource {
-            id: backdrop
+        // Verre dépoli : échantillon du paysage flouté, découpé aux coins.
+        Loader {
             anchors.fill: parent
-            sourceItem: blurredScenery
-            visible: false
-            live: true
-            sourceRect: {
-                // Dépendances explicites : échelle animée du paysage et taille.
-                scenery.scale
-                panel.width
-                panel.height
-                var topLeft = panel.mapToItem(blurredScenery, 0, 0)
-                var bottomRight = panel.mapToItem(blurredScenery, panel.width, panel.height)
-                return Qt.rect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y)
+            active: blurLoader.item !== null
+            sourceComponent: Item {
+                ShaderEffectSource {
+                    id: backdrop
+                    anchors.fill: parent
+                    sourceItem: blurLoader.item
+                    visible: false
+                    live: true
+                    sourceRect: {
+                        // Dépendances explicites : échelle animée du paysage et taille.
+                        scenery.scale
+                        panel.width
+                        panel.height
+                        var topLeft = panel.mapToItem(blurLoader.item, 0, 0)
+                        var bottomRight = panel.mapToItem(blurLoader.item, panel.width, panel.height)
+                        return Qt.rect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y)
+                    }
+                }
+
+                Rectangle {
+                    id: mask
+                    anchors.fill: parent
+                    radius: panel.radius
+                    visible: false
+                }
+
+                OpacityMask {
+                    anchors.fill: parent
+                    source: backdrop
+                    maskSource: mask
+                }
             }
         }
 
+        // Rendu logiciel : verre simulé par une teinte nuit translucide.
         Rectangle {
-            id: mask
             anchors.fill: parent
             radius: panel.radius
-            visible: false
-        }
-
-        OpacityMask {
-            anchors.fill: parent
-            source: backdrop
-            maskSource: mask
+            visible: backend.softwareRendering
+            color: Qt.rgba(0.03, 0.07, 0.15, 0.62)
         }
 
         Rectangle {
@@ -212,6 +238,7 @@ ApplicationWindow {
         }
         background: Item {
             RectangularGlow {
+                visible: !backend.softwareRendering
                 anchors.fill: fill
                 glowRadius: control.hovered ? 22 : 12
                 spread: 0.2

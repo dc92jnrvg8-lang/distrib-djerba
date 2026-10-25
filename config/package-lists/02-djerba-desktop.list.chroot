@@ -22,6 +22,16 @@ plasma-pa
 bluedevil
 khotkeys
 kio-extras
+kinfocenter
+kmenuedit
+ksystemstats
+kde-config-screenlocker
+kde-config-gtk-style
+plasma-firewall
+libpam-systemd
+shared-mime-info
+desktop-file-utils
+hicolor-icon-theme
 kwalletmanager
 libpam-kwallet5
 xdg-user-dirs
@@ -39,6 +49,11 @@ breeze-cursor-theme
 fonts-inter
 fonts-noto-color-emoji
 fonts-dejavu-core
+
+# --- Session de secours X11 et greeter SDDM (X11, comme Kubuntu 24.04) --------
+kwin-x11
+xserver-xorg-core
+xserver-xorg-input-libinput
 
 # --- Gestionnaire de connexion (thème Djerba en QML Qt 5) ----------------------
 sddm

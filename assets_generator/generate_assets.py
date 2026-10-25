@@ -301,6 +301,76 @@ def generate_wallpaper(ctx: Context) -> Path:
 
 
 # --------------------------------------------------------------------------
+# Plasma : Look-and-Feel « Djerba » (Breeze sombre + fond Djerba)
+# --------------------------------------------------------------------------
+LOOK_AND_FEEL_DEFAULTS = """\
+[kdeglobals][General]
+ColorScheme=BreezeDark
+AccentColor={accent}
+
+[kdeglobals][Icons]
+Theme=breeze-dark
+
+[kdeglobals][KDE]
+widgetStyle=Breeze
+
+[kdeglobals][WM]
+activeBackground={night}
+activeForeground={white}
+inactiveBackground={night}
+inactiveForeground={muted}
+
+[kcminputrc][Mouse]
+cursorTheme=breeze_cursors
+
+[kwinrc][org.kde.kdecoration2]
+library=org.kde.breeze
+theme=Breeze
+
+[plasmarc][Theme]
+name=breeze-dark
+
+[Wallpaper]
+Image=Djerba
+"""
+
+
+def generate_look_and_feel(ctx: Context, wallpaper: Path) -> None:
+    """Paquet Look-and-Feel : les éléments absents (dispositions, écran de
+    verrouillage…) sont fournis nativement par le paquet de repli Breeze."""
+    base = reset_dir(CHROOT / "usr" / "share" / "plasma" / "look-and-feel" / "org.djerba.desktop")
+    metadata = {
+        "KPackageStructure": "Plasma/LookAndFeel",
+        "KPlugin": {
+            "Authors": [{"Name": "Djerba OS"}],
+            "Category": "",
+            "Description": "Djerba OS — lagon nocturne et verre dépoli",
+            "Id": "org.djerba.desktop",
+            "License": "GPL-3.0-or-later",
+            "Name": "Djerba",
+            "ServiceTypes": ["Plasma/LookAndFeel"],
+            "Version": ctx.version,
+            "Website": PROJECT_URL,
+        },
+        "X-Plasma-APIVersion": "2",
+    }
+    write_text(base / "metadata.json", json.dumps(metadata, indent=4, ensure_ascii=False))
+    accent = ",".join(str(v) for v in hex_to_rgb(COLORS["turquoise"]))
+    write_text(base / "contents" / "defaults", LOOK_AND_FEEL_DEFAULTS.format(
+        accent=accent,
+        night=",".join(str(v) for v in hex_to_rgb(COLORS["night"])),
+        white=",".join(str(v) for v in hex_to_rgb(COLORS["white"])),
+        muted=",".join(str(v) for v in hex_to_rgb(COLORS["muted"])),
+    ))
+    previews = base / "contents" / "previews"
+    previews.mkdir(parents=True)
+    image = Image.open(wallpaper).convert("RGB")
+    image.resize((640, 360), Image.LANCZOS).save(previews / "preview.png", optimize=True)
+    image.resize((1280, 720), Image.LANCZOS).save(previews / "fullscreenpreview.jpg", quality=90)
+    log(f"Look-and-Feel Plasma -> {base.relative_to(ROOT)}")
+
+
+# --------------------------------------------------------------------------
 # GRUB
 # --------------------------------------------------------------------------
 GRUB_CONFIG = """\
@@ -815,6 +885,7 @@ def main() -> int:
     ctx = Context(version=args.version, env=env)
 
     wallpaper = generate_wallpaper(ctx)
+    generate_look_and_feel(ctx, wallpaper)
     generate_grub(ctx)
     if not args.skip_plymouth:
         generate_plymouth(ctx)

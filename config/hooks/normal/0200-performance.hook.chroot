@@ -84,6 +84,10 @@ mkdir -p /etc/live/config.conf.d
 cat > /etc/live/config.conf.d/djerba.conf <<'CONF'
 # Djerba OS — groupes de l'utilisateur live (live-config, composant user-setup).
 LIVE_USER_DEFAULT_GROUPS="audio cdrom dip floppy video plugdev netdev powerdev scanner bluetooth sudo render input gamemode lpadmin"
+# L'autologin graphique est fourni par /etc/sddm.conf.d/10-wayland-autologin.conf
+# (session Plasma Wayland) : le composant sddm de live-config, qui écrirait
+# /etc/sddm.conf avec la session X11, est désactivé.
+LIVE_CONFIG_NOX11AUTOLOGIN="true"
 CONF
 
 echo "[djerba] 0200 — terminé"

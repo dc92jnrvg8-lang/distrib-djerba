@@ -11,7 +11,7 @@ AccentColor=0,194,203
 Theme=breeze-dark
 
 [KDE]
-LookAndFeelPackage=org.kde.breezedark.desktop
+LookAndFeelPackage=org.djerba.desktop
 AnimationDurationFactor=0.5
 SingleClick=false
 widgetStyle=Breeze

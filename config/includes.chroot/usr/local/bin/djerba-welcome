@@ -6,6 +6,11 @@ Usage :
     djerba-welcome             ouvre l'assistant (session live ou installée)
     djerba-welcome --install   lance directement l'installateur Calamares
 
+L'interface s'exécute dans un processus enfant supervisé : si le rendu
+accéléré échoue (pilote OpenGL défaillant, machine virtuelle sans
+accélération 3D…), l'assistant se relance automatiquement avec le moteur de
+rendu logiciel de QtQuick et une interface sans effets de shader.
+
 L'installateur est démarré via polkit (pkexec + action org.djerba.installer).
 L'action autorise l'interface graphique (exec.allow_gui) : Calamares, client
 Qt 5, s'affiche alors au travers de XWayland géré par KWin, sans forcer de
@@ -51,6 +56,7 @@ QML_FILE = SHARE_DIR / "ui" / "main.qml"
 WALLPAPER = Path("/usr/share/wallpapers/Djerba/contents/images/1920x1080.png")
 CALAMARES = "/usr/bin/calamares"
 PROJECT_URL = "https://github.com/dc92jnrvg8-lang/distrib-djerba"
+CHILD_ENV = "DJERBA_WELCOME_CHILD"
 
 NM_STATE_CONNECTED_GLOBAL = 70
 
@@ -192,6 +198,10 @@ class Backend(QObject):
     def isLive(self) -> bool:
         return self._live
 
+    @pyqtProperty(bool, constant=True)
+    def softwareRendering(self) -> bool:
+        return os.environ.get("QT_QUICK_BACKEND") == "software"
+
     @pyqtProperty(str, constant=True)
     def edition(self) -> str:
         return "Session live" if self._live else "Système installé"
@@ -311,9 +321,28 @@ def run_installer_only() -> int:
     return subprocess.call(["pkexec", CALAMARES])
 
 
+def supervise() -> int:
+    """Lance l'interface dans un processus enfant ; en cas de plantage du rendu
+    accéléré (fin sur signal), la relance avec le rendu logiciel de QtQuick."""
+    command = [sys.executable, os.path.abspath(__file__), *sys.argv[1:]]
+    attempts = [dict(os.environ, **{CHILD_ENV: "1"})]
+    if os.environ.get("QT_QUICK_BACKEND") != "software":
+        attempts.append(dict(os.environ, **{CHILD_ENV: "1", "QT_QUICK_BACKEND": "software"}))
+    code = 1
+    for environment in attempts:
+        code = subprocess.call(command, env=environment)
+        if code >= 0:
+            return code
+        print(f"djerba-welcome : rendu interrompu par le signal {-code} ; "
+              "nouvel essai avec le rendu logiciel.", file=sys.stderr)
+    return 128 - code
+
+
 def main() -> int:
     if "--install" in sys.argv[1:]:
         return run_installer_only()
+    if CHILD_ENV not in os.environ:
+        return supervise()
 
     QGuiApplication.setApplicationName(APP_ID)
     QGuiApplication.setApplicationDisplayName("Bienvenue dans Djerba OS")
