@@ -1,0 +1,347 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Djerba Welcome — assistant d'accueil de Djerba OS (PyQt6 + QML).
+
+Usage :
+    djerba-welcome             ouvre l'assistant (session live ou installée)
+    djerba-welcome --install   lance directement l'installateur Calamares
+
+L'installateur est démarré via polkit (pkexec + action org.djerba.installer).
+L'action autorise l'interface graphique (exec.allow_gui) : Calamares, client
+Qt 5, s'affiche alors au travers de XWayland géré par KWin, sans forcer de
+rendu logiciel ni modifier les backends Wayland de la session.
+"""
+
+from __future__ import annotations
+
+import configparser
+import os
+import platform
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
+os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
+if os.environ.get("WAYLAND_DISPLAY") and "QT_QPA_PLATFORM" not in os.environ:
+    os.environ["QT_QPA_PLATFORM"] = "wayland;xcb"
+
+from PyQt6.QtCore import (  # noqa: E402 - l'environnement Qt doit être défini avant
+    QDir,
+    QLockFile,
+    QObject,
+    QProcess,
+    QSize,
+    QStandardPaths,
+    QTimer,
+    Qt,
+    QUrl,
+    pyqtProperty,
+    pyqtSignal,
+    pyqtSlot,
+)
+from PyQt6.QtGui import QDesktopServices, QFont, QGuiApplication, QIcon, QPixmap  # noqa: E402
+from PyQt6.QtQml import QQmlApplicationEngine  # noqa: E402
+from PyQt6.QtQuick import QQuickImageProvider  # noqa: E402
+
+APP_ID = "djerba-welcome"
+SHARE_DIR = Path(os.environ.get("DJERBA_WELCOME_SHARE", "/usr/local/share/djerba-welcome"))
+QML_FILE = SHARE_DIR / "ui" / "main.qml"
+WALLPAPER = Path("/usr/share/wallpapers/Djerba/contents/images/1920x1080.png")
+CALAMARES = "/usr/bin/calamares"
+PROJECT_URL = "https://github.com/dc92jnrvg8-lang/distrib-djerba"
+
+NM_STATE_CONNECTED_GLOBAL = 70
+
+# Applications proposées en accès rapide : identifiant -> (libellé, commande, icône)
+QUICK_APPS = [
+    ("steam", "Steam", ["steam"], "steam"),
+    ("discover", "Discover", ["plasma-discover"], "plasmadiscover"),
+    ("firefox", "Firefox", ["firefox"], "firefox"),
+    ("settings", "Paramètres", ["systemsettings"], "preferences-system"),
+]
+
+
+def is_live_session() -> bool:
+    """Vrai si le système tourne depuis le média live (live-boot)."""
+    try:
+        cmdline = Path("/proc/cmdline").read_text(encoding="utf-8").split()
+    except OSError:
+        cmdline = []
+    return "boot=live" in cmdline or Path("/run/live/medium").is_dir()
+
+
+def read_cpu_model() -> str:
+    try:
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
+            key, _, value = line.partition(":")
+            if key.strip() in {"model name", "Model", "Hardware"} and value.strip():
+                return value.strip()
+    except OSError:
+        pass
+    try:
+        output = subprocess.run(["lscpu"], capture_output=True, text=True, check=False, timeout=5).stdout
+        for line in output.splitlines():
+            if line.startswith("Model name:"):
+                return line.split(":", 1)[1].strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return platform.processor() or platform.machine()
+
+
+def read_memory() -> str:
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemTotal:"):
+                kib = int(line.split()[1])
+                return f"{kib / 1024 / 1024:.1f} Gio"
+    except (OSError, ValueError, IndexError):
+        pass
+    return "inconnue"
+
+
+def read_gpus() -> str:
+    if not shutil.which("lspci"):
+        return "inconnu"
+    try:
+        output = subprocess.run(["lspci", "-mm"], capture_output=True, text=True, check=False, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return "inconnu"
+    gpus = []
+    for line in output.splitlines():
+        fields = [field.strip('"') for field in line.split('" "')]
+        if len(fields) >= 4 and any(kind in fields[0] for kind in ("VGA", "3D", "Display")):
+            gpus.append(f"{fields[1]} {fields[2]}".strip())
+    return " · ".join(gpus) if gpus else "intégré"
+
+
+def read_kernel() -> str:
+    return platform.release()
+
+
+def read_firmware() -> str:
+    return "UEFI" if Path("/sys/firmware/efi").is_dir() else "BIOS hérité"
+
+
+# Icônes du thème : nom logique -> noms freedesktop essayés dans l'ordre.
+ICON_FALLBACKS = {
+    "cpu": ["cpu", "preferences-devices-cpu", "computer"],
+    "memory": ["memory", "media-flash", "computer"],
+    "gpu": ["video-display", "preferences-desktop-display", "computer"],
+    "kernel": ["preferences-system", "system-run", "computer"],
+    "firmware": ["computer", "preferences-system"],
+}
+
+
+class IconProvider(QQuickImageProvider):
+    """Expose les icônes du thème (Breeze) au QML via « image://icon/<nom> »."""
+
+    def __init__(self) -> None:
+        super().__init__(QQuickImageProvider.ImageType.Pixmap)
+
+    def requestPixmap(self, icon_id: str, requested_size: QSize) -> tuple[QPixmap, QSize]:
+        size = requested_size if requested_size.isValid() and not requested_size.isEmpty() else QSize(64, 64)
+        icon = QIcon()
+        for name in ICON_FALLBACKS.get(icon_id, [icon_id]) + ["application-x-executable"]:
+            icon = QIcon.fromTheme(name)
+            if not icon.isNull():
+                break
+        pixmap = icon.pixmap(size)
+        if pixmap.isNull():
+            pixmap = QPixmap(size)
+            pixmap.fill(Qt.GlobalColor.transparent)
+        return pixmap, pixmap.size()
+
+
+class Backend(QObject):
+    """Pont entre l'interface QML et le système."""
+
+    networkChanged = pyqtSignal()
+    autostartChanged = pyqtSignal()
+    installerStateChanged = pyqtSignal()
+    notify = pyqtSignal(str, arguments=["message"])
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._live = is_live_session()
+        self._online = False
+        self._installer_running = False
+        self._config_path = Path(
+            QStandardPaths.writableLocation(QStandardPaths.StandardLocation.GenericConfigLocation)
+        ) / "djerba-welcomerc"
+        self._system_info = [
+            {"label": "Processeur", "value": read_cpu_model(), "icon": "cpu"},
+            {"label": "Mémoire", "value": read_memory(), "icon": "memory"},
+            {"label": "Graphique", "value": read_gpus(), "icon": "gpu"},
+            {"label": "Noyau", "value": read_kernel(), "icon": "kernel"},
+            {"label": "Micrologiciel", "value": read_firmware(), "icon": "firmware"},
+        ]
+        self._apps = [
+            {"id": app_id, "label": label, "icon": icon, "available": shutil.which(command[0]) is not None}
+            for app_id, label, command, icon in QUICK_APPS
+        ]
+        self._network_timer = QTimer(self)
+        self._network_timer.setInterval(4000)
+        self._network_timer.timeout.connect(self._refresh_network)
+        self._network_timer.start()
+        self._refresh_network()
+
+    # ------------------------------------------------------------------ État
+    @pyqtProperty(bool, constant=True)
+    def isLive(self) -> bool:
+        return self._live
+
+    @pyqtProperty(str, constant=True)
+    def edition(self) -> str:
+        return "Session live" if self._live else "Système installé"
+
+    @pyqtProperty("QVariantList", constant=True)
+    def systemInfo(self) -> list:
+        return self._system_info
+
+    @pyqtProperty("QVariantList", constant=True)
+    def quickApps(self) -> list:
+        return self._apps
+
+    @pyqtProperty(str, constant=True)
+    def wallpaper(self) -> str:
+        return QUrl.fromLocalFile(str(WALLPAPER)).toString() if WALLPAPER.is_file() else ""
+
+    @pyqtProperty(str, constant=True)
+    def assetsUrl(self) -> str:
+        return QUrl.fromLocalFile(str(SHARE_DIR / "ui" / "assets")).toString() + "/"
+
+    @pyqtProperty(bool, notify=networkChanged)
+    def online(self) -> bool:
+        return self._online
+
+    @pyqtProperty(bool, notify=installerStateChanged)
+    def installerRunning(self) -> bool:
+        return self._installer_running
+
+    def _read_autostart(self) -> bool:
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str
+        parser.read(self._config_path, encoding="utf-8")
+        return parser.get("General", "Autostart", fallback="true").lower() == "true"
+
+    @pyqtProperty(bool, notify=autostartChanged)
+    def autostart(self) -> bool:
+        return self._read_autostart()
+
+    @autostart.setter
+    def autostart(self, enabled: bool) -> None:
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str
+        parser.read(self._config_path, encoding="utf-8")
+        if not parser.has_section("General"):
+            parser.add_section("General")
+        parser.set("General", "Autostart", "true" if enabled else "false")
+        self._config_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._config_path.open("w", encoding="utf-8") as handle:
+            parser.write(handle, space_around_delimiters=False)
+        self.autostartChanged.emit()
+
+    # ------------------------------------------------------------------ Réseau (D-Bus)
+    def _refresh_network(self) -> None:
+        online = False
+        try:
+            import dbus  # python3-dbus
+
+            bus = dbus.SystemBus()
+            proxy = bus.get_object("org.freedesktop.NetworkManager", "/org/freedesktop/NetworkManager")
+            state = proxy.Get(
+                "org.freedesktop.NetworkManager", "State",
+                dbus_interface="org.freedesktop.DBus.Properties",
+            )
+            online = int(state) >= NM_STATE_CONNECTED_GLOBAL
+        except Exception:  # noqa: BLE001 - absence de bus/NM : considéré hors ligne
+            online = False
+        if online != self._online:
+            self._online = online
+            self.networkChanged.emit()
+
+    # ------------------------------------------------------------------ Actions
+    @pyqtSlot()
+    def launchInstaller(self) -> None:
+        if not Path(CALAMARES).exists():
+            self.notify.emit("L'installateur Calamares est introuvable sur ce système.")
+            return
+        if self._installer_running:
+            self.notify.emit("L'installateur est déjà ouvert.")
+            return
+        process = QProcess(self)
+        process.setProgram("pkexec")
+        process.setArguments([CALAMARES])
+        process.finished.connect(self._installer_finished)
+        process.errorOccurred.connect(lambda _error: self._installer_finished())
+        process.start()
+        self._installer_running = True
+        self.installerStateChanged.emit()
+
+    def _installer_finished(self, *_args) -> None:
+        self._installer_running = False
+        self.installerStateChanged.emit()
+
+    @pyqtSlot(str)
+    def launchApp(self, app_id: str) -> None:
+        for known_id, label, command, _icon in QUICK_APPS:
+            if known_id == app_id:
+                if shutil.which(command[0]) is None:
+                    self.notify.emit(f"{label} n'est pas disponible sur cette architecture.")
+                    return
+                QProcess.startDetached(command[0], command[1:])
+                return
+
+    @pyqtSlot(str)
+    def openUrl(self, url: str) -> None:
+        QDesktopServices.openUrl(QUrl(url))
+
+    @pyqtSlot()
+    def openProject(self) -> None:
+        QDesktopServices.openUrl(QUrl(PROJECT_URL))
+
+
+def run_installer_only() -> int:
+    """Mode « --install » : démarre Calamares via polkit et rend la main."""
+    if not Path(CALAMARES).exists():
+        print("djerba-welcome : Calamares est introuvable.", file=sys.stderr)
+        return 1
+    return subprocess.call(["pkexec", CALAMARES])
+
+
+def main() -> int:
+    if "--install" in sys.argv[1:]:
+        return run_installer_only()
+
+    QGuiApplication.setApplicationName(APP_ID)
+    QGuiApplication.setApplicationDisplayName("Bienvenue dans Djerba OS")
+    QGuiApplication.setDesktopFileName(APP_ID)
+    QGuiApplication.setOrganizationName("Djerba OS")
+    app = QGuiApplication(sys.argv)
+    app.setWindowIcon(QIcon.fromTheme(APP_ID, QIcon(str(SHARE_DIR / "ui" / "assets" / "logo.svg"))))
+    app.setFont(QFont("Inter", 10))
+    if not QIcon.themeName() or QIcon.themeName() == "hicolor":
+        QIcon.setThemeName("breeze-dark")
+
+    runtime_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.RuntimeLocation) or QDir.tempPath()
+    lock = QLockFile(str(Path(runtime_dir) / f"{APP_ID}.lock"))
+    lock.setStaleLockTime(0)
+    if not lock.tryLock(100):
+        print("djerba-welcome est déjà en cours d'exécution.", file=sys.stderr)
+        return 0
+
+    backend = Backend(app)
+    engine = QQmlApplicationEngine()
+    engine.addImageProvider("icon", IconProvider())
+    engine.rootContext().setContextProperty("backend", backend)
+    engine.load(QUrl.fromLocalFile(str(QML_FILE)))
+    if not engine.rootObjects():
+        print(f"djerba-welcome : impossible de charger {QML_FILE}", file=sys.stderr)
+        return 1
+    return app.exec()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
