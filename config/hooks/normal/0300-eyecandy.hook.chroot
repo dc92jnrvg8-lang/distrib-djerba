@@ -1,0 +1,78 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Djerba OS — hook 0300 : identité visuelle (Plymouth, SDDM, polices, GTK).
+set -euo pipefail
+
+echo "[djerba] 0300 — identité visuelle"
+
+THEME_DIR=/usr/share/plymouth/themes/djerba
+for required in "${THEME_DIR}/djerba.plymouth" "${THEME_DIR}/djerba.script" \
+        /usr/share/sddm/themes/djerba/Main.qml \
+        /usr/share/calamares/branding/djerba/branding.desc \
+        /usr/share/wallpapers/Djerba/metadata.json; do
+    if [[ ! -f "${required}" ]]; then
+        echo "[djerba] asset manquant : ${required} (lancer assets_generator/generate_assets.py)" >&2
+        exit 1
+    fi
+done
+
+# --- Plymouth : thème par défaut via le système d'alternatives d'Ubuntu --------
+update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth \
+    "${THEME_DIR}/djerba.plymouth" 200
+update-alternatives --set default.plymouth "${THEME_DIR}/djerba.plymouth"
+
+# --- SDDM : thème Djerba (conservé sur le système installé) --------------------------
+cat > /etc/sddm.conf.d/20-djerba-theme.conf <<'CONF'
+# Djerba OS — thème du gestionnaire de connexion.
+[Theme]
+Current=djerba
+CursorTheme=breeze_cursors
+Font=Inter,11,-1,5,50,0,0,0,0,0
+CONF
+
+# --- Polices : Inter pour l'interface ----------------------------------------------
+mkdir -p /etc/fonts/conf.d
+cat > /etc/fonts/local.conf <<'CONF'
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<!-- Djerba OS : Inter comme police sans empattement par défaut. -->
+<fontconfig>
+  <alias binding="same">
+    <family>sans-serif</family>
+    <prefer>
+      <family>Inter</family>
+      <family>Noto Color Emoji</family>
+      <family>DejaVu Sans</family>
+    </prefer>
+  </alias>
+  <match target="font">
+    <edit name="hinting" mode="assign"><bool>true</bool></edit>
+    <edit name="hintstyle" mode="assign"><const>hintslight</const></edit>
+    <edit name="rgba" mode="assign"><const>rgb</const></edit>
+    <edit name="lcdfilter" mode="assign"><const>lcddefault</const></edit>
+  </match>
+</fontconfig>
+CONF
+fc-cache -f
+
+# --- Applications GTK : Breeze sombre ----------------------------------------------
+mkdir -p /etc/skel/.config/gtk-3.0 /etc/skel/.config/gtk-4.0
+for version in 3.0 4.0; do
+    cat > "/etc/skel/.config/gtk-${version}/settings.ini" <<'CONF'
+[Settings]
+gtk-theme-name=Breeze-Dark
+gtk-icon-theme-name=breeze-dark
+gtk-font-name=Inter 10
+gtk-cursor-theme-name=breeze_cursors
+gtk-application-prefer-dark-theme=true
+CONF
+done
+
+# --- Caches d'icônes et de lanceurs -------------------------------------------------
+gtk-update-icon-cache --force --quiet /usr/share/icons/hicolor || true
+update-desktop-database --quiet /usr/share/applications || true
+
+# --- initramfs : embarque le thème Plymouth (live-boot + splash) -------------------
+update-initramfs -u -k all
+
+echo "[djerba] 0300 — terminé"

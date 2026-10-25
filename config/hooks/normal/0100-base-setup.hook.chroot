@@ -1,0 +1,70 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Djerba OS — hook 0100 : socle système (locales, APT, services, droits).
+set -euo pipefail
+
+echo "[djerba] 0100 — socle système"
+
+# --- APT : résilience réseau pour toutes les opérations futures ---------------
+cat > /etc/apt/apt.conf.d/80-djerba-network <<'CONF'
+// Djerba OS — résilience aux micro-coupures réseau.
+Acquire::Retries "10";
+Acquire::http::Timeout "60";
+Acquire::https::Timeout "60";
+APT::Install-Recommends "false";
+APT::Install-Suggests "false";
+CONF
+
+# --- Locales -------------------------------------------------------------------
+for locale in "en_US.UTF-8 UTF-8" "fr_FR.UTF-8 UTF-8"; do
+    if ! grep -qxF "${locale}" /etc/locale.gen; then
+        echo "${locale}" >> /etc/locale.gen
+    fi
+done
+locale-gen
+update-locale LANG=fr_FR.UTF-8
+
+# --- Identité de la distribution ----------------------------------------------
+cat > /etc/djerba-release <<'CONF'
+DJERBA_NAME="Djerba OS"
+DJERBA_BASE="Ubuntu 24.04 LTS (noble)"
+DJERBA_HOME_URL="https://github.com/dc92jnrvg8-lang/distrib-djerba"
+CONF
+printf 'Djerba OS (Ubuntu 24.04 LTS) \\n \\l\n\n' > /etc/issue
+printf 'Djerba OS (Ubuntu 24.04 LTS)\n' > /etc/issue.net
+
+# --- Droits des fichiers sensibles fournis par includes.chroot ----------------
+chown root:root /etc/sudoers.d/live-user /etc/netplan/01-network-manager-all.yaml
+chmod 0440 /etc/sudoers.d/live-user
+chmod 0600 /etc/netplan/01-network-manager-all.yaml
+visudo -cf /etc/sudoers.d/live-user
+chmod 0755 /usr/local/bin/djerba-welcome
+
+# --- Réseau : NetworkManager gère toutes les interfaces -----------------------
+systemctl enable NetworkManager.service
+systemctl enable systemd-resolved.service
+systemctl disable NetworkManager-wait-online.service systemd-networkd-wait-online.service 2>/dev/null || true
+systemctl mask systemd-networkd-wait-online.service
+
+# --- Session graphique ----------------------------------------------------------
+systemctl set-default graphical.target
+systemctl enable sddm.service
+systemctl enable fstrim.timer
+
+# --- Journal compact ---------------------------------------------------------------
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/90-djerba.conf <<'CONF'
+[Journal]
+SystemMaxUse=200M
+RuntimeMaxUse=64M
+CONF
+
+# --- Arrêt rapide -------------------------------------------------------------------
+mkdir -p /etc/systemd/system.conf.d /etc/systemd/user.conf.d
+cat > /etc/systemd/system.conf.d/90-djerba.conf <<'CONF'
+[Manager]
+DefaultTimeoutStopSec=15s
+CONF
+cp /etc/systemd/system.conf.d/90-djerba.conf /etc/systemd/user.conf.d/90-djerba.conf
+
+echo "[djerba] 0100 — terminé"

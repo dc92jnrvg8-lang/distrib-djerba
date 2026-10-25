@@ -1,0 +1,89 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Djerba OS — hook 0200 : performances (zram, mémoire, E/S, réseau, GameMode).
+set -euo pipefail
+
+echo "[djerba] 0200 — performances"
+
+# --- zram : swap compressé en mémoire (aucune partition swap sur disque) ------
+cat > /etc/default/zramswap <<'CONF'
+# Djerba OS — swap compressé en RAM (zram-tools).
+ALGO=zstd
+PERCENT=50
+PRIORITY=100
+CONF
+systemctl enable zramswap.service
+
+# --- Mémoire virtuelle et ordonnancement --------------------------------------
+cat > /etc/sysctl.d/90-djerba-performance.conf <<'CONF'
+# Djerba OS — réglages de performance (bureau et jeu).
+
+# zram est bien plus rapide qu'un disque : on l'utilise volontiers.
+vm.swappiness = 180
+vm.page-cluster = 0
+vm.watermark_boost_factor = 0
+vm.watermark_scale_factor = 125
+vm.vfs_cache_pressure = 50
+vm.dirty_bytes = 268435456
+vm.dirty_background_bytes = 67108864
+
+# Jeux récents (Proton, moteurs Source 2 / Unreal) : nombreuses projections.
+vm.max_map_count = 2147483642
+
+# Pas de pénalité « split lock » volontaire dans les jeux Windows anciens.
+kernel.split_lock_mitigate = 0
+
+# Réseau : file d'attente équitable + BBR pour la latence en ligne.
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_mtu_probing = 1
+CONF
+echo tcp_bbr > /etc/modules-load.d/djerba-bbr.conf
+
+# --- Ordonnanceurs d'E/S par type de support ------------------------------------
+cat > /etc/udev/rules.d/60-djerba-ioschedulers.rules <<'CONF'
+# Djerba OS — NVMe : aucun ordonnanceur ; SSD/eMMC : mq-deadline ; HDD : bfq.
+ACTION=="add|change", KERNEL=="nvme[0-9]*n[0-9]*", ATTR{queue/scheduler}="none"
+ACTION=="add|change", KERNEL=="sd[a-z]*|mmcblk[0-9]*", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="mq-deadline"
+ACTION=="add|change", KERNEL=="sd[a-z]*", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"
+CONF
+
+# --- GameMode : priorité CPU, gouverneur performance, inhibition veille -------
+cat > /etc/gamemode.ini <<'CONF'
+; Djerba OS — configuration GameMode globale.
+[general]
+reaper_freq=5
+desiredgov=performance
+defaultgov=schedutil
+softrealtime=auto
+renice=10
+ioprio=0
+inhibit_screensaver=1
+disable_splitlock=1
+
+[filter]
+
+[gpu]
+apply_gpu_optimisations=0
+
+[custom]
+CONF
+
+# --- Groupe gamemode (renice/ioprio sans mot de passe) ----------------------------
+if ! getent group gamemode >/dev/null; then
+    groupadd --system gamemode
+fi
+cat > /etc/security/limits.d/90-djerba-gamemode.conf <<'CONF'
+# Djerba OS — GameMode peut abaisser le « nice » des jeux.
+@gamemode - nice -10
+CONF
+
+# --- live-config : ajouter l'utilisateur live au groupe gamemode -------------------
+mkdir -p /etc/live/config.conf.d
+cat > /etc/live/config.conf.d/djerba.conf <<'CONF'
+# Djerba OS — groupes de l'utilisateur live (live-config, composant user-setup).
+LIVE_USER_DEFAULT_GROUPS="audio cdrom dip floppy video plugdev netdev powerdev scanner bluetooth sudo render input gamemode lpadmin"
+CONF
+
+echo "[djerba] 0200 — terminé"

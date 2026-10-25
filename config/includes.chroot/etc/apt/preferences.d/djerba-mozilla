@@ -1,0 +1,9 @@
+# Djerba OS — Firefox provient exclusivement du dépôt Mozilla : le paquet
+# « firefox » d'Ubuntu 24.04 n'est qu'une transition vers snap.
+Package: firefox*
+Pin: origin packages.mozilla.org
+Pin-Priority: 1000
+
+Package: firefox*
+Pin: release o=Ubuntu
+Pin-Priority: -1

@@ -1,0 +1,119 @@
+{#-
+  Djerba OS — source motion design de l'animation de démarrage Plymouth.
+
+  Plymouth n'exécute pas de QML : cette scène QtQuick est rendue image par
+  image hors écran par generate_assets.py (backend logiciel, propriété
+  « phase » de 0 à 1), puis l'alpha est extrait par matting noir/blanc. Les
+  images obtenues (throbber-NN.png) sont jouées en boucle par djerba.script.
+
+  Variables : size (pixels), c (jetons de couleur), ripples (nombre d'ondes)
+-#}
+import QtQuick
+import QtQuick.Shapes
+
+Item {
+    id: root
+    width: {{ size }}
+    height: {{ size }}
+
+    // Avancement de la boucle d'animation, piloté par le générateur.
+    property real phase: 0.0
+
+    readonly property real centre: width / 2
+    readonly property real coreRadius: width * 0.27
+    readonly property real outerRadius: width * 0.48
+
+    function easeOut(t) {
+        return 1 - Math.pow(1 - t, 3)
+    }
+
+    // Ondes concentriques : la « vague » qui part de l'île.
+    Repeater {
+        model: {{ ripples }}
+        delegate: Rectangle {
+            readonly property real local: (root.phase + index / {{ ripples }}) % 1.0
+            readonly property real radius_: root.coreRadius + (root.outerRadius - root.coreRadius) * root.easeOut(local)
+            x: root.centre - radius_
+            y: root.centre - radius_
+            width: radius_ * 2
+            height: width
+            radius: width / 2
+            color: "transparent"
+            border.width: Math.max(1, root.width * 0.008 * (1 - local))
+            border.color: "{{ c.aqua }}"
+            opacity: 0.55 * Math.sin(Math.PI * local)
+            antialiasing: true
+        }
+    }
+
+    // Anneau de verre fixe autour du logo.
+    Rectangle {
+        x: root.centre - root.coreRadius - root.width * 0.03
+        y: x
+        width: (root.coreRadius + root.width * 0.03) * 2
+        height: width
+        radius: width / 2
+        color: "transparent"
+        border.width: Math.max(1, root.width * 0.006)
+        border.color: Qt.rgba(1, 1, 1, 0.16)
+        antialiasing: true
+    }
+
+    // Arc lumineux principal (turquoise) en rotation continue.
+    Shape {
+        anchors.fill: parent
+        antialiasing: true
+        ShapePath {
+            strokeColor: "{{ c.turquoise }}"
+            strokeWidth: root.width * 0.022
+            fillColor: "transparent"
+            capStyle: ShapePath.RoundCap
+            PathAngleArc {
+                centerX: root.centre
+                centerY: root.centre
+                radiusX: root.coreRadius + root.width * 0.03
+                radiusY: radiusX
+                startAngle: 360 * root.phase - 90
+                sweepAngle: 70 + 50 * Math.sin(2 * Math.PI * root.phase)
+            }
+        }
+    }
+
+    // Contre-arc corail (soleil couchant) en sens inverse.
+    Shape {
+        anchors.fill: parent
+        antialiasing: true
+        opacity: 0.9
+        ShapePath {
+            strokeColor: "{{ c.coral }}"
+            strokeWidth: root.width * 0.012
+            fillColor: "transparent"
+            capStyle: ShapePath.RoundCap
+            PathAngleArc {
+                centerX: root.centre
+                centerY: root.centre
+                radiusX: root.coreRadius + root.width * 0.075
+                radiusY: radiusX
+                startAngle: -360 * root.phase + 90
+                sweepAngle: 34
+            }
+        }
+    }
+
+    // Points d'écume en orbite.
+    Repeater {
+        model: 3
+        delegate: Rectangle {
+            readonly property real angle: 2 * Math.PI * (root.phase * 2 + index / 3)
+            readonly property real orbit: root.coreRadius + root.width * 0.075
+            width: root.width * 0.022
+            height: width
+            radius: width / 2
+            color: "{{ c.sand }}"
+            opacity: 0.35 + 0.35 * Math.sin(angle * 0.5 + index)
+            x: root.centre + Math.cos(angle) * orbit - width / 2
+            y: root.centre + Math.sin(angle) * orbit - height / 2
+            antialiasing: true
+        }
+    }
+}

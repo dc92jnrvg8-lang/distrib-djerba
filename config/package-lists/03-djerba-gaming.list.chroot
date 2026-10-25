@@ -1,0 +1,18 @@
+# Djerba OS — pile jeu.
+# GameMode est disponible partout ; Steam et Wine 32 bits n'existent que pour
+# x86_64. Les entrées « :i386 » déclenchent nativement, dans live-build,
+# l'ajout de l'architecture étrangère i386 (dpkg --add-architecture).
+gamemode
+mangohud
+
+#if ARCHITECTURES amd64
+steam-installer
+steam-devices
+steam-libs-i386:i386
+libgl1-mesa-dri:i386
+mesa-vulkan-drivers:i386
+libgamemode0:i386
+libgamemodeauto0:i386
+wine64
+wine32:i386
+#endif

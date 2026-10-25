@@ -1,0 +1,108 @@
+# Djerba OS — socle système (Ubuntu 24.04 LTS « noble »).
+# Format natif live-build : un paquet par ligne, « #if VARIABLE valeur »
+# évalué contre la configuration (auto/config), sans imbrication.
+
+# --- Noyau bas-latence (repli generic décidé par build.sh) ---------------
+# La saveur est passée à « lb config --linux-flavours » ; ces blocs rendent
+# le choix explicite et tirent les métapaquets associés.
+#if LINUX_FLAVOURS_WITH_ARCH lowlatency
+linux-image-lowlatency
+linux-tools-lowlatency
+#endif
+#if LINUX_FLAVOURS_WITH_ARCH generic
+linux-image-generic
+linux-tools-generic
+#endif
+linux-firmware
+firmware-sof-signed
+
+# --- Session live ------------------------------------------------------------
+live-boot
+live-boot-initramfs-tools
+live-config
+live-config-systemd
+live-tools
+squashfs-tools
+rsync
+initramfs-tools
+sudo
+locales
+tzdata
+console-setup
+keyboard-configuration
+
+# --- Amorçage UEFI (requis par Calamares pour installer GRUB sur la cible) ---
+efibootmgr
+os-prober
+shim-signed
+#if ARCHITECTURES amd64
+grub-efi-amd64
+grub-efi-amd64-signed
+grub-pc-bin
+#endif
+#if ARCHITECTURES arm64
+grub-efi-arm64
+grub-efi-arm64-signed
+#endif
+
+# --- Stockage ------------------------------------------------------------------
+btrfs-progs
+e2fsprogs
+xfsprogs
+dosfstools
+exfatprogs
+ntfs-3g
+gdisk
+parted
+fdisk
+cryptsetup
+cryptsetup-initramfs
+
+# --- Mémoire et performances -------------------------------------------------
+zram-tools
+irqbalance
+
+# --- Démarrage graphique -----------------------------------------------------
+plymouth
+plymouth-label
+
+# --- Réseau --------------------------------------------------------------------
+network-manager
+wpasupplicant
+iw
+wireless-regdb
+bluez
+systemd-resolved
+systemd-timesyncd
+iputils-ping
+curl
+ca-certificates
+gnupg
+
+# --- Sécurité ------------------------------------------------------------------
+apparmor
+apparmor-utils
+apparmor-profiles
+ufw
+unattended-upgrades
+
+# --- Matériel graphique --------------------------------------------------------
+libgl1-mesa-dri
+mesa-vulkan-drivers
+mesa-va-drivers
+libvulkan1
+vulkan-tools
+#if ARCHITECTURES amd64
+intel-media-va-driver
+#endif
+
+# --- Outils de base --------------------------------------------------------------
+dbus-user-session
+polkitd
+pkexec
+pciutils
+usbutils
+bash-completion
+nano
+less
+python3

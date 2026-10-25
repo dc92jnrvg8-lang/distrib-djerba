@@ -1,0 +1,4 @@
+# Djerba OS — système sans snapd (léger, démarrage rapide, Flatpak à la place).
+Package: snapd
+Pin: release *
+Pin-Priority: -1

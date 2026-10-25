@@ -1,0 +1,90 @@
+# Djerba OS — bureau KDE Plasma (Wayland), installateur et multimédia.
+# Ubuntu 24.04 fournit Plasma 5.27 LTS (Qt 5) ; l'assistant d'accueil
+# utilise Qt 6 / PyQt6.
+
+# --- Plasma Wayland ----------------------------------------------------------
+plasma-desktop
+plasma-workspace
+plasma-workspace-wayland
+kwin-wayland
+kwin-wayland-backend-drm
+xwayland
+qtwayland5
+qt6-wayland
+frameworkintegration
+kde-cli-tools
+polkit-kde-agent-1
+systemsettings
+kscreen
+powerdevil
+plasma-nm
+plasma-pa
+bluedevil
+khotkeys
+kio-extras
+kwalletmanager
+libpam-kwallet5
+xdg-user-dirs
+konsole
+dolphin
+kate
+ark
+plasma-systemmonitor
+
+# --- Apparence ---------------------------------------------------------------
+breeze
+breeze-gtk-theme
+breeze-icon-theme
+breeze-cursor-theme
+fonts-inter
+fonts-noto-color-emoji
+fonts-dejavu-core
+
+# --- Gestionnaire de connexion (thème Djerba en QML Qt 5) ----------------------
+sddm
+sddm-theme-breeze
+kde-config-sddm
+qml-module-qtquick2
+qml-module-qtquick-controls2
+qml-module-qtquick-layouts
+qml-module-qtquick-particles2
+qml-module-qtgraphicaleffects
+
+# --- Installateur --------------------------------------------------------------
+# kpmcore est fourni par libkpmcore12, tiré par calamares.
+calamares
+libkpmcore12
+
+# --- Applications et portails -------------------------------------------------
+flatpak
+plasma-discover
+plasma-discover-backend-flatpak
+xdg-desktop-portal
+xdg-desktop-portal-kde
+xdg-desktop-portal-gtk
+
+# --- Audio ---------------------------------------------------------------------
+pipewire
+pipewire-pulse
+pipewire-alsa
+wireplumber
+libspa-0.2-bluetooth
+
+# --- Moteurs QML de l'assistant d'accueil (Qt 6.4 d'Ubuntu 24.04) -------------
+# Qt 6.4 ne publie pas encore QtQuick.Effects (Qt 6.5+) ni de module QML SVG
+# séparé : le verre dépoli s'appuie sur Qt5Compat.GraphicalEffects et le
+# rendu SVG sur le greffon image de libqt6svg6.
+python3-pyqt6
+python3-pyqt6.qtquick
+python3-dbus
+qml6-module-qtquick
+qml6-module-qtquick-window
+qml6-module-qtquick-layouts
+qml6-module-qtquick-controls
+qml6-module-qtquick-templates
+qml6-module-qtquick-particles
+qml6-module-qtquick-shapes
+qml6-module-qtqml-workerscript
+qml6-module-qt5compat-graphicaleffects
+libqt6svg6
+qt6-qpa-plugins

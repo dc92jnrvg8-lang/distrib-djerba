@@ -39,7 +39,6 @@
 /config/packages/
 /config/packages.binary/
 /config/packages.chroot/
-/config/preseed/
 /config/rootfs/
 
 # --- Sorties du générateur d'assets (assets_generator/generate_assets.py) ----

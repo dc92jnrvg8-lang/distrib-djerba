@@ -1,0 +1,256 @@
+{#-
+  Djerba OS — branding Calamares 3.3 (Qt 5). Chaque bloc est rendu dans un
+  fichier distinct par generate_assets.py :
+    branding_desc -> branding.desc   (YAML)
+    show_qml      -> show.qml        (diaporama, slideshowAPI 2)
+    stylesheet    -> stylesheet.qss  (feuille de style Qt)
+  Variables : c, product, version, url, slides (liste {title, body, accent})
+-#}
+{%- block branding_desc -%}
+# Djerba OS — branding Calamares (généré par assets_generator, ne pas éditer).
+---
+componentName: djerba
+
+welcomeStyleCalamares: true
+welcomeExpandingLogo: true
+
+windowExpanding: normal
+windowSize: 1100px,680px
+windowPlacement: center
+
+sidebar: widget
+navigation: widget
+
+strings:
+    productName: "{{ product }}"
+    shortProductName: "{{ product }}"
+    version: "{{ version }}"
+    shortVersion: "{{ version }}"
+    versionedName: "{{ product }} {{ version }}"
+    shortVersionedName: "{{ product }} {{ version }}"
+    bootloaderEntryName: "Djerba"
+    productUrl: "{{ url }}"
+    supportUrl: "{{ url }}/issues"
+    knownIssuesUrl: "{{ url }}/issues"
+    releaseNotesUrl: "{{ url }}/releases"
+
+images:
+    productLogo: "logo.png"
+    productIcon: "icon.png"
+    productWelcome: "welcome.png"
+
+style:
+    SidebarBackground: "{{ c.night }}"
+    SidebarText: "{{ c.white }}"
+    SidebarTextCurrent: "{{ c.night }}"
+    SidebarBackgroundCurrent: "{{ c.turquoise }}"
+
+slideshow: "show.qml"
+slideshowAPI: 2
+{% endblock -%}
+
+{%- block show_qml -%}
+// Djerba OS — diaporama Calamares (généré par assets_generator, ne pas éditer).
+import QtQuick 2.15
+import calamares.slideshow 1.0
+
+Presentation {
+    id: presentation
+
+    readonly property color night: "{{ c.night }}"
+    readonly property color accent: "{{ c.turquoise }}"
+
+    function onActivate() {
+        presentation.currentSlide = 0
+        advanceTimer.restart()
+    }
+
+    function onLeave() {
+        advanceTimer.stop()
+    }
+
+    Timer {
+        id: advanceTimer
+        interval: 9000
+        running: presentation.activatedInCalamares
+        repeat: true
+        onTriggered: presentation.goToNextSlide()
+    }
+
+    // Fond animé commun à toutes les diapositives.
+    Rectangle {
+        anchors.fill: parent
+        z: -10
+        gradient: Gradient {
+            GradientStop { position: 0.0; color: "{{ c.night }}" }
+            GradientStop { position: 0.6; color: "{{ c.deep }}" }
+            GradientStop { position: 1.0; color: "{{ c.lagoon }}" }
+        }
+        Rectangle {
+            id: glow
+            width: parent.width * 0.7
+            height: width
+            radius: width / 2
+            x: parent.width * 0.55
+            y: -height * 0.35
+            color: "{{ c.turquoise }}"
+            opacity: 0.12
+            SequentialAnimation on x {
+                loops: Animation.Infinite
+                NumberAnimation { to: presentation.width * 0.40; duration: 14000; easing.type: Easing.InOutSine }
+                NumberAnimation { to: presentation.width * 0.55; duration: 14000; easing.type: Easing.InOutSine }
+            }
+        }
+    }
+{% for slide in slides %}
+    Slide {
+        Item {
+            anchors.fill: parent
+
+            Rectangle {
+                id: card{{ loop.index }}
+                anchors.centerIn: parent
+                width: Math.min(parent.width * 0.78, 760)
+                height: content{{ loop.index }}.implicitHeight + 72
+                radius: 24
+                color: Qt.rgba(1, 1, 1, 0.08)
+                border.width: 1
+                border.color: Qt.rgba(1, 1, 1, 0.18)
+
+                Column {
+                    id: content{{ loop.index }}
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.margins: 40
+                    spacing: 16
+
+                    Image {
+                        source: "logo.png"
+                        width: 72
+                        height: 72
+                        fillMode: Image.PreserveAspectFit
+                        smooth: true
+                        anchors.horizontalCenter: parent.horizontalCenter
+                    }
+                    Text {
+                        width: parent.width
+                        text: "{{ slide.title }}"
+                        color: "{{ slide.accent }}"
+                        font.family: "Inter"
+                        font.pixelSize: 30
+                        font.weight: Font.Bold
+                        horizontalAlignment: Text.AlignHCenter
+                        wrapMode: Text.WordWrap
+                    }
+                    Text {
+                        width: parent.width
+                        text: "{{ slide.body }}"
+                        color: "{{ c.white }}"
+                        opacity: 0.86
+                        font.family: "Inter"
+                        font.pixelSize: 17
+                        lineHeight: 1.25
+                        horizontalAlignment: Text.AlignHCenter
+                        wrapMode: Text.WordWrap
+                    }
+                }
+            }
+        }
+    }
+{% endfor %}
+}
+{% endblock -%}
+
+{%- block stylesheet -%}
+/* Djerba OS — feuille de style Calamares (générée par assets_generator). */
+QWidget {
+    font-family: "Inter";
+    font-size: 10pt;
+}
+
+#mainApp {
+    background-color: {{ c.night }};
+}
+
+#sidebarApp {
+    background-color: {{ c.night }};
+}
+
+#mainApp QLabel,
+#mainApp QCheckBox,
+#mainApp QRadioButton {
+    color: {{ c.white }};
+}
+
+#mainApp QPushButton {
+    color: {{ c.white }};
+    background-color: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.20);
+    border-radius: 10px;
+    padding: 7px 18px;
+}
+
+#mainApp QPushButton:hover {
+    background-color: rgba(0, 194, 203, 0.25);
+    border-color: {{ c.turquoise }};
+}
+
+#mainApp QPushButton:pressed {
+    background-color: {{ c.turquoise }};
+    color: {{ c.night }};
+}
+
+#mainApp QPushButton:disabled {
+    color: {{ c.muted }};
+    background-color: rgba(255, 255, 255, 0.03);
+}
+
+#mainApp QLineEdit,
+#mainApp QComboBox,
+#mainApp QSpinBox {
+    color: {{ c.white }};
+    background-color: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.20);
+    border-radius: 8px;
+    padding: 5px 8px;
+    selection-background-color: {{ c.turquoise }};
+    selection-color: {{ c.night }};
+}
+
+#mainApp QLineEdit:focus,
+#mainApp QComboBox:focus {
+    border: 2px solid {{ c.turquoise }};
+}
+
+#mainApp QListView,
+#mainApp QTreeView,
+#mainApp QTableView {
+    color: {{ c.white }};
+    background-color: rgba(255, 255, 255, 0.05);
+    alternate-background-color: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 10px;
+    selection-background-color: {{ c.turquoise }};
+    selection-color: {{ c.night }};
+}
+
+#mainApp QProgressBar {
+    color: {{ c.white }};
+    background-color: rgba(255, 255, 255, 0.08);
+    border: none;
+    border-radius: 6px;
+    text-align: center;
+    min-height: 12px;
+}
+
+#mainApp QProgressBar::chunk {
+    border-radius: 6px;
+    background-color: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
+                                      stop: 0 {{ c.turquoise }}, stop: 1 {{ c.aqua }});
+}
+
+#sidebarMenuApp {
+    background-color: {{ c.night }};
+}
+{% endblock -%}

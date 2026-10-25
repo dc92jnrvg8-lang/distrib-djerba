@@ -1,0 +1,91 @@
+{#-
+  Djerba OS — scène SVG de référence (rendue en PNG par generate_assets.py).
+
+  Utilisée pour : l'écran GRUB (menu_panel=True), le fond d'écran Plasma,
+  les fonds SDDM / Plymouth / Calamares (menu_panel=False).
+
+  Variables :
+    width, height     dimensions en pixels
+    c                 jetons de couleur (dict)
+    waves             liste de vagues {d, color, opacity, stroke}
+    logo              fragment SVG du logo (viewBox 0 0 256 256)
+    logo_size         taille du logo en pixels
+    logo_y            ordonnée du centre du logo
+    show_wordmark     affiche « DJERBA OS »
+    menu_panel        dessine le panneau verre du menu GRUB
+    panel             {x, y, w, h} du panneau (pixels)
+    version           chaîne de version
+    tagline           sous-titre
+-#}
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="{{ width }}" height="{{ height }}" viewBox="0 0 {{ width }} {{ height }}">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="{{ c.night }}"/>
+      <stop offset="0.55" stop-color="{{ c.deep }}"/>
+      <stop offset="1" stop-color="{{ c.lagoon }}"/>
+    </linearGradient>
+    <radialGradient id="glowTurquoise" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="{{ c.turquoise }}" stop-opacity="0.55"/>
+      <stop offset="0.45" stop-color="{{ c.turquoise }}" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="{{ c.turquoise }}" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowCoral" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="{{ c.coral }}" stop-opacity="0.42"/>
+      <stop offset="0.5" stop-color="{{ c.coral }}" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="{{ c.coral }}" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowSand" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="{{ c.sand }}" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="{{ c.sand }}" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="glassFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.13"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.04"/>
+    </linearGradient>
+    <linearGradient id="glassStroke" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.38"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.22"/>
+    </linearGradient>
+    <linearGradient id="horizonFade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="{{ c.night }}" stop-opacity="0"/>
+      <stop offset="1" stop-color="{{ c.night }}" stop-opacity="0.55"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="{{ width }}" height="{{ height }}" fill="url(#sky)"/>
+
+  <ellipse cx="{{ width * 0.82 }}" cy="{{ height * 0.18 }}" rx="{{ width * 0.42 }}" ry="{{ height * 0.55 }}" fill="url(#glowTurquoise)"/>
+  <ellipse cx="{{ width * 0.12 }}" cy="{{ height * 0.92 }}" rx="{{ width * 0.38 }}" ry="{{ height * 0.48 }}" fill="url(#glowCoral)"/>
+  <ellipse cx="{{ width * 0.50 }}" cy="{{ height * 0.30 }}" rx="{{ width * 0.22 }}" ry="{{ height * 0.30 }}" fill="url(#glowSand)"/>
+
+  <g fill="none" stroke-linecap="round">
+{%- for wave in waves %}
+    <path d="{{ wave.d }}" stroke="{{ wave.color }}" stroke-opacity="{{ '%.3f' % wave.opacity }}" stroke-width="{{ '%.2f' % wave.stroke }}"/>
+{%- endfor %}
+  </g>
+  <rect y="{{ height * 0.62 }}" width="{{ width }}" height="{{ height * 0.38 }}" fill="url(#horizonFade)"/>
+
+  <g transform="translate({{ (width - logo_size) / 2 }} {{ logo_y - logo_size / 2 }}) scale({{ logo_size / 256 }})">
+    {{ logo }}
+  </g>
+
+{%- if show_wordmark %}
+  <text x="{{ width / 2 }}" y="{{ logo_y + logo_size * 0.5 + height * 0.075 }}" text-anchor="middle"
+        font-family="Inter" font-size="{{ height * 0.052 }}" letter-spacing="{{ height * 0.016 }}"
+        fill="{{ c.white }}"><tspan font-weight="800">DJERBA</tspan><tspan font-weight="300" fill="{{ c.turquoise }}" dx="{{ height * 0.012 }}">OS</tspan></text>
+  <text x="{{ width / 2 }}" y="{{ logo_y + logo_size * 0.5 + height * 0.115 }}" text-anchor="middle"
+        font-family="Inter" font-weight="400" font-size="{{ height * 0.019 }}" letter-spacing="{{ height * 0.004 }}"
+        fill="{{ c.muted }}">{{ tagline }}</text>
+{%- endif %}
+
+{%- if menu_panel %}
+  <rect x="{{ panel.x }}" y="{{ panel.y }}" width="{{ panel.w }}" height="{{ panel.h }}" rx="{{ height * 0.024 }}"
+        fill="url(#glassFill)" stroke="url(#glassStroke)" stroke-width="1.5"/>
+  <rect x="{{ panel.x + 1.5 }}" y="{{ panel.y + 1.5 }}" width="{{ panel.w - 3 }}" height="{{ height * 0.004 }}" rx="{{ height * 0.002 }}"
+        fill="#FFFFFF" fill-opacity="0.10"/>
+  <text x="{{ width / 2 }}" y="{{ height - height * 0.03 }}" text-anchor="middle"
+        font-family="Inter" font-weight="400" font-size="{{ height * 0.015 }}" fill="{{ c.muted }}" fill-opacity="0.8">Djerba OS {{ version }} · Ubuntu 24.04 LTS</text>
+{%- endif %}
+</svg>

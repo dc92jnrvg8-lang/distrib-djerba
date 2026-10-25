@@ -1,0 +1,45 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Djerba OS — hook 0500 : logiciels hors listes (Firefox Mozilla, Flathub).
+set -euo pipefail
+
+echo "[djerba] 0500 — logiciels"
+
+export DEBIAN_FRONTEND=noninteractive
+
+# Exécute une commande réseau jusqu'au succès (20 essais, 5 s d'intervalle).
+retry() {
+    local n=0
+    until "$@"; do
+        n=$((n + 1))
+        if [[ "${n}" -ge 20 ]]; then
+            echo "[djerba] échec définitif : $*" >&2
+            return 1
+        fi
+        echo "[djerba] échec réseau ($n/20) : $* — nouvel essai dans 5 s" >&2
+        sleep 5
+    done
+}
+
+# --- Firefox natif depuis le dépôt Mozilla (keyrings + sources.list.d) --------
+retry apt-get update
+retry apt-get install -y --no-install-recommends firefox firefox-l10n-fr
+apt-cache policy firefox | grep -q 'packages.mozilla.org'
+
+# --- Flathub : remote système déclaré dans /etc/flatpak/remotes.d/flathub.conf ----
+FLATHUB_URL="$(python3 - <<'PY'
+import configparser
+parser = configparser.ConfigParser(interpolation=None)
+parser.read("/etc/flatpak/remotes.d/flathub.conf", encoding="utf-8")
+print(parser['remote "flathub"']["url"])
+PY
+)"
+retry flatpak remote-add --system --if-not-exists flathub "${FLATHUB_URL}"
+retry flatpak update --system --appstream --noninteractive flathub
+flatpak remotes --system --columns=name | grep -qx flathub
+
+# --- Nettoyage du cache APT (les index restent : live-build en a besoin pour
+# l'étape binary et l'installateur pour retirer les paquets live).
+apt-get clean
+
+echo "[djerba] 0500 — terminé"

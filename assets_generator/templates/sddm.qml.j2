@@ -1,0 +1,402 @@
+{#-
+  Djerba OS — thème SDDM (greeter Qt 5 de SDDM 0.20 sur Ubuntu 24.04).
+  Variables : c (jetons de couleur), product (nom du produit), version.
+-#}
+// Djerba OS — thème SDDM « djerba » (généré par assets_generator, ne pas éditer).
+import QtQuick 2.15
+import QtQuick.Controls 2.15
+import QtQuick.Layouts 1.15
+import QtQuick.Particles 2.15
+import QtGraphicalEffects 1.15
+import SddmComponents 2.0
+
+Rectangle {
+    id: root
+    width: 1920
+    height: 1080
+    color: "{{ c.night }}"
+
+    readonly property real unit: Math.max(1, Math.min(width / 1920, height / 1080))
+    readonly property color accent: "{{ c.turquoise }}"
+    readonly property color textColor: "{{ c.white }}"
+    readonly property color mutedColor: "{{ c.muted }}"
+    property int sessionIndex: sessionModel.lastIndex >= 0 ? sessionModel.lastIndex : 0
+
+    LayoutMirroring.enabled: Qt.locale().textDirection === Qt.RightToLeft
+    LayoutMirroring.childrenInherit: true
+
+    TextConstants { id: textConstants }
+
+    Connections {
+        target: sddm
+        function onLoginSucceeded() {
+            errorLabel.text = ""
+            fadeOut.start()
+        }
+        function onLoginFailed() {
+            passwordField.text = ""
+            errorLabel.text = textConstants.loginFailed
+            shake.restart()
+            passwordField.forceActiveFocus()
+        }
+    }
+
+    function doLogin() {
+        errorLabel.text = ""
+        sddm.login(userField.text, passwordField.text, root.sessionIndex)
+    }
+
+    // ---------------------------------------------------------------- Fond
+    Image {
+        id: background
+        anchors.fill: parent
+        source: config.background
+        fillMode: Image.PreserveAspectCrop
+        smooth: true
+        asynchronous: false
+        transformOrigin: Item.Center
+        SequentialAnimation on scale {
+            loops: Animation.Infinite
+            NumberAnimation { from: 1.0; to: 1.06; duration: 24000; easing.type: Easing.InOutSine }
+            NumberAnimation { from: 1.06; to: 1.0; duration: 24000; easing.type: Easing.InOutSine }
+        }
+    }
+
+    // Écume : particules lentes qui remontent comme des bulles de lagon.
+    ParticleSystem { id: foam }
+    ImageParticle {
+        system: foam
+        source: "particle.png"
+        color: "{{ c.aqua }}"
+        colorVariation: 0.15
+        alpha: 0.35
+        alphaVariation: 0.25
+        entryEffect: ImageParticle.Fade
+    }
+    Emitter {
+        system: foam
+        anchors.bottom: parent.bottom
+        width: parent.width
+        height: parent.height * 0.25
+        emitRate: 6
+        lifeSpan: 14000
+        lifeSpanVariation: 4000
+        size: 18 * root.unit
+        sizeVariation: 12 * root.unit
+        endSize: 4 * root.unit
+        velocity: AngleDirection { angle: 270; angleVariation: 12; magnitude: 40 * root.unit; magnitudeVariation: 20 * root.unit }
+    }
+
+    // ---------------------------------------------------------------- Horloge
+    Column {
+        anchors.top: parent.top
+        anchors.topMargin: 96 * root.unit
+        anchors.horizontalCenter: parent.horizontalCenter
+        spacing: 4 * root.unit
+
+        Text {
+            id: clock
+            anchors.horizontalCenter: parent.horizontalCenter
+            color: root.textColor
+            font.family: "Inter"
+            font.weight: Font.Light
+            font.pixelSize: 112 * root.unit
+            text: Qt.formatTime(new Date(), "hh:mm")
+        }
+        Text {
+            id: dateLabel
+            anchors.horizontalCenter: parent.horizontalCenter
+            color: root.mutedColor
+            font.family: "Inter"
+            font.pixelSize: 24 * root.unit
+            text: Qt.formatDate(new Date(), "dddd d MMMM")
+        }
+        Timer {
+            interval: 1000
+            running: true
+            repeat: true
+            onTriggered: {
+                clock.text = Qt.formatTime(new Date(), "hh:mm")
+                dateLabel.text = Qt.formatDate(new Date(), "dddd d MMMM")
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- Carte verre
+    Item {
+        id: card
+        width: 440 * root.unit
+        height: form.implicitHeight + 72 * root.unit
+        anchors.centerIn: parent
+        anchors.verticalCenterOffset: 80 * root.unit
+
+        ShaderEffectSource {
+            id: blurSource
+            sourceItem: background
+            sourceRect: Qt.rect(card.x, card.y, card.width, card.height)
+            visible: false
+        }
+        FastBlur {
+            id: blurred
+            anchors.fill: parent
+            source: blurSource
+            radius: 64
+            visible: false
+        }
+        Rectangle {
+            id: cardMask
+            anchors.fill: parent
+            radius: 28 * root.unit
+            visible: false
+        }
+        OpacityMask {
+            anchors.fill: parent
+            source: blurred
+            maskSource: cardMask
+        }
+        Rectangle {
+            anchors.fill: parent
+            radius: 28 * root.unit
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.14) }
+                GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, 0.05) }
+            }
+            border.width: 1
+            border.color: Qt.rgba(1, 1, 1, 0.22)
+        }
+
+        transform: Translate { id: shakeOffset; x: 0 }
+        SequentialAnimation {
+            id: shake
+            NumberAnimation { target: shakeOffset; property: "x"; to: -14 * root.unit; duration: 50 }
+            NumberAnimation { target: shakeOffset; property: "x"; to: 14 * root.unit; duration: 90 }
+            NumberAnimation { target: shakeOffset; property: "x"; to: -8 * root.unit; duration: 80 }
+            NumberAnimation { target: shakeOffset; property: "x"; to: 0; duration: 60 }
+        }
+
+        ColumnLayout {
+            id: form
+            anchors.fill: parent
+            anchors.margins: 36 * root.unit
+            spacing: 16 * root.unit
+
+            Image {
+                Layout.alignment: Qt.AlignHCenter
+                Layout.preferredWidth: 88 * root.unit
+                Layout.preferredHeight: 88 * root.unit
+                source: "logo.svg"
+                sourceSize.width: 176
+                sourceSize.height: 176
+                smooth: true
+            }
+            Text {
+                Layout.alignment: Qt.AlignHCenter
+                text: "{{ product }}"
+                color: root.textColor
+                font.family: "Inter"
+                font.weight: Font.DemiBold
+                font.pixelSize: 22 * root.unit
+                font.letterSpacing: 4 * root.unit
+            }
+
+            TextField {
+                id: userField
+                Layout.fillWidth: true
+                Layout.preferredHeight: 48 * root.unit
+                text: userModel.lastUser
+                placeholderText: textConstants.userName
+                color: root.textColor
+                placeholderTextColor: root.mutedColor
+                font.family: "Inter"
+                font.pixelSize: 16 * root.unit
+                leftPadding: 18 * root.unit
+                background: Rectangle {
+                    radius: 14 * root.unit
+                    color: Qt.rgba(1, 1, 1, userField.activeFocus ? 0.14 : 0.08)
+                    border.width: userField.activeFocus ? 2 : 1
+                    border.color: userField.activeFocus ? root.accent : Qt.rgba(1, 1, 1, 0.18)
+                    Behavior on color { ColorAnimation { duration: 160 } }
+                }
+                KeyNavigation.tab: passwordField
+                Keys.onReturnPressed: passwordField.forceActiveFocus()
+            }
+
+            TextField {
+                id: passwordField
+                Layout.fillWidth: true
+                Layout.preferredHeight: 48 * root.unit
+                echoMode: TextInput.Password
+                passwordCharacter: "●"
+                placeholderText: textConstants.password
+                color: root.textColor
+                placeholderTextColor: root.mutedColor
+                font.family: "Inter"
+                font.pixelSize: 16 * root.unit
+                leftPadding: 18 * root.unit
+                focus: true
+                background: Rectangle {
+                    radius: 14 * root.unit
+                    color: Qt.rgba(1, 1, 1, passwordField.activeFocus ? 0.14 : 0.08)
+                    border.width: passwordField.activeFocus ? 2 : 1
+                    border.color: passwordField.activeFocus ? root.accent : Qt.rgba(1, 1, 1, 0.18)
+                    Behavior on color { ColorAnimation { duration: 160 } }
+                }
+                KeyNavigation.tab: sessionBox
+                Keys.onReturnPressed: root.doLogin()
+                Keys.onEnterPressed: root.doLogin()
+            }
+
+            Text {
+                Layout.fillWidth: true
+                visible: keyboard.capsLock
+                text: textConstants.capslockWarning
+                color: "{{ c.sand }}"
+                font.family: "Inter"
+                font.pixelSize: 13 * root.unit
+                horizontalAlignment: Text.AlignHCenter
+            }
+
+            ComboBox {
+                id: sessionBox
+                Layout.fillWidth: true
+                Layout.preferredHeight: 44 * root.unit
+                model: sessionModel
+                textRole: "name"
+                currentIndex: root.sessionIndex
+                onActivated: root.sessionIndex = currentIndex
+                font.family: "Inter"
+                font.pixelSize: 14 * root.unit
+                contentItem: Text {
+                    leftPadding: 18 * root.unit
+                    text: sessionBox.displayText
+                    color: root.mutedColor
+                    font: sessionBox.font
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                }
+                background: Rectangle {
+                    radius: 14 * root.unit
+                    color: Qt.rgba(1, 1, 1, 0.06)
+                    border.width: 1
+                    border.color: Qt.rgba(1, 1, 1, sessionBox.activeFocus ? 0.4 : 0.14)
+                }
+                KeyNavigation.tab: loginButton
+            }
+
+            Button {
+                id: loginButton
+                Layout.fillWidth: true
+                Layout.preferredHeight: 50 * root.unit
+                text: textConstants.login
+                font.family: "Inter"
+                font.weight: Font.DemiBold
+                font.pixelSize: 16 * root.unit
+                onClicked: root.doLogin()
+                Keys.onReturnPressed: root.doLogin()
+                contentItem: Text {
+                    text: loginButton.text
+                    font: loginButton.font
+                    color: "{{ c.night }}"
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle {
+                    radius: 14 * root.unit
+                    gradient: Gradient {
+                        orientation: Gradient.Horizontal
+                        GradientStop { position: 0.0; color: "{{ c.turquoise }}" }
+                        GradientStop { position: 1.0; color: "{{ c.aqua }}" }
+                    }
+                    opacity: loginButton.down ? 0.75 : (loginButton.hovered ? 0.92 : 1.0)
+                    Behavior on opacity { NumberAnimation { duration: 120 } }
+                }
+                KeyNavigation.tab: userField
+            }
+
+            Text {
+                id: errorLabel
+                Layout.fillWidth: true
+                text: ""
+                color: "{{ c.coral }}"
+                font.family: "Inter"
+                font.pixelSize: 13 * root.unit
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- Alimentation
+    Row {
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 40 * root.unit
+        anchors.horizontalCenter: parent.horizontalCenter
+        spacing: 16 * root.unit
+
+        Repeater {
+            model: [
+                { label: textConstants.suspend, enabled: sddm.canSuspend, action: "suspend" },
+                { label: textConstants.reboot, enabled: sddm.canReboot, action: "reboot" },
+                { label: textConstants.shutdown, enabled: sddm.canPowerOff, action: "powerOff" }
+            ]
+            delegate: Button {
+                id: powerButton
+                visible: modelData.enabled
+                text: modelData.label
+                font.family: "Inter"
+                font.pixelSize: 14 * root.unit
+                padding: 14 * root.unit
+                onClicked: {
+                    if (modelData.action === "suspend")
+                        sddm.suspend()
+                    else if (modelData.action === "reboot")
+                        sddm.reboot()
+                    else
+                        sddm.powerOff()
+                }
+                contentItem: Text {
+                    text: powerButton.text
+                    font: powerButton.font
+                    color: root.textColor
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle {
+                    radius: height / 2
+                    color: Qt.rgba(1, 1, 1, powerButton.hovered ? 0.16 : 0.07)
+                    border.width: 1
+                    border.color: Qt.rgba(1, 1, 1, 0.16)
+                    Behavior on color { ColorAnimation { duration: 140 } }
+                }
+            }
+        }
+    }
+
+    Text {
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.margins: 24 * root.unit
+        text: "{{ product }} {{ version }}"
+        color: root.mutedColor
+        opacity: 0.6
+        font.family: "Inter"
+        font.pixelSize: 12 * root.unit
+    }
+
+    // ---------------------------------------------------------------- Transition
+    Rectangle {
+        id: veil
+        anchors.fill: parent
+        color: "{{ c.night }}"
+        opacity: 1
+        NumberAnimation on opacity { id: fadeIn; from: 1; to: 0; duration: 700; easing.type: Easing.OutCubic; running: true }
+        NumberAnimation { id: fadeOut; target: veil; property: "opacity"; to: 1; duration: 400; easing.type: Easing.InCubic }
+    }
+
+    Component.onCompleted: {
+        if (userField.text.length > 0)
+            passwordField.forceActiveFocus()
+        else
+            userField.forceActiveFocus()
+    }
+}

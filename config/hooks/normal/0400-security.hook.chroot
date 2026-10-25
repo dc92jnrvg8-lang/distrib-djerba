@@ -1,0 +1,77 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Djerba OS — hook 0400 : sécurité (pare-feu, noyau, AppArmor, mises à jour).
+set -euo pipefail
+
+echo "[djerba] 0400 — sécurité"
+
+# --- Pare-feu UFW : tout refuser en entrée, activé au démarrage ----------------
+# « ufw enable » nécessite netfilter (indisponible dans le chroot) : on active
+# nativement via sa configuration, appliquée par ufw.service au boot.
+sed -i 's/^DEFAULT_INPUT_POLICY=.*/DEFAULT_INPUT_POLICY="DROP"/' /etc/default/ufw
+sed -i 's/^DEFAULT_OUTPUT_POLICY=.*/DEFAULT_OUTPUT_POLICY="ACCEPT"/' /etc/default/ufw
+sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="DROP"/' /etc/default/ufw
+sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw
+sed -i 's/^ENABLED=.*/ENABLED=yes/' /etc/ufw/ufw.conf
+sed -i 's/^LOGLEVEL=.*/LOGLEVEL=low/' /etc/ufw/ufw.conf
+grep -qx 'ENABLED=yes' /etc/ufw/ufw.conf
+systemctl enable ufw.service
+
+# --- Durcissement noyau compatible jeu (namespaces conservés pour Flatpak/Steam) ---
+cat > /etc/sysctl.d/90-djerba-hardening.conf <<'CONF'
+# Djerba OS — durcissement du noyau.
+kernel.kptr_restrict = 2
+kernel.dmesg_restrict = 1
+kernel.kexec_load_disabled = 1
+kernel.unprivileged_bpf_disabled = 1
+net.core.bpf_jit_harden = 2
+kernel.yama.ptrace_scope = 1
+kernel.sysrq = 176
+dev.tty.ldisc_autoload = 0
+fs.protected_fifos = 2
+fs.protected_regular = 2
+fs.protected_symlinks = 1
+fs.protected_hardlinks = 1
+fs.suid_dumpable = 0
+
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_rfc1337 = 1
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.secure_redirects = 0
+net.ipv4.conf.default.secure_redirects = 0
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv6.conf.all.accept_source_route = 0
+net.ipv4.conf.all.log_martians = 1
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+CONF
+
+# --- AppArmor actif au démarrage -------------------------------------------------
+systemctl enable apparmor.service
+
+# --- Mises à jour de sécurité automatiques ----------------------------------------
+cat > /etc/apt/apt.conf.d/20auto-upgrades <<'CONF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Download-Upgradeable-Packages "1";
+APT::Periodic::AutocleanInterval "7";
+APT::Periodic::Unattended-Upgrade "1";
+CONF
+systemctl enable unattended-upgrades.service
+
+# --- Pas de vidage mémoire persistant des programmes privilégiés -------------------
+mkdir -p /etc/security/limits.d
+cat > /etc/security/limits.d/90-djerba-coredump.conf <<'CONF'
+# Djerba OS — pas de core dump par défaut.
+* hard core 0
+CONF
+
+# --- Compte root verrouillé (administration via sudo) -------------------------------
+passwd --lock root
+
+echo "[djerba] 0400 — terminé"
