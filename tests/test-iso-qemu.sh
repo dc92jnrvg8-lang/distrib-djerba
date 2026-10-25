@@ -146,9 +146,11 @@ SUCCESS_PATTERN='djerba login:'
 # Sous émulation TCG (runners sans KVM, ARM64 notamment), le démarrage est
 # jusqu'à vingt fois plus lent : udev peut dépasser le délai de 90 s de
 # l'unité du port série et le getty n'apparaît pas. systemd affiche alors
-# l'état des unités ; atteindre graphical.target prouve le démarrage complet.
+# l'état des unités ; « systemd-user-sessions » terminé prouve que noyau,
+# live-boot, squashfs, live-config et les services système ont démarré (la
+# session graphique, elle, n'est vérifiable qu'avec KVM).
 if [[ "${ACCEL}" == "tcg" ]]; then
-    SUCCESS_PATTERN='djerba login:|Reached target graphical\.target'
+    SUCCESS_PATTERN='djerba login:|Reached target graphical\.target|Finished systemd-user-sessions\.service'
 fi
 
 result="timeout"
@@ -178,7 +180,11 @@ done
 echo "[qemu] résultat : ${result} après ${elapsed} s"
 case "${result}" in
     success)
-        echo "[qemu] invite de connexion atteinte ; attente de la session graphique (${DESKTOP_WAIT} s)"
+        if grep -qa 'djerba login:' "${SERIAL_LOG}"; then
+            echo "[qemu] invite de connexion atteinte ; attente de la session graphique (${DESKTOP_WAIT} s)"
+        else
+            echo "[qemu] démarrage système vérifié (émulation TCG) ; session graphique non vérifiable sans KVM"
+        fi
         sleep "${DESKTOP_WAIT}"
         PPM="${OUT}/desktop-${ARCH}.ppm"
         if qmp screendump "{\"filename\": \"${PPM}\"}"; then
