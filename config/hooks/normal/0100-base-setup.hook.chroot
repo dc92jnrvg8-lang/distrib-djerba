@@ -15,13 +15,9 @@ APT::Install-Recommends "false";
 APT::Install-Suggests "false";
 CONF
 
-# --- Locales -------------------------------------------------------------------
-for locale in "en_US.UTF-8 UTF-8" "fr_FR.UTF-8 UTF-8"; do
-    if ! grep -qxF "${locale}" /etc/locale.gen; then
-        echo "${locale}" >> /etc/locale.gen
-    fi
-done
-locale-gen
+# --- Locales (méthode Ubuntu : locale-gen enregistre les locales demandées
+# dans /var/lib/locales/supported.d/ puis les compile) -----------------------
+locale-gen en_US.UTF-8 fr_FR.UTF-8
 update-locale LANG=fr_FR.UTF-8
 
 # --- Identité de la distribution ----------------------------------------------
