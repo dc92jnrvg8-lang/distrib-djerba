@@ -24,7 +24,8 @@ retry() {
 # --- Firefox natif depuis le dépôt Mozilla (keyrings + sources.list.d) --------
 retry apt-get update --error-on=any
 retry apt-get install -y --no-install-recommends firefox firefox-l10n-fr
-apt-cache policy firefox | grep -q 'packages.mozilla.org'
+FIREFOX_POLICY="$(apt-cache policy firefox)"
+grep -q 'packages.mozilla.org' <<< "${FIREFOX_POLICY}"
 
 # --- Flathub : remote système déclaré dans /etc/flatpak/remotes.d/flathub.conf ----
 FLATHUB_URL="$(python3 - <<'PY'
@@ -36,7 +37,8 @@ PY
 )"
 retry flatpak remote-add --system --if-not-exists flathub "${FLATHUB_URL}"
 retry flatpak update --system --appstream --noninteractive flathub
-flatpak remotes --system --columns=name | grep -qx flathub
+FLATPAK_REMOTES="$(flatpak remotes --system --columns=name)"
+grep -qx flathub <<< "${FLATPAK_REMOTES}"
 
 # --- Nettoyage du cache APT (les index restent : live-build en a besoin pour
 # l'étape binary et l'installateur pour retirer les paquets live).
