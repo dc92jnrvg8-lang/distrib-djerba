@@ -128,7 +128,7 @@ for message in ({"execute": "qmp_capabilities"}, {"execute": command, "arguments
 PY
 }
 
-# shellcheck disable=SC2317 # fonction appelée via « trap EXIT »
+# shellcheck disable=SC2317,SC2329 # fonction appelée via « trap EXIT »
 stop_qemu() {
     if kill -0 "${QEMU_PID}" 2>/dev/null; then
         qmp quit >/dev/null 2>&1 || kill "${QEMU_PID}" 2>/dev/null || true

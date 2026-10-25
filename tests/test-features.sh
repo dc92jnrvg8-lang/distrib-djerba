@@ -28,6 +28,7 @@ esac
 
 WORK="$(mktemp -d)"
 MOUNTS=()
+# shellcheck disable=SC2317,SC2329 # fonction appelée via « trap EXIT »
 cleanup() {
     local index
     for ((index = ${#MOUNTS[@]} - 1; index >= 0; index--)); do
