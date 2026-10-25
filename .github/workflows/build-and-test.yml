@@ -40,7 +40,7 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
             debarch: arm64
-            qemu_timeout: 2400
+            qemu_timeout: 3600
 
     steps:
       - name: Checkout

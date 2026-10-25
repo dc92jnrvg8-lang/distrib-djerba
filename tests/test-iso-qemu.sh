@@ -143,6 +143,13 @@ trap stop_qemu EXIT
 
 FAILURE_PATTERN='Kernel panic|end Kernel panic|\(initramfs\)|Unable to find a medium|BusyBox v[0-9]|Failed to start .*Display Manager|No bootable option'
 SUCCESS_PATTERN='djerba login:'
+# Sous émulation TCG (runners sans KVM, ARM64 notamment), le démarrage est
+# jusqu'à vingt fois plus lent : udev peut dépasser le délai de 90 s de
+# l'unité du port série et le getty n'apparaît pas. systemd affiche alors
+# l'état des unités ; atteindre graphical.target prouve le démarrage complet.
+if [[ "${ACCEL}" == "tcg" ]]; then
+    SUCCESS_PATTERN='djerba login:|Reached target graphical\.target'
+fi
 
 result="timeout"
 elapsed=0
@@ -152,7 +159,7 @@ while [[ "${elapsed}" -lt "${TIMEOUT}" ]]; do
         break
     fi
     if [[ -f "${SERIAL_LOG}" ]]; then
-        if grep -qE "${SUCCESS_PATTERN}" "${SERIAL_LOG}"; then
+        if grep -qaE "${SUCCESS_PATTERN}" "${SERIAL_LOG}"; then
             result="success"
             break
         fi

@@ -251,6 +251,10 @@ sha256sum -c djerba-os-1.0.0-amd64.iso.sha256
 * L'assistant **Djerba Welcome** s'ouvre au démarrage : présentation, état
   réseau (D-Bus NetworkManager), matériel détecté, accès rapides (Steam,
   Discover, Firefox, Paramètres) et bouton **Installer Djerba OS**.
+* L'assistant est supervisé : si le rendu OpenGL plante (pilote défaillant,
+  machine virtuelle sans accélération 3D — cas constaté avec llvmpipe sur
+  Xorg dans QEMU), il se relance automatiquement avec le rendu logiciel de
+  QtQuick et un verre teinté sans shaders.
 * L'installateur est lancé par `pkexec` via l'action polkit
   `org.djerba.installer` (`exec.allow_gui`), autorisée sans mot de passe pour
   l'utilisateur live par `99-djerba-installer.rules` : Calamares (Qt 5)
@@ -329,8 +333,9 @@ de verre.
   d'erreur.
 * **Calamares** : barre latérale nuit/turquoise, QSS cohérente, diaporama QML
   de cinq cartes de verre.
-* **Plasma** : Breeze sombre accentué turquoise, flou et contraste KWin,
-  fond d'écran `Djerba` en 4K.
+* **Plasma** : Look-and-Feel `org.djerba.desktop` (Breeze sombre accentué
+  turquoise, fond d'écran `Djerba` en 4K ; éléments non redéfinis hérités
+  nativement de Breeze), flou et contraste KWin.
 * **Djerba Welcome** : verre dépoli calculé une seule fois puis échantillonné
   par chaque panneau (`ShaderEffectSource`), particules, animations
   d'entrée/survol pilotées par le moteur de rendu pour rester à 60 i/s.
@@ -360,6 +365,8 @@ documentés ici plutôt que masqués par des contournements.
 | `live-build` `--bootloader grub-efi` | live-build d'Ubuntu sans EFI | live-build Debian moderne épinglé (voir plus haut) ; `--bootloader` est un alias accepté de `--bootloaders` |
 | Options BTRFS dans `fstab.conf` | depuis Calamares 3.3, `fstab.conf` n'accepte que `crypttabOptions` et `tmpOptions` ; les options de montage sont lues dans `mount.conf` (`mountOptions`) puis **écrites dans `/etc/fstab` par le module fstab** | options déclarées dans `mount.conf`, `fstab.conf` conforme au schéma 3.3 |
 | `flathub.conf` dans `remotes.d` | Flatpak ne lit nativement que `*.flatpakrepo` dans ce répertoire | `flathub.conf` (INI strict demandé) est la source de vérité lue par le hook 0500, qui enregistre le remote avec `flatpak remote-add` |
+| Session et greeter Wayland | SDDM 0.20 de noble utilise un greeter X11 (comme Kubuntu 24.04) ; live-config écrit par défaut un autologin X11 | greeter X11 (Xorg minimal), **session Plasma Wayland** via `10-wayland-autologin.conf` ; l'autologin X11 de live-config est désactivé (`LIVE_CONFIG_NOX11AUTOLOGIN`) ; session X11 conservée en secours |
+| `--apt-recommends false` | live-config, Plasma et SDDM dépendent de recommandations (`user-setup`, `libpam-systemd`, Xorg…) | recommandations indispensables listées explicitement et couvertes par `test-features.sh` |
 | Steam/Wine 32 bits sur ARM64 | indisponibles | exclus par `#if ARCHITECTURES amd64` |
 | `ttyS0` en ARM64 | la machine `virt` expose un PL011 | `ttyAMA0` en arm64, `ttyS0` en x86_64 |
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 import configparser
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -116,9 +117,13 @@ def read_gpus() -> str:
         return "inconnu"
     gpus = []
     for line in output.splitlines():
-        fields = [field.strip('"') for field in line.split('" "')]
-        if len(fields) >= 4 and any(kind in fields[0] for kind in ("VGA", "3D", "Display")):
-            gpus.append(f"{fields[1]} {fields[2]}".strip())
+        # Format « lspci -mm » : emplacement "classe" "fabricant" "modèle" -rXX -pXX "…"
+        try:
+            fields = shlex.split(line)
+        except ValueError:
+            continue
+        if len(fields) >= 4 and any(kind in fields[1] for kind in ("VGA", "3D", "Display")):
+            gpus.append(f"{fields[2]} {fields[3]}".strip())
     return " · ".join(gpus) if gpus else "intégré"
 
 
