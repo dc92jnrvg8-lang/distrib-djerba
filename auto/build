@@ -1,0 +1,12 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Djerba OS — construction live-build (appelée par « lb build »).
+#
+# Compression du squashfs : zstd niveau 19, blocs de 1 Mio. live-build lit
+# nativement MKSQUASHFS_OPTIONS dans binary_rootfs ; la mémoire et le nombre
+# de cœurs sont bornés pour tenir sur les runners GitHub (7 à 16 Gio de RAM).
+set -euo pipefail
+
+export MKSQUASHFS_OPTIONS="-comp zstd -b 1M -Xcompression-level 19 -mem 4G -processors 2"
+
+lb build noauto "${@}" 2>&1 | tee -a build.log

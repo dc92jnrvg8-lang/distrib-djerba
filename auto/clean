@@ -1,0 +1,14 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Djerba OS — nettoyage live-build (appelé par « lb clean »).
+#
+# « lb clean » supprime chroot/, binary/ et les étapes ; on retire en plus
+# les fichiers de configuration régénérés par auto/config afin que chaque
+# « lb config » reparte d'un état connu. Le cache de paquets (cache/) est
+# conservé sauf si « --purge » est passé.
+set -euo pipefail
+
+lb clean noauto "${@}"
+
+rm -f config/binary config/bootstrap config/chroot config/common config/source config/build
+rm -f build.log

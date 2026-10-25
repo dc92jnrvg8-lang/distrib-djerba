@@ -1,0 +1,201 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Djerba OS — chaîne CI/CD : lints -> assets -> ISO -> tests -> publication.
+name: Djerba OS — Build & Test
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    tags: ["v*"]
+    paths-ignore:
+      - "*.zip"
+      - ".github/workflows/bootstrap.yml"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: djerba-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DOCKER_IMAGE: djerba-os-builder:ci
+
+jobs:
+  build:
+    name: ISO ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, arm64]
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+            debarch: amd64
+            qemu_timeout: 900
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            debarch: arm64
+            qemu_timeout: 2400
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
+
+      - name: Compute version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(date -u +%Y.%m).${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "Version : ${version}"
+
+      - name: Install host tooling (lints & assets)
+        shell: bash
+        run: |
+          set -euo pipefail
+          n=0
+          until sudo apt-get update; do
+            n=$((n + 1)); [[ "${n}" -lt 20 ]] || exit 1
+            echo "apt-get update a échoué, nouvel essai dans 5 s"; sleep 5
+          done
+          n=0
+          until sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              shellcheck sudo python3 python3-yaml python3-jinja2 python3-pil python3-cairo \
+              python3-cairosvg python3-pyqt6 python3-pyqt6.qtquick python3-pyqt6.qtsvg python3-dbus \
+              qml6-module-qtquick qml6-module-qtquick-window qml6-module-qtquick-layouts \
+              qml6-module-qtquick-controls qml6-module-qtquick-templates \
+              qml6-module-qtquick-particles qml6-module-qtquick-shapes \
+              qml6-module-qt5compat-graphicaleffects qml6-module-qtqml-workerscript \
+              libqt6svg6 qt6-qpa-plugins fonts-inter fonts-dejavu-core; do
+            n=$((n + 1)); [[ "${n}" -lt 20 ]] || exit 1
+            echo "apt-get install a échoué, nouvel essai dans 5 s"; sleep 5
+          done
+
+      - name: Lints (shellcheck, Python, YAML/INI)
+        run: ./tests/run_local_lints.sh
+
+      - name: Generate assets
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python3 assets_generator/generate_assets.py --version "${{ steps.version.outputs.version }}"
+
+      - name: Restore live-build package cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            cache/packages.bootstrap
+            cache/packages.chroot
+            cache/packages.binary
+          key: lb-packages-${{ matrix.debarch }}-${{ hashFiles('config/package-lists/**', 'auto/config') }}-${{ github.run_id }}
+          restore-keys: |
+            lb-packages-${{ matrix.debarch }}-${{ hashFiles('config/package-lists/**', 'auto/config') }}-
+            lb-packages-${{ matrix.debarch }}-
+
+      - name: Build Docker image & ISO
+        shell: bash
+        run: |
+          set -euo pipefail
+          n=0
+          until docker build --pull -t "${DOCKER_IMAGE}" .; do
+            n=$((n + 1)); [[ "${n}" -lt 3 ]] || exit 1
+            echo "docker build a échoué, nouvel essai dans 15 s"; sleep 15
+          done
+          docker run --rm --privileged \
+            -e DJERBA_VERSION="${{ steps.version.outputs.version }}" \
+            -v "${PWD}:/build" -w /build \
+            "${DOCKER_IMAGE}" ./build.sh --arch "${{ matrix.debarch }}" --skip-lints --skip-assets
+
+      - name: Feature tests (contenu de l'ISO)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --privileged -v "${PWD}:/build" -w /build "${DOCKER_IMAGE}" \
+            ./tests/test-features.sh "artifacts/djerba-os-${{ steps.version.outputs.version }}-${{ matrix.debarch }}.iso"
+
+      - name: QEMU boot test (UEFI, console série)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --privileged -v "${PWD}:/build" -w /build \
+            -e DJERBA_QEMU_TIMEOUT="${{ matrix.qemu_timeout }}" "${DOCKER_IMAGE}" \
+            ./tests/test-iso-qemu.sh "artifacts/djerba-os-${{ steps.version.outputs.version }}-${{ matrix.debarch }}.iso"
+
+      - name: Fix ownership for cache & upload
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" cache artifacts tests/out 2>/dev/null || true
+
+      - name: Split ISO for release (limite GitHub de 2 Gio par fichier)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts
+          iso="djerba-os-${{ steps.version.outputs.version }}-${{ matrix.debarch }}.iso"
+          if [[ "$(stat -c %s "${iso}")" -gt 2000000000 ]]; then
+            split --bytes=1900M --numeric-suffixes=1 --suffix-length=2 "${iso}" "${iso}.part"
+            rm -f "${iso}"
+            echo "ISO découpée : cat ${iso}.part* > ${iso} && sha256sum -c ${iso}.sha256"
+          fi
+
+      - name: Upload QEMU logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-logs-${{ matrix.debarch }}
+          path: tests/out/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: djerba-os-${{ steps.version.outputs.version }}-${{ matrix.debarch }}
+          path: artifacts/
+          compression-level: 0
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download ISOs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: djerba-os-*
+          path: release
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Djerba OS ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            release/*.iso*
+            release/*.packages

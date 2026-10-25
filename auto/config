@@ -1,0 +1,124 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Djerba OS — configuration live-build (appelée par « lb config »).
+#
+# Socle : Ubuntu 24.04 LTS « noble » amorcé par debootstrap, construit avec le
+# live-build Debian moderne. Ce dernier n'ayant plus de mode « ubuntu », la
+# distribution est décrite explicitement : miroirs Ubuntu (ports.ubuntu.com
+# pour arm64), trousseau ubuntu-keyring, composantes Ubuntu et saveur de
+# noyau Ubuntu (lowlatency, ou generic en repli décidé par build.sh).
+#
+# Amorçage : EFI natif via « --bootloaders grub-efi » (shim + GRUB signés
+# Canonical sur amd64), complété par grub-pc sur amd64 pour le BIOS hérité ;
+# image iso-hybrid (CD/DVD ou clé USB, MBR+GPT produits par xorriso).
+#
+# Variables d'environnement reconnues :
+#   DJERBA_ARCH            amd64 | arm64     (défaut : architecture de l'hôte)
+#   DJERBA_KERNEL_FLAVOUR  lowlatency | generic (défaut : lowlatency)
+#   DJERBA_VERSION         version affichée dans l'ISO (défaut : AAAA.MM)
+#   DJERBA_LOCALE          locale de la session live (défaut : fr_FR.UTF-8)
+#   DJERBA_KEYMAP          disposition clavier live (défaut : fr)
+set -euo pipefail
+
+ARCH="${DJERBA_ARCH:-$(dpkg --print-architecture)}"
+FLAVOUR="${DJERBA_KERNEL_FLAVOUR:-lowlatency}"
+VERSION="${DJERBA_VERSION:-$(date -u +%Y.%m)}"
+LOCALE="${DJERBA_LOCALE:-fr_FR.UTF-8}"
+KEYMAP="${DJERBA_KEYMAP:-fr}"
+
+AREAS="main restricted universe multiverse"
+
+case "${ARCH}" in
+    amd64)
+        MIRROR="http://archive.ubuntu.com/ubuntu/"
+        MIRROR_SECURITY="http://security.ubuntu.com/ubuntu/"
+        BOOTLOADERS="grub-efi grub-pc"
+        SECURE_BOOT="enable"
+        SERIAL_CONSOLE="ttyS0"
+        ;;
+    arm64)
+        MIRROR="http://ports.ubuntu.com/ubuntu-ports/"
+        MIRROR_SECURITY="http://ports.ubuntu.com/ubuntu-ports/"
+        BOOTLOADERS="grub-efi"
+        SECURE_BOOT="auto"
+        SERIAL_CONSOLE="ttyAMA0"
+        ;;
+    *)
+        echo "auto/config : architecture non supportée « ${ARCH} »" >&2
+        exit 1
+        ;;
+esac
+
+case "${FLAVOUR}" in
+    lowlatency|generic) ;;
+    *)
+        echo "auto/config : saveur de noyau non supportée « ${FLAVOUR} »" >&2
+        exit 1
+        ;;
+esac
+
+# Console série en premier, tty0 en dernier : tty0 reste /dev/console (Plymouth
+# graphique), tandis que systemd lance un getty sur le port série (tests QEMU
+# headless et serveurs sans écran).
+BOOTAPPEND="boot=live components quiet splash"
+BOOTAPPEND="${BOOTAPPEND} username=djerba user-fullname=Djerba hostname=djerba"
+BOOTAPPEND="${BOOTAPPEND} locales=${LOCALE} keyboard-layouts=${KEYMAP}"
+BOOTAPPEND="${BOOTAPPEND} console=${SERIAL_CONSOLE},115200n8 console=tty0"
+
+lb config noauto \
+    --mode debian \
+    --system live \
+    --architecture "${ARCH}" \
+    --distribution noble \
+    --parent-distribution noble \
+    --archive-areas "${AREAS}" \
+    --parent-archive-areas "${AREAS}" \
+    --mirror-bootstrap "${MIRROR}" \
+    --mirror-chroot "${MIRROR}" \
+    --mirror-chroot-security "${MIRROR_SECURITY}" \
+    --mirror-binary "${MIRROR}" \
+    --mirror-binary-security "${MIRROR_SECURITY}" \
+    --parent-mirror-bootstrap "${MIRROR}" \
+    --parent-mirror-chroot "${MIRROR}" \
+    --parent-mirror-chroot-security "${MIRROR_SECURITY}" \
+    --parent-mirror-binary "${MIRROR}" \
+    --parent-mirror-binary-security "${MIRROR_SECURITY}" \
+    --keyring-packages ubuntu-keyring \
+    --security true \
+    --updates true \
+    --backports false \
+    --proposed-updates false \
+    --apt-recommends false \
+    --apt-source-archives false \
+    --apt-indices true \
+    --apt-options "--yes -o Acquire::Retries=10 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60" \
+    --cache true \
+    --cache-packages true \
+    --cache-indices false \
+    --cache-stages bootstrap \
+    --initsystem systemd \
+    --initramfs live-boot \
+    --linux-packages linux-image \
+    --linux-flavours "${FLAVOUR}" \
+    --firmware-chroot false \
+    --firmware-binary false \
+    --debian-installer none \
+    --memtest none \
+    --win32-loader false \
+    --loadlin false \
+    --binary-images iso-hybrid \
+    --bootloaders "${BOOTLOADERS}" \
+    --uefi-secure-boot "${SECURE_BOOT}" \
+    --bootappend-live "${BOOTAPPEND}" \
+    --chroot-filesystem squashfs \
+    --chroot-squashfs-compression-type zstd \
+    --image-name djerba-os \
+    --iso-application "Djerba OS ${VERSION}" \
+    --iso-publisher "Djerba OS; https://github.com/dc92jnrvg8-lang/distrib-djerba" \
+    --iso-preparer "live-build; Djerba OS builder" \
+    --iso-volume "DJERBA_OS" \
+    --hdd-label "DJERBA_OS" \
+    --checksums sha256 \
+    --zsync false \
+    --source false \
+    "${@}"
