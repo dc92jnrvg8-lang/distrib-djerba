@@ -337,7 +337,7 @@ de verre.
   turquoise, fond d'écran `Djerba` en 4K ; éléments non redéfinis hérités
   nativement de Breeze), flou et contraste KWin.
 * **Djerba Horizon** (Configuration du système → Thème global) : même
-  identité, avec une barre des tâches flottante et centrée — menu Djerba et
+  identité, avec une barre des tâches centrée — menu Djerba et
   applications au centre, notifications à droite — à la manière de
   Windows 11. Les thèmes tiers imitant Windows 11 (Fluent, Win11OS…) restent
   installables depuis « Obtenir de nouveaux thèmes globaux », ce qui

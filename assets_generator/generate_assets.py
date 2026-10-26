@@ -335,7 +335,7 @@ Image=Djerba
 """
 
 
-# Disposition « Horizon » : barre des tâches flottante et centrée (menu et
+# Disposition « Horizon » : barre des tâches centrée (menu et
 # applications au centre, zone de notification à droite), à la manière de
 # Windows 11, construite avec l'API de script native de Plasma 5.27.
 HORIZON_LAYOUT = """\
@@ -343,7 +343,6 @@ HORIZON_LAYOUT = """\
 var panel = new Panel;
 panel.location = "bottom";
 panel.height = 2 * Math.floor(gridUnit * 2.75 / 2);
-panel.floating = true;
 
 panel.addWidget("org.kde.plasma.panelspacer");
 
@@ -385,17 +384,13 @@ def draw_taskbar_preview(image: Image.Image, centered: bool) -> Image.Image:
     icon = round(bar_h * 0.56)
     gap = round(icon * 0.55)
     accent = (*hex_to_rgb(COLORS["turquoise"]), 255)
+    box = (0, height - bar_h, width, height)
+    draw.rectangle(box, fill=(10, 20, 40, 225))
     if centered:
-        margin = round(height * 0.02)
-        box = (margin, height - bar_h - margin, width - margin, height - margin)
-        draw.rounded_rectangle(box, radius=round(bar_h * 0.3), fill=(10, 20, 40, 215),
-                               outline=(255, 255, 255, 60), width=1)
         count = 6
         total = count * icon + (count - 1) * gap
         x = (width - total) // 2
     else:
-        box = (0, height - bar_h, width, height)
-        draw.rectangle(box, fill=(10, 20, 40, 225))
         count = 6
         x = round(bar_h * 0.3)
     y = box[1] + (bar_h - icon) // 2
@@ -450,7 +445,7 @@ def generate_look_and_feel(ctx: Context, wallpaper: Path) -> None:
     build_look_and_feel(ctx, wallpaper, "org.djerba.desktop", "Djerba",
                         "Djerba OS — lagon nocturne et verre dépoli", layout=None)
     build_look_and_feel(ctx, wallpaper, "org.djerba.horizon.desktop", "Djerba Horizon",
-                        "Djerba OS — barre des tâches flottante et centrée", layout=HORIZON_LAYOUT)
+                        "Djerba OS — barre des tâches centrée, à la manière de Windows 11", layout=HORIZON_LAYOUT)
 
 
 # --------------------------------------------------------------------------
