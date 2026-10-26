@@ -336,6 +336,12 @@ de verre.
 * **Plasma** : Look-and-Feel `org.djerba.desktop` (Breeze sombre accentué
   turquoise, fond d'écran `Djerba` en 4K ; éléments non redéfinis hérités
   nativement de Breeze), flou et contraste KWin.
+* **Djerba Horizon** (Configuration du système → Thème global) : même
+  identité, avec une barre des tâches flottante et centrée — menu Djerba et
+  applications au centre, notifications à droite — à la manière de
+  Windows 11. Les thèmes tiers imitant Windows 11 (Fluent, Win11OS…) restent
+  installables depuis « Obtenir de nouveaux thèmes globaux », ce qui
+  nécessite une connexion Internet.
 * **Djerba Welcome** : verre dépoli calculé une seule fois puis échantillonné
   par chaque panneau (`ShaderEffectSource`), particules, animations
   d'entrée/survol pilotées par le moteur de rendu pour rester à 60 i/s.
@@ -394,6 +400,7 @@ documentés ici plutôt que masqués par des contournements.
 | Coupure réseau pendant `lb build` | `build.sh` relance `lb build` qui reprend à la dernière étape terminée ; APT est configuré avec `Acquire::Retries=10` |
 | Construction arm64 sur hôte x86_64 | non supportée : utilisez un hôte/runner ARM64 natif |
 | L'ISO ne démarre pas en Secure Boot | vérifiez `tests/test-features.sh` (« Shim signé ») ; désactivez Secure Boot pour un firmware non Microsoft |
+| Curseur invisible ou décalé dans une zone de l'écran (machine virtuelle) | défaut du curseur matériel DRM des VM sous KWin Wayland : `/etc/xdg/plasma-workspace/env/10-djerba-vm-cursor.sh` active le curseur logiciel (`KWIN_FORCE_SW_CURSOR=1`) quand `systemd-detect-virt --vm` détecte une VM ; sur une machine physique concernée, ajoutez `export KWIN_FORCE_SW_CURSOR=1` dans `~/.config/plasma-workspace/env/curseur.sh` |
 | L'assistant ne s'ouvre plus | `~/.config/djerba-welcomerc` → `Autostart=true`, ou lancez `djerba-welcome` |
 | Installer sans l'assistant | menu « Installer Djerba OS » ou `djerba-welcome --install` |
 

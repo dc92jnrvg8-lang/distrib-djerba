@@ -1,12 +1,6 @@
 [Compositing]
 Backend=OpenGL
 Enabled=true
-GLCore=true
-LatencyPolicy=Low
-MaxFPS=240
-RefreshRate=0
-AllowTearing=true
-WindowsBlockCompositing=true
 
 [Plugins]
 blurEnabled=true
@@ -20,12 +14,9 @@ BlurStrength=12
 NoiseStrength=4
 
 [Windows]
-BorderlessMaximizedWindows=false
 FocusPolicy=ClickToFocus
 
 [org.kde.kdecoration2]
-BorderSize=None
-BorderSizeAuto=false
 library=org.kde.breeze
 theme=Breeze
 ButtonsOnLeft=

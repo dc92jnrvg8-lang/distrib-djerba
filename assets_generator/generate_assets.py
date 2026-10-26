@@ -335,19 +335,92 @@ Image=Djerba
 """
 
 
-def generate_look_and_feel(ctx: Context, wallpaper: Path) -> None:
-    """Paquet Look-and-Feel : les éléments absents (dispositions, écran de
-    verrouillage…) sont fournis nativement par le paquet de repli Breeze."""
-    base = reset_dir(CHROOT / "usr" / "share" / "plasma" / "look-and-feel" / "org.djerba.desktop")
+# Disposition « Horizon » : barre des tâches flottante et centrée (menu et
+# applications au centre, zone de notification à droite), à la manière de
+# Windows 11, construite avec l'API de script native de Plasma 5.27.
+HORIZON_LAYOUT = """\
+// Djerba OS — disposition « Horizon » (générée par assets_generator).
+var panel = new Panel;
+panel.location = "bottom";
+panel.height = 2 * Math.floor(gridUnit * 2.75 / 2);
+panel.floating = true;
+
+panel.addWidget("org.kde.plasma.panelspacer");
+
+var kickoff = panel.addWidget("org.kde.plasma.kickoff");
+kickoff.currentConfigGroup = ["Shortcuts"];
+kickoff.writeConfig("global", "Alt+F1");
+kickoff.currentConfigGroup = ["General"];
+kickoff.writeConfig("icon", "djerba-welcome");
+
+var tasks = panel.addWidget("org.kde.plasma.icontasks");
+tasks.currentConfigGroup = ["General"];
+tasks.writeConfig("launchers", [
+    "applications:org.kde.dolphin.desktop",
+    "applications:firefox.desktop",
+    "applications:org.kde.discover.desktop",
+    "applications:steam.desktop",
+    "applications:systemsettings.desktop"
+]);
+
+panel.addWidget("org.kde.plasma.panelspacer");
+panel.addWidget("org.kde.plasma.systemtray");
+panel.addWidget("org.kde.plasma.digitalclock");
+panel.addWidget("org.kde.plasma.showdesktop");
+
+var desktopsArray = desktopsForActivity(currentActivity());
+for (var j = 0; j < desktopsArray.length; j++) {
+    desktopsArray[j].wallpaperPlugin = "org.kde.image";
+}
+"""
+
+
+def draw_taskbar_preview(image: Image.Image, centered: bool) -> Image.Image:
+    """Ajoute une barre des tâches schématique à l'aperçu du thème global."""
+    preview = image.convert("RGBA")
+    overlay = Image.new("RGBA", preview.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    width, height = preview.size
+    bar_h = round(height * 0.075)
+    icon = round(bar_h * 0.56)
+    gap = round(icon * 0.55)
+    accent = (*hex_to_rgb(COLORS["turquoise"]), 255)
+    if centered:
+        margin = round(height * 0.02)
+        box = (margin, height - bar_h - margin, width - margin, height - margin)
+        draw.rounded_rectangle(box, radius=round(bar_h * 0.3), fill=(10, 20, 40, 215),
+                               outline=(255, 255, 255, 60), width=1)
+        count = 6
+        total = count * icon + (count - 1) * gap
+        x = (width - total) // 2
+    else:
+        box = (0, height - bar_h, width, height)
+        draw.rectangle(box, fill=(10, 20, 40, 225))
+        count = 6
+        x = round(bar_h * 0.3)
+    y = box[1] + (bar_h - icon) // 2
+    for index in range(count):
+        fill = accent if index == 0 else (255, 255, 255, 150)
+        draw.rounded_rectangle((x, y, x + icon, y + icon), radius=round(icon * 0.25), fill=fill)
+        x += icon + gap
+    preview.alpha_composite(overlay)
+    return preview.convert("RGB")
+
+
+def build_look_and_feel(ctx: Context, wallpaper: Path, package_id: str, name: str,
+                        description: str, layout: str | None) -> None:
+    """Paquet Look-and-Feel : les éléments absents (écran de verrouillage,
+    écran de démarrage…) sont fournis nativement par le paquet de repli Breeze."""
+    base = reset_dir(CHROOT / "usr" / "share" / "plasma" / "look-and-feel" / package_id)
     metadata = {
         "KPackageStructure": "Plasma/LookAndFeel",
         "KPlugin": {
             "Authors": [{"Name": "Djerba OS"}],
             "Category": "",
-            "Description": "Djerba OS — lagon nocturne et verre dépoli",
-            "Id": "org.djerba.desktop",
+            "Description": description,
+            "Id": package_id,
             "License": "GPL-3.0-or-later",
-            "Name": "Djerba",
+            "Name": name,
             "ServiceTypes": ["Plasma/LookAndFeel"],
             "Version": ctx.version,
             "Website": PROJECT_URL,
@@ -362,12 +435,22 @@ def generate_look_and_feel(ctx: Context, wallpaper: Path) -> None:
         white=",".join(str(v) for v in hex_to_rgb(COLORS["white"])),
         muted=",".join(str(v) for v in hex_to_rgb(COLORS["muted"])),
     ))
+    if layout is not None:
+        write_text(base / "contents" / "layouts" / "org.kde.plasma.desktop-layout.js", layout)
     previews = base / "contents" / "previews"
     previews.mkdir(parents=True)
-    image = Image.open(wallpaper).convert("RGB")
+    image = draw_taskbar_preview(Image.open(wallpaper).resize((1280, 720), Image.LANCZOS),
+                                 centered=layout is not None)
     image.resize((640, 360), Image.LANCZOS).save(previews / "preview.png", optimize=True)
-    image.resize((1280, 720), Image.LANCZOS).save(previews / "fullscreenpreview.jpg", quality=90)
-    log(f"Look-and-Feel Plasma -> {base.relative_to(ROOT)}")
+    image.save(previews / "fullscreenpreview.jpg", quality=90)
+    log(f"Look-and-Feel Plasma « {name} » -> {base.relative_to(ROOT)}")
+
+
+def generate_look_and_feel(ctx: Context, wallpaper: Path) -> None:
+    build_look_and_feel(ctx, wallpaper, "org.djerba.desktop", "Djerba",
+                        "Djerba OS — lagon nocturne et verre dépoli", layout=None)
+    build_look_and_feel(ctx, wallpaper, "org.djerba.horizon.desktop", "Djerba Horizon",
+                        "Djerba OS — barre des tâches flottante et centrée", layout=HORIZON_LAYOUT)
 
 
 # --------------------------------------------------------------------------

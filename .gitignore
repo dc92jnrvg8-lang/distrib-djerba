@@ -60,3 +60,4 @@ __pycache__/
 /.lock
 /config/package-lists/live.list.chroot
 /config/includes.chroot/usr/share/plasma/look-and-feel/org.djerba.desktop/
+/config/includes.chroot/usr/share/plasma/look-and-feel/org.djerba.horizon.desktop/

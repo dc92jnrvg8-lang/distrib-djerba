@@ -42,11 +42,16 @@ shebang_of() {
 }
 
 SHELL_SCRIPTS=()
+SOURCED_FRAGMENTS=()
 PYTHON_SCRIPTS=()
 while IFS= read -r -d '' file; do
     [[ -f "${file}" ]] || continue
     case "${file}" in
         *.py) PYTHON_SCRIPTS+=("${file}"); continue ;;
+    esac
+    case "${file}" in
+        # Fragments shell sourcés (sans shebang) : environnement de session Plasma.
+        */plasma-workspace/env/*.sh) SOURCED_FRAGMENTS+=("${file}"); continue ;;
     esac
     first_line="$(shebang_of "${file}")"
     case "${first_line}" in
@@ -61,6 +66,16 @@ for script in "${SHELL_SCRIPTS[@]}"; do
         pass "${script}"
     else
         fail "${script}"
+    fi
+done
+
+section "shellcheck — fragments sourcés (${#SOURCED_FRAGMENTS[@]})"
+# Sourcés par un processus parent : pas de « set -e » (il le contaminerait).
+for fragment in "${SOURCED_FRAGMENTS[@]}"; do
+    if shellcheck --shell=sh --severity=style "${fragment}" && ! grep -qE '^set -e' "${fragment}"; then
+        pass "${fragment}"
+    else
+        fail "${fragment}"
     fi
 done
 
