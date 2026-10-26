@@ -188,6 +188,8 @@ case "${result}" in
         else
             echo "[qemu] démarrage système vérifié (émulation TCG) ; session graphique non vérifiable sans KVM"
         fi
+        sleep "${DESKTOP_WAIT}"
+        sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "${SERIAL_LOG}" > "${SERIAL_TEXT}"
         # /etc/issue (avant l'invite du getty) affiche PRETTY_NAME ; sans
         # invite (TCG), seule la bannière « Welcome to … » de systemd est
         # éventuellement disponible.
@@ -200,7 +202,6 @@ case "${result}" in
             grep -aE 'Welcome to' "${SERIAL_TEXT}" | tail -n 1 >&2 || true
             exit 1
         fi
-        sleep "${DESKTOP_WAIT}"
         PPM="${OUT}/desktop-${ARCH}.ppm"
         if qmp screendump "{\"filename\": \"${PPM}\"}"; then
             sleep 2
