@@ -34,11 +34,12 @@ case "$(basename "${ISO}")" in
 esac
 
 SERIAL_LOG="${OUT}/serial-${ARCH}.log"
+SERIAL_TEXT="${OUT}/serial-${ARCH}.txt"
 QEMU_LOG="${OUT}/qemu-${ARCH}.log"
 QMP_SOCKET="${OUT}/qmp-${ARCH}.sock"
 SCREENSHOT="${OUT}/desktop-${ARCH}.png"
 VARS="${OUT}/efivars-${ARCH}.fd"
-rm -f "${SERIAL_LOG}" "${QEMU_LOG}" "${QMP_SOCKET}" "${SCREENSHOT}"
+rm -f "${SERIAL_LOG}" "${SERIAL_TEXT}" "${QEMU_LOG}" "${QMP_SOCKET}" "${SCREENSHOT}"
 
 ACCEL="tcg"
 if [[ -r /dev/kvm && -w /dev/kvm ]]; then
@@ -161,11 +162,13 @@ while [[ "${elapsed}" -lt "${TIMEOUT}" ]]; do
         break
     fi
     if [[ -f "${SERIAL_LOG}" ]]; then
-        if grep -qaE "${SUCCESS_PATTERN}" "${SERIAL_LOG}"; then
+        # systemd colore l'état des unités : séquences ANSI retirées avant analyse.
+        sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "${SERIAL_LOG}" > "${SERIAL_TEXT}"
+        if grep -qaE "${SUCCESS_PATTERN}" "${SERIAL_TEXT}"; then
             result="success"
             break
         fi
-        if grep -qaE "${FAILURE_PATTERN}" "${SERIAL_LOG}"; then
+        if grep -qaE "${FAILURE_PATTERN}" "${SERIAL_TEXT}"; then
             result="failure"
             break
         fi
@@ -180,7 +183,7 @@ done
 echo "[qemu] résultat : ${result} après ${elapsed} s"
 case "${result}" in
     success)
-        if grep -qa 'djerba login:' "${SERIAL_LOG}"; then
+        if grep -qa 'djerba login:' "${SERIAL_TEXT}"; then
             echo "[qemu] invite de connexion atteinte ; attente de la session graphique (${DESKTOP_WAIT} s)"
         else
             echo "[qemu] démarrage système vérifié (émulation TCG) ; session graphique non vérifiable sans KVM"
