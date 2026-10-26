@@ -160,8 +160,12 @@ jobs:
             echo "ISO découpée : cat ${iso}.part* > ${iso} && sha256sum -c ${iso}.sha256"
           fi
 
+      # Le quota de stockage d'artefacts GitHub ne doit pas faire échouer un
+      # build de branche dont tous les tests sont passés ; sur un tag, les ISO
+      # sont indispensables au job release : l'échec reste bloquant.
       - name: Upload QEMU logs
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: qemu-logs-${{ matrix.debarch }}
@@ -170,12 +174,13 @@ jobs:
           retention-days: 14
 
       - name: Upload ISO
+        continue-on-error: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/upload-artifact@v4
         with:
           name: djerba-os-${{ steps.version.outputs.version }}-${{ matrix.debarch }}
           path: artifacts/
           compression-level: 0
-          retention-days: 14
+          retention-days: ${{ startsWith(github.ref, 'refs/tags/') && 14 || 3 }}
 
   release:
     name: Publish GitHub Release
