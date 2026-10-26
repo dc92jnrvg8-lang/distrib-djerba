@@ -1,0 +1,16 @@
+#!/bin/sh
+# Djerba OS — djerba-branding : déroutage de /usr/lib/os-release (base-files).
+# Les conffiles (/etc/issue…) ne sont jamais déroutés (Charte Debian 10.7.4).
+set -e
+
+divert() {
+    dpkg-divert --package djerba-branding --add --rename --divert "$1.debian" "$1" >/dev/null
+}
+
+case "$1" in
+    install|upgrade)
+        divert /usr/lib/os-release
+        ;;
+esac
+
+exit 0

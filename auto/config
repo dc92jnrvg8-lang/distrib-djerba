@@ -2,45 +2,37 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Djerba OS — configuration live-build (appelée par « lb config »).
 #
-# Socle : Ubuntu 24.04 LTS « noble » amorcé par debootstrap, construit avec le
-# live-build Debian moderne. Ce dernier n'ayant plus de mode « ubuntu », la
-# distribution est décrite explicitement : miroirs Ubuntu (ports.ubuntu.com
-# pour arm64), trousseau ubuntu-keyring, composantes Ubuntu et saveur de
-# noyau Ubuntu (lowlatency, ou generic en repli décidé par build.sh).
+# Socle : Debian 13 « trixie » (main, contrib, non-free, non-free-firmware)
+# amorcé par debootstrap. Noyau Debian 6.12 à préemption dynamique, réglé en
+# préemption complète (« preempt=full ») pour une latence basse en jeu.
 #
-# Amorçage : EFI natif via « --bootloaders grub-efi » (shim + GRUB signés
-# Canonical sur amd64), complété par grub-pc sur amd64 pour le BIOS hérité ;
-# image iso-hybrid (CD/DVD ou clé USB, MBR+GPT produits par xorriso).
+# Amorçage : EFI natif via « --bootloaders grub-efi » (shim + GRUB signés par
+# Debian : Secure Boot), complété par grub-pc sur amd64 pour le BIOS hérité ;
+# image iso-hybrid (CD/DVD ou clé USB).
 #
 # Variables d'environnement reconnues :
-#   DJERBA_ARCH            amd64 | arm64     (défaut : architecture de l'hôte)
-#   DJERBA_KERNEL_FLAVOUR  lowlatency | generic (défaut : lowlatency)
-#   DJERBA_VERSION         version affichée dans l'ISO (défaut : AAAA.MM)
-#   DJERBA_LOCALE          locale de la session live (défaut : fr_FR.UTF-8)
-#   DJERBA_KEYMAP          disposition clavier live (défaut : fr)
+#   DJERBA_ARCH     amd64 | arm64     (défaut : architecture de l'hôte)
+#   DJERBA_VERSION  version affichée dans l'ISO (défaut : AAAA.MM)
+#   DJERBA_LOCALE   locale de la session live (défaut : fr_FR.UTF-8)
+#   DJERBA_KEYMAP   disposition clavier live (défaut : fr)
 set -euo pipefail
 
 ARCH="${DJERBA_ARCH:-$(dpkg --print-architecture)}"
-FLAVOUR="${DJERBA_KERNEL_FLAVOUR:-lowlatency}"
 VERSION="${DJERBA_VERSION:-$(date -u +%Y.%m)}"
 LOCALE="${DJERBA_LOCALE:-fr_FR.UTF-8}"
 KEYMAP="${DJERBA_KEYMAP:-fr}"
 
-AREAS="main restricted universe multiverse"
+AREAS="main contrib non-free non-free-firmware"
+MIRROR="http://deb.debian.org/debian/"
+MIRROR_SECURITY="http://security.debian.org/debian-security/"
 
 case "${ARCH}" in
     amd64)
-        MIRROR="http://archive.ubuntu.com/ubuntu/"
-        MIRROR_SECURITY="http://security.ubuntu.com/ubuntu/"
         BOOTLOADERS="grub-efi grub-pc"
-        SECURE_BOOT="enable"
         SERIAL_CONSOLE="ttyS0"
         ;;
     arm64)
-        MIRROR="http://ports.ubuntu.com/ubuntu-ports/"
-        MIRROR_SECURITY="http://ports.ubuntu.com/ubuntu-ports/"
         BOOTLOADERS="grub-efi"
-        SECURE_BOOT="auto"
         SERIAL_CONSOLE="ttyAMA0"
         ;;
     *)
@@ -49,18 +41,10 @@ case "${ARCH}" in
         ;;
 esac
 
-case "${FLAVOUR}" in
-    lowlatency|generic) ;;
-    *)
-        echo "auto/config : saveur de noyau non supportée « ${FLAVOUR} »" >&2
-        exit 1
-        ;;
-esac
-
 # Console série en premier, tty0 en dernier : tty0 reste /dev/console (Plymouth
 # graphique), tandis que systemd lance un getty sur le port série (tests QEMU
 # headless et serveurs sans écran).
-BOOTAPPEND="boot=live components quiet splash"
+BOOTAPPEND="boot=live components quiet splash preempt=full"
 BOOTAPPEND="${BOOTAPPEND} username=djerba user-fullname=Djerba hostname=djerba"
 BOOTAPPEND="${BOOTAPPEND} locales=${LOCALE} keyboard-layouts=${KEYMAP}"
 BOOTAPPEND="${BOOTAPPEND} console=${SERIAL_CONSOLE},115200n8 console=tty0"
@@ -69,8 +53,7 @@ lb config noauto \
     --mode debian \
     --system live \
     --architecture "${ARCH}" \
-    --distribution noble \
-    --parent-distribution noble \
+    --distribution trixie \
     --archive-areas "${AREAS}" \
     --parent-archive-areas "${AREAS}" \
     --mirror-bootstrap "${MIRROR}" \
@@ -78,12 +61,6 @@ lb config noauto \
     --mirror-chroot-security "${MIRROR_SECURITY}" \
     --mirror-binary "${MIRROR}" \
     --mirror-binary-security "${MIRROR_SECURITY}" \
-    --parent-mirror-bootstrap "${MIRROR}" \
-    --parent-mirror-chroot "${MIRROR}" \
-    --parent-mirror-chroot-security "${MIRROR_SECURITY}" \
-    --parent-mirror-binary "${MIRROR}" \
-    --parent-mirror-binary-security "${MIRROR_SECURITY}" \
-    --keyring-packages ubuntu-keyring \
     --security true \
     --updates true \
     --backports false \
@@ -99,7 +76,7 @@ lb config noauto \
     --initsystem systemd \
     --initramfs live-boot \
     --linux-packages linux-image \
-    --linux-flavours "${FLAVOUR}" \
+    --linux-flavours "${ARCH}" \
     --firmware-chroot false \
     --firmware-binary false \
     --debian-installer none \
@@ -108,7 +85,7 @@ lb config noauto \
     --loadlin false \
     --binary-images iso-hybrid \
     --bootloaders "${BOOTLOADERS}" \
-    --uefi-secure-boot "${SECURE_BOOT}" \
+    --uefi-secure-boot enable \
     --bootappend-live "${BOOTAPPEND}" \
     --chroot-filesystem squashfs \
     --chroot-squashfs-compression-type zstd \

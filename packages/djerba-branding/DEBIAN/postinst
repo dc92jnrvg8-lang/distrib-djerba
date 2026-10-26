@@ -1,0 +1,29 @@
+#!/bin/sh
+# Djerba OS — djerba-branding : rafraîchit les caches et la configuration GRUB.
+set -e
+
+case "$1" in
+    configure)
+        # Les images live-build remplacent le lien /etc/os-release par une
+        # copie (déroutage local) enrichie de IMAGE_ID et BUILD_ID : la copie
+        # est régénérée depuis /usr/lib/os-release en conservant ces champs.
+        if [ -f /etc/os-release ] && [ ! -L /etc/os-release ]; then
+            metadata="$(grep -E '^(IMAGE_ID|BUILD_ID)=' /etc/os-release || true)"
+            cp /usr/lib/os-release /etc/os-release.djerba-new
+            if [ -n "${metadata}" ]; then
+                printf '%s\n' "${metadata}" >> /etc/os-release.djerba-new
+            fi
+            mv /etc/os-release.djerba-new /etc/os-release
+        fi
+        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            gtk-update-icon-cache --force --quiet /usr/share/icons/hicolor || true
+        fi
+        # Système installé : régénère grub.cfg (nom, thème, paramètres noyau).
+        # Absent dans le chroot de construction, où aucun grub.cfg n'existe.
+        if [ -x /usr/sbin/update-grub ] && [ -e /boot/grub/grub.cfg ]; then
+            update-grub || echo "djerba-branding : update-grub a échoué, configuration GRUB inchangée." >&2
+        fi
+        ;;
+esac
+
+exit 0

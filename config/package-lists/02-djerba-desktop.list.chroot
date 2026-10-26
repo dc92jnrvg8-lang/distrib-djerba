@@ -1,17 +1,13 @@
-# Djerba OS — bureau KDE Plasma (Wayland), installateur et multimédia.
-# Ubuntu 24.04 fournit Plasma 5.27 LTS (Qt 5) ; l'assistant d'accueil
-# utilise Qt 6 / PyQt6.
+# Djerba OS — bureau KDE Plasma 6 (Wayland), installateur et multimédia.
 
-# --- Plasma Wayland ----------------------------------------------------------
+# --- Plasma 6 ----------------------------------------------------------------
 plasma-desktop
 plasma-workspace
-plasma-workspace-wayland
 kwin-wayland
-kwin-wayland-backend-drm
+kwin-x11
 xwayland
-qtwayland5
 qt6-wayland
-frameworkintegration
+plasma-integration
 kde-cli-tools
 polkit-kde-agent-1
 systemsettings
@@ -20,18 +16,15 @@ powerdevil
 plasma-nm
 plasma-pa
 bluedevil
-khotkeys
-kio-extras
 kinfocenter
 kmenuedit
 ksystemstats
 kde-config-screenlocker
 kde-config-gtk-style
+kde-config-plymouth
 plasma-firewall
-libpam-systemd
-shared-mime-info
-desktop-file-utils
-hicolor-icon-theme
+plasma-systemmonitor
+kio-extras
 kwalletmanager
 libpam-kwallet5
 xdg-user-dirs
@@ -39,7 +32,9 @@ konsole
 dolphin
 kate
 ark
-plasma-systemmonitor
+gwenview
+okular
+kde-spectacle
 
 # --- Apparence ---------------------------------------------------------------
 breeze
@@ -48,27 +43,18 @@ breeze-icon-theme
 breeze-cursor-theme
 fonts-inter
 fonts-noto-color-emoji
+fonts-noto-core
 fonts-dejavu-core
 
-# --- Session de secours X11 et greeter SDDM (X11, comme Kubuntu 24.04) --------
-kwin-x11
-xserver-xorg-core
-xserver-xorg-input-libinput
-
-# --- Gestionnaire de connexion (thème Djerba en QML Qt 5) ----------------------
+# --- Gestionnaire de connexion (thème Djerba en QML Qt 6) ----------------------
 sddm
 sddm-theme-breeze
 kde-config-sddm
-qml-module-qtquick2
-qml-module-qtquick-controls2
-qml-module-qtquick-layouts
-qml-module-qtquick-particles2
-qml-module-qtgraphicaleffects
+xserver-xorg-core
+xserver-xorg-input-libinput
 
-# --- Installateur --------------------------------------------------------------
-# kpmcore est fourni par libkpmcore12, tiré par calamares.
+# --- Installateur ----------------------------------------------------------------
 calamares
-libkpmcore12
 
 # --- Applications et portails -------------------------------------------------
 flatpak
@@ -77,6 +63,9 @@ plasma-discover-backend-flatpak
 xdg-desktop-portal
 xdg-desktop-portal-kde
 xdg-desktop-portal-gtk
+shared-mime-info
+desktop-file-utils
+hicolor-icon-theme
 
 # --- Audio ---------------------------------------------------------------------
 pipewire
@@ -85,13 +74,9 @@ pipewire-alsa
 wireplumber
 libspa-0.2-bluetooth
 
-# --- Moteurs QML de l'assistant d'accueil (Qt 6.4 d'Ubuntu 24.04) -------------
-# Qt 6.4 ne publie pas encore QtQuick.Effects (Qt 6.5+) ni de module QML SVG
-# séparé : le verre dépoli s'appuie sur Qt5Compat.GraphicalEffects et le
-# rendu SVG sur le greffon image de libqt6svg6.
+# --- Moteurs QML (assistant d'accueil, thème SDDM, diaporama) ------------------
 python3-pyqt6
 python3-pyqt6.qtquick
-python3-dbus
 qml6-module-qtquick
 qml6-module-qtquick-window
 qml6-module-qtquick-layouts
@@ -99,7 +84,9 @@ qml6-module-qtquick-controls
 qml6-module-qtquick-templates
 qml6-module-qtquick-particles
 qml6-module-qtquick-shapes
+qml6-module-qtquick-effects
 qml6-module-qtqml-workerscript
 qml6-module-qt5compat-graphicaleffects
 libqt6svg6
+qt6-svg-plugins
 qt6-qpa-plugins

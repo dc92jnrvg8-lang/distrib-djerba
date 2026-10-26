@@ -1,30 +1,36 @@
-# Djerba OS — socle système (Ubuntu 24.04 LTS « noble »).
+# Djerba OS — socle système (Debian 13 « trixie »).
 # Format natif live-build : un paquet par ligne, « #if VARIABLE valeur »
 # évalué contre la configuration (auto/config), sans imbrication.
+# Le noyau (linux-image-amd64 / -arm64) est installé par --linux-flavours.
 
-# --- Noyau bas-latence (repli generic décidé par build.sh) ---------------
-# La saveur est passée à « lb config --linux-flavours » ; ces blocs rendent
-# le choix explicite et tirent les métapaquets associés.
-#if LINUX_FLAVOURS_WITH_ARCH lowlatency
-linux-image-lowlatency
-linux-tools-lowlatency
-#endif
-#if LINUX_FLAVOURS_WITH_ARCH generic
-linux-image-generic
-linux-tools-generic
-#endif
-linux-firmware
+# --- Micrologiciels (non-free-firmware) ---------------------------------------
+# Liste explicite et reproductible : graphiques, Wi-Fi, Bluetooth et audio
+# des matériels courants. Les paquets « *-installer » (téléchargement au
+# moment de l'installation) sont volontairement exclus.
+firmware-linux
+firmware-misc-nonfree
+firmware-amd-graphics
+firmware-intel-graphics
+firmware-nvidia-graphics
+firmware-iwlwifi
+firmware-realtek
+firmware-atheros
+firmware-brcm80211
+firmware-mediatek
+firmware-libertas
+firmware-ti-connectivity
 firmware-sof-signed
+firmware-intel-sound
+firmware-cirrus
+bluez-firmware
 
 # --- Session live ------------------------------------------------------------
 live-boot
-live-boot-initramfs-tools
 live-config
 live-config-systemd
 live-tools
 # Recommandations de live-config indispensables avec --apt-recommends false :
-# user-setup crée l'utilisateur live (composant 0030-user-setup), iproute2
-# sert aux composants réseau.
+# user-setup crée l'utilisateur live (composant user-setup).
 user-setup
 iproute2
 squashfs-tools
@@ -44,6 +50,8 @@ shim-signed
 grub-efi-amd64
 grub-efi-amd64-signed
 grub-pc-bin
+intel-microcode
+amd64-microcode
 #endif
 #if ARCHITECTURES arm64
 grub-efi-arm64
@@ -62,10 +70,12 @@ parted
 fdisk
 cryptsetup
 cryptsetup-initramfs
+smartmontools
 
-# --- Mémoire et performances -------------------------------------------------
+# --- Mémoire, énergie et performances -----------------------------------------
 zram-tools
 irqbalance
+power-profiles-daemon
 
 # --- Démarrage graphique -----------------------------------------------------
 plymouth
@@ -84,12 +94,22 @@ curl
 ca-certificates
 gnupg
 
-# --- Sécurité ------------------------------------------------------------------
+# --- Sécurité et confidentialité -----------------------------------------------
 apparmor
 apparmor-utils
 apparmor-profiles
 ufw
+nftables
 unattended-upgrades
+apt-listchanges
+tor
+torsocks
+macchanger
+
+# --- Antivirus -------------------------------------------------------------------
+clamav
+clamav-freshclam
+clamtk
 
 # --- Matériel graphique --------------------------------------------------------
 libgl1-mesa-dri
@@ -103,6 +123,7 @@ intel-media-va-driver
 
 # --- Outils de base --------------------------------------------------------------
 dbus-user-session
+libpam-systemd
 polkitd
 pkexec
 pciutils
@@ -111,3 +132,7 @@ bash-completion
 nano
 less
 python3
+python3-yaml
+python3-dbus
+xdg-utils
+libnotify-bin

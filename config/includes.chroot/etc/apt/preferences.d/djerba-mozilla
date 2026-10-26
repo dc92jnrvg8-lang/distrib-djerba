@@ -1,9 +1,5 @@
-# Djerba OS — Firefox provient exclusivement du dépôt Mozilla : le paquet
-# « firefox » d'Ubuntu 24.04 n'est qu'une transition vers snap.
+# Djerba OS — Firefox (version courante, .deb natif) provient du dépôt APT
+# officiel de Mozilla ; Debian ne publie que firefox-esr.
 Package: firefox*
 Pin: origin packages.mozilla.org
 Pin-Priority: 1000
-
-Package: firefox*
-Pin: release o=Ubuntu
-Pin-Priority: -1

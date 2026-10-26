@@ -61,3 +61,8 @@ __pycache__/
 /config/package-lists/live.list.chroot
 /config/includes.chroot/usr/share/plasma/look-and-feel/org.djerba.desktop/
 /config/includes.chroot/usr/share/plasma/look-and-feel/org.djerba.horizon.desktop/
+
+# --- Sorties du générateur et des paquets ------------------------------------
+/build/
+/config/packages.chroot/
+/config/includes.chroot/etc/calamares/modules/netinstall.conf

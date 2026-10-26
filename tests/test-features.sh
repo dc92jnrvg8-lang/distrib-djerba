@@ -10,7 +10,8 @@
 # Niveau 2 (root) : le squashfs est monté en lecture seule sous un overlay
 #   tmpfs puis des contrôles sont exécutés dans un chroot : visudo, polkit,
 #   imports Python/PyQt6/D-Bus, chargement QML réel de l'assistant d'accueil,
-#   remote Flathub, dépôt Mozilla, absence de snapd, services activés.
+#   identité Djerba OS (os-release, paquets djerba-*), catalogue
+#   d'applications, remote Flathub, dépôt Mozilla, services activés.
 set -euo pipefail
 
 ISO="${1:-}"
@@ -90,23 +91,35 @@ sq_mode() { grep -E " squashfs-root$1\$" "${WORK}/rootfs.list" | awk '{print $1}
 
 check "Compression zstd" sh -c "unsquashfs -s '${SQUASHFS}' | grep -q 'Compression zstd'"
 check "Blocs de 1 Mio" sh -c "unsquashfs -s '${SQUASHFS}' | grep -q 'Block size 1048576'"
-if sq_has "/boot/vmlinuz-[0-9.]+-[0-9]+-lowlatency"; then
-    pass "Noyau lowlatency"
-elif sq_has "/boot/vmlinuz-[0-9.]+-[0-9]+-generic"; then
-    pass "Noyau generic (repli documenté : lowlatency indisponible)"
-else
-    fail "Noyau Ubuntu introuvable"
-fi
+check "Noyau Debian ${ARCH}" sq_has "/boot/vmlinuz-[0-9][^ ]*-${ARCH}"
+check "Préemption complète au démarrage (preempt=full)" grep -q "preempt=full" "${WORK}/grub.cfg"
+check "Identité Djerba OS (os-release)" sh -c "unsquashfs -cat '${SQUASHFS}' /usr/lib/os-release | grep -qx 'ID=djerba'"
+check "/etc/os-release régénéré par djerba-branding" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/os-release | grep -q '^PRETTY_NAME=\"Djerba OS'"
+check "Logo Djerba pour « À propos »" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/xdg/kcm-about-distrorc | grep -q 'LogoPath=/usr/share/pixmaps/djerba-os.png'"
+check "Icône djerba-os (hicolor)" sq_has "/usr/share/icons/hicolor/scalable/apps/djerba-os.svg"
 check "live-boot" sq_has "/usr/share/initramfs-tools/scripts/live"
 check "user-setup (création de l'utilisateur live)" sq_has "/usr/lib/user-setup/user-setup-apply"
-check "KDE Plasma Wayland" sq_has "/usr/share/wayland-sessions/plasmawayland.desktop"
+check "KDE Plasma Wayland" sq_has "/usr/share/wayland-sessions/plasma.desktop"
 check "KWin Wayland" sq_has "/usr/bin/kwin_wayland"
 check "XWayland" sq_has "/usr/bin/Xwayland"
 check "SDDM" sq_has "/usr/bin/sddm"
 check "Calamares" sq_has "/usr/bin/calamares"
-check "Assistant djerba-welcome" sq_has "/usr/local/bin/djerba-welcome"
-check "Assistant exécutable" sh -c "[ \"\$(printf '%s' '$(sq_mode /usr/local/bin/djerba-welcome)' | cut -c4)\" = x ]"
-check "Interface QML de l'assistant" sq_has "/usr/local/share/djerba-welcome/ui/main.qml"
+for tool in djerba-welcome djerba-apps djerba-anonsurf djerba-undercover djerba-gamemode; do
+    check "Outil ${tool} exécutable" sh -c "[ \"\$(printf '%s' '$(sq_mode "/usr/bin/${tool}")' | cut -c4)\" = x ]"
+done
+check "Interface QML de l'assistant" sq_has "/usr/share/djerba-welcome/ui/main.qml"
+check "Catalogue d'applications" sq_has "/usr/share/djerba/apps.yaml"
+check "Installation des applications au premier démarrage" sq_has "/usr/lib/systemd/system/djerba-apps-firstboot.service"
+check "Mode anonyme : unité Tor dédiée" sq_has "/usr/lib/systemd/system/djerba-anonsurf-tor.service"
+check "Mode anonyme : torrc (TransPort/DNSPort)" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/djerba/anonsurf/torrc | grep -q '^TransPort'"
+check "Tor et nftables" sh -c "grep -qE ' squashfs-root/usr/(s)?bin/tor$' '${WORK}/rootfs.list' && grep -qE ' squashfs-root/usr/sbin/nft$' '${WORK}/rootfs.list'"
+check "Mode discret style Windows 10" sq_has "/usr/share/plasma/look-and-feel/org.djerba.undercover10.desktop/metadata.json"
+check "Mode discret style Windows 11" sq_has "/usr/share/plasma/look-and-feel/org.djerba.undercover11.desktop/metadata.json"
+check "Antivirus ClamAV" sq_has "/usr/bin/clamscan"
+check "Interface ClamTk" sq_has "/usr/bin/clamtk"
+check "MangoHud" sq_has "/usr/bin/mangohud"
+check "Calamares : choix d'applications (netinstall)" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/calamares/modules/netinstall.conf | grep -q 'djerba-app:'"
+check "Calamares : module djerbaapps" sq_has "/usr/lib/calamares/modules/djerbaapps/main.py"
 check "Démarrage automatique de l'assistant" sq_has "/etc/xdg/autostart/djerba-welcome.desktop"
 check "Thème Plymouth Djerba" sq_has "/usr/share/plymouth/themes/djerba/djerba.script"
 check "Animation Plymouth (60 images)" sq_has "/usr/share/plymouth/themes/djerba/throbber-59.png"
@@ -124,11 +137,10 @@ check "zram-tools" sq_has "/usr/sbin/zramswap"
 check "BTRFS" sq_has "/usr/bin/btrfs"
 check "Pas de snapd" sh -c "! grep -qE ' squashfs-root/usr/bin/snap$' '${WORK}/rootfs.list'"
 if [[ "${ARCH}" == "amd64" ]]; then
-    check "Steam (x86_64)" sq_has "/usr/games/steam"
-    check "Wine 32 bits (multiarch i386)" sq_has "/usr/lib/wine/wine"
+    check "Steam proposé dans le catalogue (x86_64)" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/calamares/modules/netinstall.conf | grep -q 'djerba-app:steam'"
     check "GRUB EFI signé pour l'installation" sq_has "/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed"
 else
-    check "Pas de Steam sur arm64" sh -c "! grep -qE ' squashfs-root/usr/games/steam$' '${WORK}/rootfs.list'"
+    check "Steam absent du catalogue arm64" sh -c "! unsquashfs -cat '${SQUASHFS}' /etc/calamares/modules/netinstall.conf | grep -q 'djerba-app:steam'"
     check "GRUB EFI arm64 pour l'installation" sq_has "/usr/lib/grub/arm64-efi/linux.mod"
 fi
 
@@ -138,11 +150,9 @@ check "mount.conf : compress=zstd" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/cal
 check "partition.conf : pas de swap" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/calamares/modules/partition.conf | grep -q 'initialSwapChoice: none'"
 check "flathub.conf (INI)" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/flatpak/remotes.d/flathub.conf | grep -q '^\[remote \"flathub\"\]'"
 check "Remote Flathub enregistré" sh -c "unsquashfs -cat '${SQUASHFS}' /var/lib/flatpak/repo/config | grep -q 'remote \"flathub\"'"
-check "Netplan -> NetworkManager" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/netplan/01-network-manager-all.yaml | grep -q 'renderer: NetworkManager'"
-check "Netplan en 0600" sh -c "[ '$(sq_mode /etc/netplan/01-network-manager-all.yaml)' = '-rw-------' ]"
 check "sudoers live en 0440" sh -c "[ '$(sq_mode /etc/sudoers.d/live-user)' = '-r--r-----' ]"
 check "Autologin X11 de live-config désactivé" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/live/config.conf.d/djerba.conf | grep -q 'LIVE_CONFIG_NOX11AUTOLOGIN=\"true\"'"
-check "Autologin Wayland" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/sddm.conf.d/10-wayland-autologin.conf | grep -q 'Session=plasmawayland'"
+check "Autologin Wayland" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/sddm.conf.d/10-wayland-autologin.conf | grep -qx 'Session=plasma'"
 check "Thème SDDM actif" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/sddm.conf.d/20-djerba-theme.conf | grep -q 'Current=djerba'"
 check "zram en zstd" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/default/zramswap | grep -q 'ALGO=zstd'"
 check "UFW activé" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/ufw/ufw.conf | grep -q '^ENABLED=yes'"
@@ -172,6 +182,14 @@ if [[ "${EUID}" -eq 0 ]] && mount -t tmpfs -o size=1M probe "${WORK}/probe" 2>/d
     check "visudo valide l'ensemble des sudoers" in_chroot visudo -c
     check "Règle polkit présente" in_chroot test -f /etc/polkit-1/rules.d/99-djerba-installer.rules
     check "Action polkit org.djerba.installer" in_chroot grep -q 'org.djerba.installer' /usr/share/polkit-1/actions/org.djerba.installer.policy
+    check "Actions polkit apps/anonsurf" sh -c "chroot '${WORK}/root' cat /usr/share/polkit-1/actions/org.djerba.tools.policy | grep -q 'org.djerba.anonsurf'"
+    check "Paquets djerba-branding et djerba-tools installés" sh -c "chroot '${WORK}/root' dpkg-query -W -f='\${db:Status-Status}\n' djerba-branding djerba-tools | grep -c '^installed$' | grep -qx 2"
+    check "Diversion de /usr/lib/os-release" sh -c "chroot '${WORK}/root' dpkg-divert --list /usr/lib/os-release | grep -q djerba-branding"
+    check "Catalogue lisible (djerba-apps list)" sh -c "chroot '${WORK}/root' djerba-apps list --json | python3 -c 'import json,sys; assert len(json.load(sys.stdin)[\"apps\"]) >= 10'"
+    check "Mode anonyme inactif par défaut" sh -c "chroot '${WORK}/root' djerba-anonsurf status --json | grep -q '\"active\": false'"
+    check "tor.service désactivé (Tor à la demande)" sh -c "! chroot '${WORK}/root' systemctl is-enabled tor.service"
+    check "Service djerba-apps-firstboot activé" in_chroot systemctl is-enabled djerba-apps-firstboot.service
+    check "Mises à jour ClamAV (freshclam)" in_chroot systemctl is-enabled clamav-freshclam.service
     check "Python : PyQt6.QtQuick + dbus" in_chroot python3 -c 'import PyQt6.QtQuick, PyQt6.QtQml, dbus'
     check "Remote Flathub (flatpak remotes)" sh -c "chroot '${WORK}/root' flatpak remotes --system --columns=name | grep -qx flathub"
     check "Firefox épinglé sur le dépôt Mozilla" sh -c "chroot '${WORK}/root' apt-cache policy firefox | grep -q packages.mozilla.org"
@@ -191,13 +209,13 @@ from PyQt6.QtCore import QTimer, QUrl
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtQml import QQmlApplicationEngine
 
-loader = importlib.machinery.SourceFileLoader("welcome", "/usr/local/bin/djerba-welcome")
+loader = importlib.machinery.SourceFileLoader("welcome", "/usr/bin/djerba-welcome")
 spec = importlib.util.spec_from_loader("welcome", loader)
 welcome = importlib.util.module_from_spec(spec)
 loader.exec_module(welcome)
 
 app = QGuiApplication(sys.argv)
-backend = welcome.Backend(app)
+backend = welcome.Backend("home", app)
 engine = QQmlApplicationEngine()
 engine.addImageProvider("icon", welcome.IconProvider())
 engine.rootContext().setContextProperty("backend", backend)

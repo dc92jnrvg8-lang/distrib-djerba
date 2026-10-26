@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Djerba App Center
+Name[fr]=Centre d'applications Djerba
+Comment=Install Steam, Lutris, Heroic and other recommended applications
+Comment[fr]=Installer Steam, Lutris, Heroic et les autres applications recommandées
+Exec=djerba-welcome --page apps
+Icon=plasmadiscover
+Terminal=false
+Categories=Qt;KDE;System;PackageManager;
+Keywords=steam;lutris;heroic;applications;logiciels;

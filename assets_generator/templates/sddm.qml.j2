@@ -1,14 +1,16 @@
 {#-
-  Djerba OS — thème SDDM (greeter Qt 5 de SDDM 0.20 sur Ubuntu 24.04).
+  Djerba OS — thème SDDM (greeter Qt 6 de SDDM 0.21, Debian 13).
   Variables : c (jetons de couleur), product (nom du produit), version.
 -#}
 // Djerba OS — thème SDDM « djerba » (généré par assets_generator, ne pas éditer).
-import QtQuick 2.15
-import QtQuick.Controls 2.15
-import QtQuick.Layouts 1.15
-import QtQuick.Particles 2.15
-import QtGraphicalEffects 1.15
-import SddmComponents 2.0
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import QtQuick.Particles
+import QtQuick.Effects
+// SddmComponents définit aussi Button et ComboBox : import qualifié pour
+// éviter toute ambiguïté avec QtQuick.Controls.
+import SddmComponents 2.0 as Sddm
 
 Rectangle {
     id: root
@@ -21,11 +23,12 @@ Rectangle {
     readonly property color textColor: "{{ c.white }}"
     readonly property color mutedColor: "{{ c.muted }}"
     property int sessionIndex: sessionModel.lastIndex >= 0 ? sessionModel.lastIndex : 0
+    property bool busy: false
 
     LayoutMirroring.enabled: Qt.locale().textDirection === Qt.RightToLeft
     LayoutMirroring.childrenInherit: true
 
-    TextConstants { id: textConstants }
+    Sddm.TextConstants { id: textConstants }
 
     Connections {
         target: sddm
@@ -34,6 +37,7 @@ Rectangle {
             fadeOut.start()
         }
         function onLoginFailed() {
+            root.busy = false
             passwordField.text = ""
             errorLabel.text = textConstants.loginFailed
             shake.restart()
@@ -42,23 +46,48 @@ Rectangle {
     }
 
     function doLogin() {
+        if (root.busy)
+            return
+        root.busy = true
         errorLabel.text = ""
         sddm.login(userField.text, passwordField.text, root.sessionIndex)
     }
 
     // ---------------------------------------------------------------- Fond
-    Image {
-        id: background
+    Item {
+        id: scenery
         anchors.fill: parent
-        source: config.background
-        fillMode: Image.PreserveAspectCrop
-        smooth: true
-        asynchronous: false
-        transformOrigin: Item.Center
-        SequentialAnimation on scale {
-            loops: Animation.Infinite
-            NumberAnimation { from: 1.0; to: 1.06; duration: 24000; easing.type: Easing.InOutSine }
-            NumberAnimation { from: 1.06; to: 1.0; duration: 24000; easing.type: Easing.InOutSine }
+
+        Image {
+            id: background
+            anchors.fill: parent
+            source: config.background
+            fillMode: Image.PreserveAspectCrop
+            smooth: true
+            transformOrigin: Item.Center
+            SequentialAnimation on scale {
+                loops: Animation.Infinite
+                NumberAnimation { from: 1.0; to: 1.06; duration: 26000; easing.type: Easing.InOutSine }
+                NumberAnimation { from: 1.06; to: 1.0; duration: 26000; easing.type: Easing.InOutSine }
+            }
+        }
+
+        // Halo turquoise qui respire derrière la carte de connexion.
+        Rectangle {
+            width: parent.width * 0.55
+            height: width
+            radius: width / 2
+            anchors.centerIn: parent
+            anchors.verticalCenterOffset: 80 * root.unit
+            color: "{{ c.turquoise }}"
+            opacity: 0.0
+            SequentialAnimation on opacity {
+                loops: Animation.Infinite
+                NumberAnimation { from: 0.04; to: 0.10; duration: 5200; easing.type: Easing.InOutSine }
+                NumberAnimation { from: 0.10; to: 0.04; duration: 5200; easing.type: Easing.InOutSine }
+            }
+            layer.enabled: true
+            layer.effect: MultiEffect { blurEnabled: true; blur: 1.0; blurMax: 64 }
         }
     }
 
@@ -89,10 +118,13 @@ Rectangle {
 
     // ---------------------------------------------------------------- Horloge
     Column {
+        id: clockColumn
         anchors.top: parent.top
         anchors.topMargin: 96 * root.unit
         anchors.horizontalCenter: parent.horizontalCenter
         spacing: 4 * root.unit
+        opacity: 0
+        transform: Translate { id: clockShift; y: -24 * root.unit }
 
         Text {
             id: clock
@@ -129,18 +161,15 @@ Rectangle {
         height: form.implicitHeight + 72 * root.unit
         anchors.centerIn: parent
         anchors.verticalCenterOffset: 80 * root.unit
+        opacity: 0
+        scale: 0.94
 
+        // Verre dépoli : échantillon flouté du fond, découpé aux coins.
         ShaderEffectSource {
             id: blurSource
-            sourceItem: background
-            sourceRect: Qt.rect(card.x, card.y, card.width, card.height)
-            visible: false
-        }
-        FastBlur {
-            id: blurred
             anchors.fill: parent
-            source: blurSource
-            radius: 64
+            sourceItem: scenery
+            sourceRect: Qt.rect(card.x, card.y, card.width, card.height)
             visible: false
         }
         Rectangle {
@@ -148,10 +177,16 @@ Rectangle {
             anchors.fill: parent
             radius: 28 * root.unit
             visible: false
+            layer.enabled: true
         }
-        OpacityMask {
+        MultiEffect {
             anchors.fill: parent
-            source: blurred
+            source: blurSource
+            blurEnabled: true
+            blur: 1.0
+            blurMax: 64
+            saturation: 0.15
+            maskEnabled: true
             maskSource: cardMask
         }
         Rectangle {
@@ -180,14 +215,43 @@ Rectangle {
             anchors.margins: 36 * root.unit
             spacing: 16 * root.unit
 
-            Image {
+            // Avatar : initiale de l'utilisateur dans un anneau turquoise.
+            Item {
                 Layout.alignment: Qt.AlignHCenter
-                Layout.preferredWidth: 88 * root.unit
-                Layout.preferredHeight: 88 * root.unit
-                source: "logo.svg"
-                sourceSize.width: 176
-                sourceSize.height: 176
-                smooth: true
+                Layout.preferredWidth: 96 * root.unit
+                Layout.preferredHeight: 96 * root.unit
+                Rectangle {
+                    anchors.fill: parent
+                    radius: width / 2
+                    color: "transparent"
+                    border.width: 3 * root.unit
+                    border.color: root.accent
+                    RotationAnimation on rotation { from: 0; to: 360; duration: 18000; loops: Animation.Infinite }
+                    Rectangle {
+                        width: 10 * root.unit; height: width; radius: width / 2
+                        color: "{{ c.sand }}"
+                        x: parent.width / 2 - width / 2
+                        y: -height / 2
+                    }
+                }
+                Image {
+                    anchors.fill: parent
+                    anchors.margins: 12 * root.unit
+                    source: "logo.svg"
+                    sourceSize.width: 192
+                    sourceSize.height: 192
+                    smooth: true
+                    visible: userField.text.length === 0
+                }
+                Text {
+                    anchors.centerIn: parent
+                    visible: userField.text.length > 0
+                    text: userField.text.length > 0 ? userField.text.charAt(0).toUpperCase() : ""
+                    color: root.textColor
+                    font.family: "Inter"
+                    font.weight: Font.DemiBold
+                    font.pixelSize: 40 * root.unit
+                }
             }
             Text {
                 Layout.alignment: Qt.AlignHCenter
@@ -287,12 +351,14 @@ Rectangle {
                 id: loginButton
                 Layout.fillWidth: true
                 Layout.preferredHeight: 50 * root.unit
-                text: textConstants.login
+                text: root.busy ? "…" : textConstants.login
                 font.family: "Inter"
                 font.weight: Font.DemiBold
                 font.pixelSize: 16 * root.unit
                 onClicked: root.doLogin()
                 Keys.onReturnPressed: root.doLogin()
+                scale: down ? 0.97 : (hovered ? 1.02 : 1.0)
+                Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
                 contentItem: Text {
                     text: loginButton.text
                     font: loginButton.font
@@ -328,10 +394,12 @@ Rectangle {
 
     // ---------------------------------------------------------------- Alimentation
     Row {
+        id: powerRow
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 40 * root.unit
         anchors.horizontalCenter: parent.horizontalCenter
         spacing: 16 * root.unit
+        opacity: 0
 
         Repeater {
             model: [
@@ -341,6 +409,7 @@ Rectangle {
             ]
             delegate: Button {
                 id: powerButton
+                required property var modelData
                 visible: modelData.enabled
                 text: modelData.label
                 font.family: "Inter"
@@ -383,13 +452,31 @@ Rectangle {
         font.pixelSize: 12 * root.unit
     }
 
-    // ---------------------------------------------------------------- Transition
+    // ---------------------------------------------------------------- Transitions
+    ParallelAnimation {
+        id: entrance
+        running: true
+        NumberAnimation { target: clockColumn; property: "opacity"; to: 1; duration: 700; easing.type: Easing.OutCubic }
+        NumberAnimation { target: clockShift; property: "y"; to: 0; duration: 900; easing.type: Easing.OutExpo }
+        SequentialAnimation {
+            PauseAnimation { duration: 180 }
+            ParallelAnimation {
+                NumberAnimation { target: card; property: "opacity"; to: 1; duration: 600; easing.type: Easing.OutCubic }
+                NumberAnimation { target: card; property: "scale"; to: 1; duration: 750; easing.type: Easing.OutBack }
+            }
+        }
+        SequentialAnimation {
+            PauseAnimation { duration: 420 }
+            NumberAnimation { target: powerRow; property: "opacity"; to: 1; duration: 600 }
+        }
+    }
+
     Rectangle {
         id: veil
         anchors.fill: parent
         color: "{{ c.night }}"
         opacity: 1
-        NumberAnimation on opacity { id: fadeIn; from: 1; to: 0; duration: 700; easing.type: Easing.OutCubic; running: true }
+        NumberAnimation on opacity { from: 1; to: 0; duration: 700; easing.type: Easing.OutCubic; running: true }
         NumberAnimation { id: fadeOut; target: veil; property: "opacity"; to: 1; duration: 400; easing.type: Easing.InCubic }
     }
 

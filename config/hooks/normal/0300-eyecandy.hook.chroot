@@ -16,10 +16,8 @@ for required in "${THEME_DIR}/djerba.plymouth" "${THEME_DIR}/djerba.script" \
     fi
 done
 
-# --- Plymouth : thème par défaut via le système d'alternatives d'Ubuntu --------
-update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth \
-    "${THEME_DIR}/djerba.plymouth" 200
-update-alternatives --set default.plymouth "${THEME_DIR}/djerba.plymouth"
+# --- Plymouth : thème par défaut (outil natif de Debian) ---------------------
+plymouth-set-default-theme djerba
 
 # --- SDDM : thème Djerba (conservé sur le système installé) --------------------------
 cat > /etc/sddm.conf.d/20-djerba-theme.conf <<'CONF'

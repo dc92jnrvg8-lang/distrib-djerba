@@ -1,0 +1,21 @@
+# Djerba OS — configuration Tor du mode anonyme (djerba-anonsurf).
+# Complète /usr/share/tor/tor-service-defaults-torrc (utilisateur debian-tor,
+# DataDirectory /var/lib/tor, socket de contrôle /run/tor/control avec cookie).
+
+# Proxy SOCKS classique (torsocks, applications configurées manuellement).
+SocksPort 127.0.0.1:9050 IsolateDestAddr
+
+# Proxy transparent : tout le TCP du système y est redirigé par nftables.
+TransPort 127.0.0.1:9040 IsolateClientAddr IsolateClientProtocol IsolateDestAddr IsolateDestPort
+
+# Résolution DNS par Tor, y compris des adresses .onion.
+DNSPort 127.0.0.1:5353
+AutomapHostsOnResolve 1
+AutomapHostsSuffixes .onion,.exit
+VirtualAddrNetworkIPv4 10.192.0.0/10
+
+# Contrôle local (changement d'identité : SIGNAL NEWNYM).
+ControlPort 127.0.0.1:9051
+
+ClientUseIPv6 0
+AvoidDiskWrites 1

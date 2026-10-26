@@ -1,0 +1,23 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Anonymous Mode (Tor)
+Name[fr]=Mode anonyme (Tor)
+Comment=Route all traffic through the Tor network
+Comment[fr]=Faire passer tout le trafic par le réseau Tor
+Exec=djerba-welcome --page privacy
+Icon=security-high
+Terminal=false
+Categories=Qt;KDE;Network;Security;
+Keywords=anonsurf;tor;anonyme;vpn;privacy;
+Actions=Toggle;NewIdentity;
+
+[Desktop Action Toggle]
+Name=Enable / disable
+Name[fr]=Activer / désactiver
+Exec=pkexec /usr/bin/djerba-anonsurf toggle
+
+[Desktop Action NewIdentity]
+Name=New identity
+Name[fr]=Nouvelle identité
+Exec=pkexec /usr/bin/djerba-anonsurf change

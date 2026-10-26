@@ -1,0 +1,16 @@
+Package: djerba-branding
+Version: @VERSION@
+Architecture: all
+Maintainer: Djerba OS <djerba-os@users.noreply.github.com>
+Section: misc
+Priority: optional
+Depends: base-files, grub-common
+Recommends: plymouth, sddm, plasma-workspace
+Description: identité de la distribution Djerba OS
+ Nom et version du système (/usr/lib/os-release), logo et
+ informations affichés dans « À propos de ce système », thème GRUB du
+ système installé, thèmes Plymouth et SDDM, fonds d'écran et thèmes
+ globaux Plasma « Djerba », « Djerba Horizon » et « Discret ».
+ .
+ /usr/lib/os-release de base-files est dérouté avec dpkg-divert et restauré à
+ la désinstallation du paquet.

@@ -1,0 +1,21 @@
+# Djerba OS — installe au premier démarrage les applications choisies dans
+# l'installateur qui n'ont pas pu l'être pendant l'installation (Flatpak,
+# ou absence de réseau). Relancé tant que la file d'attente n'est pas vide.
+[Unit]
+Description=Djerba OS : installation des applications choisies
+Documentation=man:djerba-apps(1)
+ConditionPathExists=/var/lib/djerba/apps/pending.json
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/djerba-apps apply-pending --wait-network 900
+Restart=on-failure
+RestartSec=120
+TimeoutStartSec=infinity
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

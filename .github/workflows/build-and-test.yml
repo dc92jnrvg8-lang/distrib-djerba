@@ -98,7 +98,9 @@ jobs:
       - name: Generate assets
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python3 assets_generator/generate_assets.py --version "${{ steps.version.outputs.version }}"
+        run: |
+          python3 assets_generator/generate_assets.py --version "${{ steps.version.outputs.version }}"
+          python3 tools/catalog-to-netinstall.py --arch "${{ matrix.debarch }}"
 
       - name: Restore live-build package cache
         uses: actions/cache@v4
@@ -107,10 +109,10 @@ jobs:
             cache/packages.bootstrap
             cache/packages.chroot
             cache/packages.binary
-          key: lb-packages-${{ matrix.debarch }}-${{ hashFiles('config/package-lists/**', 'auto/config') }}-${{ github.run_id }}
+          key: lb-packages-trixie-${{ matrix.debarch }}-${{ hashFiles('config/package-lists/**', 'auto/config') }}-${{ github.run_id }}
           restore-keys: |
-            lb-packages-${{ matrix.debarch }}-${{ hashFiles('config/package-lists/**', 'auto/config') }}-
-            lb-packages-${{ matrix.debarch }}-
+            lb-packages-trixie-${{ matrix.debarch }}-${{ hashFiles('config/package-lists/**', 'auto/config') }}-
+            lb-packages-trixie-${{ matrix.debarch }}-
 
       - name: Build Docker image & ISO
         shell: bash

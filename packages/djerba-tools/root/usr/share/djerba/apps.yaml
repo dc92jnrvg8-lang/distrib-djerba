@@ -1,0 +1,282 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Djerba OS — catalogue des applications proposées.
+#
+# Source unique pour :
+#   * la page « Applications » de l'installateur (module netinstall, généré
+#     par tools/catalog-to-netinstall.py, puis appliqué par le module
+#     Calamares « djerbaapps ») ;
+#   * le Centre d'applications de l'assistant Djerba Welcome ;
+#   * l'outil en ligne de commande djerba-apps.
+#
+# Champs d'une application :
+#   id             identifiant stable (minuscules, chiffres, tirets)
+#   name           nom affiché
+#   category       identifiant d'une catégorie ci-dessous
+#   icon           nom d'icône freedesktop
+#   description    une phrase
+#   notice         (facultatif) mention affichée avant l'installation
+#   selected       cochée par défaut dans l'installateur
+#   preinstalled   présente dans l'image live : désinstallée si décochée
+#   architectures  (facultatif) architectures Debian prises en charge
+#   apt            { packages, foreign_architectures?, debconf? }
+#   flatpak        identifiant Flathub (alternative à apt)
+version: 1
+
+categories:
+  - id: gaming
+    name: Jeu
+    description: Lanceurs, compatibilité Windows et émulation.
+  - id: multimedia
+    name: Multimédia et création
+    description: Vidéo, audio, image et diffusion en direct.
+  - id: office
+    name: Bureautique et communication
+    description: Documents, courrier et discussions.
+  - id: security
+    name: Sécurité et vie privée
+    description: Antivirus, mots de passe et navigation anonyme.
+
+apps:
+  # ------------------------------------------------------------------ Jeu
+  - id: steam
+    name: Steam
+    category: gaming
+    icon: steam
+    description: La plus grande boutique de jeux PC, avec Proton pour les jeux Windows.
+    notice: En installant Steam, vous acceptez l'accord de souscription Steam de Valve Corporation.
+    selected: true
+    preinstalled: false
+    architectures: [amd64]
+    apt:
+      foreign_architectures: [i386]
+      packages: [steam-installer, steam-devices]
+      debconf:
+        - steam-installer steam/question select I AGREE
+        - steam-installer steam/license note
+        - steam-installer steam/purge note
+
+  - id: lutris
+    name: Lutris
+    category: gaming
+    icon: lutris
+    description: Gestionnaire de jeux unifié (GOG, Epic, Battle.net, émulateurs, Wine).
+    selected: true
+    preinstalled: false
+    apt:
+      packages: [lutris]
+
+  - id: heroic
+    name: Heroic Games Launcher
+    category: gaming
+    icon: com.heroicgameslauncher.hgl
+    description: Lanceur libre pour les bibliothèques Epic Games, GOG et Amazon Prime Gaming.
+    selected: true
+    preinstalled: false
+    architectures: [amd64, arm64]
+    flatpak: com.heroicgameslauncher.hgl
+
+  - id: protonup-qt
+    name: ProtonUp-Qt
+    category: gaming
+    icon: net.davidotek.pupgui2
+    description: Installe et met à jour Proton-GE et Wine-GE pour Steam, Lutris et Heroic.
+    selected: true
+    preinstalled: false
+    architectures: [amd64]
+    flatpak: net.davidotek.pupgui2
+
+  - id: bottles
+    name: Bottles
+    category: gaming
+    icon: com.usebottles.bottles
+    description: Exécute des logiciels et jeux Windows dans des environnements isolés.
+    selected: false
+    preinstalled: false
+    architectures: [amd64]
+    flatpak: com.usebottles.bottles
+
+  - id: protontricks
+    name: Protontricks
+    category: gaming
+    icon: com.github.Matoking.protontricks
+    description: Applique des correctifs winetricks aux jeux Steam lancés avec Proton.
+    selected: false
+    preinstalled: false
+    architectures: [amd64]
+    flatpak: com.github.Matoking.protontricks
+
+  - id: wine
+    name: Wine
+    category: gaming
+    icon: wine
+    description: Couche de compatibilité pour lancer des programmes Windows (32 et 64 bits).
+    selected: false
+    preinstalled: false
+    architectures: [amd64]
+    apt:
+      foreign_architectures: [i386]
+      packages: [wine, wine64, "wine32:i386", winetricks]
+
+  - id: retroarch
+    name: RetroArch
+    category: gaming
+    icon: retroarch
+    description: Interface unifiée pour l'émulation des consoles rétro.
+    selected: false
+    preinstalled: false
+    apt:
+      packages: [retroarch]
+
+  - id: dolphin-emu
+    name: Dolphin
+    category: gaming
+    icon: dolphin-emu
+    description: Émulateur GameCube et Wii en haute définition.
+    selected: false
+    preinstalled: false
+    apt:
+      packages: [dolphin-emu]
+
+  - id: prismlauncher
+    name: Prism Launcher
+    category: gaming
+    icon: org.prismlauncher.PrismLauncher
+    description: Lanceur Minecraft Java avec gestion des instances et des mods.
+    selected: false
+    preinstalled: false
+    architectures: [amd64, arm64]
+    flatpak: org.prismlauncher.PrismLauncher
+
+  - id: discord
+    name: Discord
+    category: gaming
+    icon: com.discordapp.Discord
+    description: Discussions vocales et textuelles entre joueurs.
+    selected: false
+    preinstalled: false
+    architectures: [amd64]
+    flatpak: com.discordapp.Discord
+
+  # ------------------------------------------------------------------ Multimédia
+  - id: vlc
+    name: VLC
+    category: multimedia
+    icon: vlc
+    description: Lecteur vidéo et audio qui lit tous les formats.
+    selected: true
+    preinstalled: false
+    apt:
+      packages: [vlc]
+
+  - id: obs-studio
+    name: OBS Studio
+    category: multimedia
+    icon: com.obsproject.Studio
+    description: Enregistrement d'écran et diffusion en direct (Twitch, YouTube).
+    selected: false
+    preinstalled: false
+    apt:
+      packages: [obs-studio]
+
+  - id: kdenlive
+    name: Kdenlive
+    category: multimedia
+    icon: kdenlive
+    description: Montage vidéo non linéaire.
+    selected: false
+    preinstalled: false
+    apt:
+      packages: [kdenlive]
+
+  - id: gimp
+    name: GIMP
+    category: multimedia
+    icon: gimp
+    description: Retouche photo et création graphique.
+    selected: false
+    preinstalled: false
+    apt:
+      packages: [gimp]
+
+  - id: krita
+    name: Krita
+    category: multimedia
+    icon: krita
+    description: Peinture numérique et illustration.
+    selected: false
+    preinstalled: false
+    apt:
+      packages: [krita]
+
+  - id: spotify
+    name: Spotify
+    category: multimedia
+    icon: com.spotify.Client
+    description: Musique et podcasts en streaming.
+    selected: false
+    preinstalled: false
+    architectures: [amd64]
+    flatpak: com.spotify.Client
+
+  # ------------------------------------------------------------------ Bureautique
+  - id: libreoffice
+    name: LibreOffice
+    category: office
+    icon: libreoffice-startcenter
+    description: Traitement de texte, tableur et présentations compatibles Microsoft Office.
+    selected: false
+    preinstalled: false
+    apt:
+      packages: [libreoffice-writer, libreoffice-calc, libreoffice-impress, libreoffice-qt6, libreoffice-l10n-fr]
+
+  - id: thunderbird
+    name: Thunderbird
+    category: office
+    icon: thunderbird
+    description: Courrier électronique, agenda et contacts.
+    selected: false
+    preinstalled: false
+    apt:
+      packages: [thunderbird, thunderbird-l10n-fr]
+
+  # ------------------------------------------------------------------ Sécurité
+  - id: clamtk
+    name: Antivirus ClamAV
+    category: security
+    icon: clamtk
+    description: Antivirus libre ClamAV avec l'interface ClamTk et mise à jour automatique des signatures.
+    selected: true
+    preinstalled: true
+    apt:
+      packages: [clamav, clamav-freshclam, clamtk]
+
+  - id: keepassxc
+    name: KeePassXC
+    category: security
+    icon: keepassxc
+    description: Coffre-fort de mots de passe chiffré, hors ligne.
+    selected: true
+    preinstalled: false
+    apt:
+      packages: [keepassxc]
+
+  - id: torbrowser
+    name: Tor Browser
+    category: security
+    icon: torbrowser
+    description: Navigateur anonyme du projet Tor (téléchargé et vérifié par torbrowser-launcher).
+    selected: false
+    preinstalled: false
+    architectures: [amd64]
+    apt:
+      packages: [torbrowser-launcher]
+
+  - id: bleachbit
+    name: BleachBit
+    category: security
+    icon: bleachbit
+    description: Efface traces, caches et fichiers temporaires pour libérer de l'espace et protéger la vie privée.
+    selected: false
+    preinstalled: false
+    apt:
+      packages: [bleachbit]

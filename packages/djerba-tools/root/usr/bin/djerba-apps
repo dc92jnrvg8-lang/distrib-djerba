@@ -1,0 +1,487 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""djerba-apps — gestion des applications du catalogue Djerba OS.
+
+Usage :
+    djerba-apps list [--json]                  catalogue et état d'installation
+    djerba-apps install ID [ID…] [--json-progress]
+    djerba-apps remove ID [ID…] [--json-progress]
+    djerba-apps apply-selection FICHIER [--installer] [--json-progress]
+    djerba-apps apply-pending [--wait-network SECONDES] [--json-progress]
+    djerba-apps status [--json]                 file d'attente et dernière exécution
+
+« apply-selection » applique un choix complet (fichier JSON {"selected": [...]}) :
+les applications préinstallées décochées sont retirées, les applications
+cochées sont installées. Avec --installer (appel depuis Calamares, dans le
+système cible), les applications Flatpak et, sans réseau, les paquets APT
+sont mis en file d'attente : le service djerba-apps-firstboot les installe
+au premier démarrage, dès que le réseau est disponible.
+
+Les opérations qui modifient le système exigent les droits root (pkexec ou
+sudo). La progression peut être émise en JSON, une ligne par évènement.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+CATALOG = Path(os.environ.get("DJERBA_APPS_CATALOG", "/usr/share/djerba/apps.yaml"))
+STATE_DIR = Path(os.environ.get("DJERBA_APPS_STATE", "/var/lib/djerba/apps"))
+PENDING = STATE_DIR / "pending.json"
+RESULT = STATE_DIR / "last-run.json"
+RUNTIME_STATUS = Path("/run/djerba-apps/status.json")
+FLATHUB = "flathub"
+APT_ENV = {"DEBIAN_FRONTEND": "noninteractive", "APT_LISTCHANGES_FRONTEND": "none"}
+APT_OPTIONS = ["-y", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold",
+               "-o", "APT::Install-Recommends=true", "-o", "Acquire::Retries=5"]
+
+EX_OK = 0
+EX_FAILURE = 1
+EX_USAGE = 2
+EX_TEMPFAIL = 75
+
+
+class CatalogError(Exception):
+    """Catalogue invalide."""
+
+
+@dataclass
+class App:
+    id: str
+    name: str
+    category: str
+    icon: str
+    description: str
+    selected: bool
+    preinstalled: bool
+    architectures: list[str]
+    notice: str = ""
+    apt_packages: list[str] = field(default_factory=list)
+    foreign_architectures: list[str] = field(default_factory=list)
+    debconf: list[str] = field(default_factory=list)
+    flatpak: str = ""
+
+    @property
+    def backend(self) -> str:
+        return "flatpak" if self.flatpak else "apt"
+
+    def supported(self, arch: str) -> bool:
+        return not self.architectures or arch in self.architectures
+
+
+def load_catalog(path: Path = CATALOG) -> tuple[list[dict], list[App]]:
+    with path.open(encoding="utf-8") as handle:
+        data = yaml.safe_load(handle)
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise CatalogError("version de catalogue inconnue")
+    categories = data.get("categories") or []
+    category_ids = {category["id"] for category in categories}
+    apps: list[App] = []
+    seen: set[str] = set()
+    for entry in data.get("apps") or []:
+        app_id = entry.get("id", "")
+        if not app_id or app_id in seen:
+            raise CatalogError(f"identifiant absent ou dupliqué : {app_id!r}")
+        seen.add(app_id)
+        if entry.get("category") not in category_ids:
+            raise CatalogError(f"{app_id} : catégorie inconnue")
+        apt = entry.get("apt") or {}
+        flatpak = entry.get("flatpak", "")
+        if bool(apt) == bool(flatpak):
+            raise CatalogError(f"{app_id} : exactement une source (apt ou flatpak) attendue")
+        apps.append(App(
+            id=app_id,
+            name=entry["name"],
+            category=entry["category"],
+            icon=entry.get("icon", "application-x-executable"),
+            description=entry.get("description", ""),
+            selected=bool(entry.get("selected", False)),
+            preinstalled=bool(entry.get("preinstalled", False)),
+            architectures=list(entry.get("architectures") or []),
+            notice=entry.get("notice", ""),
+            apt_packages=list(apt.get("packages") or []),
+            foreign_architectures=list(apt.get("foreign_architectures") or []),
+            debconf=list(apt.get("debconf") or []),
+            flatpak=flatpak,
+        ))
+    return categories, apps
+
+
+def native_arch() -> str:
+    return subprocess.run(["dpkg", "--print-architecture"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+
+
+# ---------------------------------------------------------------- Progression
+class Reporter:
+    def __init__(self, json_mode: bool, total: int = 0) -> None:
+        self.json_mode = json_mode
+        self.total = total
+        self.done = 0
+
+    def emit(self, event: str, **payload: Any) -> None:
+        payload = {"event": event, "done": self.done, "total": self.total, **payload}
+        if self.json_mode:
+            print(json.dumps(payload, ensure_ascii=False), flush=True)
+        else:
+            message = payload.get("message") or payload.get("app") or ""
+            print(f"[djerba-apps] {event}: {message}", flush=True)
+        self._write_runtime(payload)
+
+    def _write_runtime(self, payload: dict) -> None:
+        try:
+            RUNTIME_STATUS.parent.mkdir(parents=True, exist_ok=True)
+            temporary = RUNTIME_STATUS.with_suffix(".tmp")
+            temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            temporary.chmod(0o644)
+            temporary.replace(RUNTIME_STATUS)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------- État
+def apt_installed(package: str) -> bool:
+    """Vrai si le paquet (éventuellement qualifié, ex. « wine32:i386 ») est installé."""
+    result = subprocess.run(["dpkg-query", "-W", "-f=${Status}", package],
+                            capture_output=True, text=True, check=False)
+    return result.returncode == 0 and "install ok installed" in result.stdout
+
+
+def flatpak_installed(app_id: str) -> bool:
+    if not shutil.which("flatpak"):
+        return False
+    return subprocess.run(["flatpak", "info", "--system", app_id], capture_output=True,
+                          check=False).returncode == 0
+
+
+def is_installed(app: App) -> bool:
+    if app.flatpak:
+        return flatpak_installed(app.flatpak)
+    return all(apt_installed(package) for package in app.apt_packages)
+
+
+def online(host: str = "deb.debian.org", port: int = 80, timeout: float = 5.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def wait_for_network(seconds: int) -> bool:
+    deadline = time.monotonic() + seconds
+    while True:
+        if online():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(5)
+
+
+# ---------------------------------------------------------------- Actions
+def run(command: list[str], env: dict | None = None) -> int:
+    merged = dict(os.environ, **(env or {}))
+    return subprocess.run(command, env=merged, check=False).returncode
+
+
+def retry(command: list[str], attempts: int = 3, env: dict | None = None) -> bool:
+    for attempt in range(1, attempts + 1):
+        if run(command, env) == 0:
+            return True
+        if attempt < attempts:
+            time.sleep(5 * attempt)
+    return False
+
+
+class Installer:
+    def __init__(self, reporter: Reporter) -> None:
+        self.reporter = reporter
+        self.apt_updated = False
+
+    def _apt_update(self) -> bool:
+        if not self.apt_updated:
+            self.apt_updated = retry(["apt-get", "update", "--error-on=any"], env=APT_ENV)
+        return self.apt_updated
+
+    def install_apt(self, app: App) -> bool:
+        current = set(subprocess.run(["dpkg", "--print-foreign-architectures"], capture_output=True,
+                                     text=True, check=False).stdout.split())
+        for arch in app.foreign_architectures:
+            if arch not in current:
+                if run(["dpkg", "--add-architecture", arch]) != 0:
+                    return False
+                self.apt_updated = False
+        if app.debconf:
+            selections = "\n".join(app.debconf) + "\n"
+            if subprocess.run(["debconf-set-selections"], input=selections, text=True,
+                              check=False).returncode != 0:
+                return False
+        if not self._apt_update():
+            return False
+        return retry(["apt-get", "install", *APT_OPTIONS, *app.apt_packages], env=APT_ENV)
+
+    def install_flatpak(self, app: App) -> bool:
+        if not shutil.which("flatpak"):
+            return False
+        return retry(["flatpak", "install", "--system", "-y", "--noninteractive", FLATHUB, app.flatpak])
+
+    def install(self, app: App) -> bool:
+        self.reporter.emit("start", app=app.id, name=app.name, action="install",
+                           message=f"Installation de {app.name}")
+        ok = self.install_flatpak(app) if app.flatpak else self.install_apt(app)
+        self.reporter.done += 1
+        self.reporter.emit("finish", app=app.id, name=app.name, action="install", success=ok,
+                           message=f"{app.name} {'installé' if ok else ': échec de l’installation'}")
+        return ok
+
+    def remove(self, app: App) -> bool:
+        self.reporter.emit("start", app=app.id, name=app.name, action="remove",
+                           message=f"Suppression de {app.name}")
+        if app.flatpak:
+            ok = run(["flatpak", "uninstall", "--system", "-y", "--noninteractive", app.flatpak]) == 0
+        else:
+            installed = [package for package in app.apt_packages if apt_installed(package)]
+            ok = True
+            if installed:
+                ok = run(["apt-get", "purge", "-y", *installed], env=APT_ENV) == 0
+                if ok:
+                    run(["apt-get", "autoremove", "--purge", "-y"], env=APT_ENV)
+        self.reporter.done += 1
+        self.reporter.emit("finish", app=app.id, name=app.name, action="remove", success=ok,
+                           message=f"{app.name} {'supprimé' if ok else ': échec de la suppression'}")
+        return ok
+
+
+# ---------------------------------------------------------------- File d'attente
+def read_pending() -> dict:
+    try:
+        data = json.loads(PENDING.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"install": [], "remove": []}
+    return {"install": list(data.get("install", [])), "remove": list(data.get("remove", []))}
+
+
+def write_pending(pending: dict) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    if not pending["install"] and not pending["remove"]:
+        PENDING.unlink(missing_ok=True)
+        return
+    temporary = PENDING.with_suffix(".tmp")
+    temporary.write_text(json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(PENDING)
+
+
+def write_result(results: dict[str, bool]) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {"time": int(time.time()), "results": results}
+    RESULT.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ---------------------------------------------------------------- Commandes
+def require_root() -> None:
+    if os.geteuid() != 0:
+        print("djerba-apps : cette opération exige les droits administrateur (pkexec djerba-apps …).",
+              file=sys.stderr)
+        sys.exit(EX_USAGE)
+
+
+def resolve(apps: list[App], ids: list[str], arch: str) -> list[App]:
+    by_id = {app.id: app for app in apps}
+    resolved = []
+    for app_id in ids:
+        if app_id not in by_id:
+            raise CatalogError(f"application inconnue : {app_id}")
+        app = by_id[app_id]
+        if not app.supported(arch):
+            raise CatalogError(f"{app.name} n'est pas disponible pour l'architecture {arch}")
+        resolved.append(app)
+    return resolved
+
+
+def command_list(args: argparse.Namespace) -> int:
+    categories, apps = load_catalog()
+    arch = native_arch()
+    pending = read_pending()
+    rows = []
+    for app in apps:
+        rows.append({
+            "id": app.id, "name": app.name, "category": app.category, "icon": app.icon,
+            "description": app.description, "notice": app.notice, "backend": app.backend,
+            "supported": app.supported(arch), "installed": app.supported(arch) and is_installed(app),
+            "pending": app.id in pending["install"], "selected": app.selected,
+            "preinstalled": app.preinstalled,
+        })
+    if args.json:
+        print(json.dumps({"architecture": arch, "categories": categories, "apps": rows},
+                         ensure_ascii=False))
+    else:
+        for row in rows:
+            state = "installée" if row["installed"] else ("en attente" if row["pending"] else "—")
+            if not row["supported"]:
+                state = f"indisponible ({arch})"
+            print(f"{row['id']:<16} {row['name']:<26} {row['backend']:<8} {state}")
+    return EX_OK
+
+
+def apply_operations(installs: list[App], removals: list[App], reporter: Reporter) -> dict[str, bool]:
+    installer = Installer(reporter)
+    reporter.total = len(installs) + len(removals)
+    results: dict[str, bool] = {}
+    for app in removals:
+        results[app.id] = installer.remove(app)
+    for app in installs:
+        results[app.id] = installer.install(app)
+    return results
+
+
+def command_install(args: argparse.Namespace, remove: bool = False) -> int:
+    require_root()
+    _, apps = load_catalog()
+    targets = resolve(apps, args.ids, native_arch())
+    reporter = Reporter(args.json_progress)
+    if remove:
+        results = apply_operations([], targets, reporter)
+    else:
+        if not online() and not wait_for_network(30):
+            reporter.emit("error", message="Aucune connexion Internet : installation impossible.")
+            return EX_TEMPFAIL
+        results = apply_operations(targets, [], reporter)
+    write_result(results)
+    reporter.emit("complete", success=all(results.values()), results=results,
+                  message="Terminé" if all(results.values()) else "Terminé avec des erreurs")
+    return EX_OK if all(results.values()) else EX_FAILURE
+
+
+def command_apply_selection(args: argparse.Namespace) -> int:
+    require_root()
+    _, apps = load_catalog()
+    arch = native_arch()
+    selection = set(json.loads(Path(args.selection).read_text(encoding="utf-8")).get("selected", []))
+    supported = [app for app in apps if app.supported(arch)]
+    removals = [app for app in supported if app.preinstalled and app.id not in selection and is_installed(app)]
+    wanted = [app for app in supported if app.id in selection and not is_installed(app)]
+
+    reporter = Reporter(args.json_progress)
+    network = online()
+    deferred: list[str] = []
+    immediate: list[App] = []
+    for app in wanted:
+        # Dans le système cible (chroot de Calamares), Flatpak ne peut pas
+        # exécuter ses déclencheurs : installation au premier démarrage.
+        if args.installer and (app.flatpak or not network):
+            deferred.append(app.id)
+        else:
+            immediate.append(app)
+
+    results = apply_operations(immediate, removals, reporter)
+    deferred.extend(app_id for app_id, ok in results.items()
+                    if not ok and app_id in {app.id for app in immediate})
+
+    pending = read_pending()
+    pending["install"] = sorted(set(pending["install"]) | set(deferred))
+    write_pending(pending)
+    write_result(results)
+    reporter.emit("complete", success=True, results=results, deferred=sorted(set(deferred)),
+                  message=f"{len(immediate)} installée(s), {len(removals)} retirée(s), "
+                          f"{len(set(deferred))} au premier démarrage")
+    return EX_OK
+
+
+def command_apply_pending(args: argparse.Namespace) -> int:
+    require_root()
+    pending = read_pending()
+    if not pending["install"] and not pending["remove"]:
+        return EX_OK
+    reporter = Reporter(args.json_progress)
+    if not wait_for_network(args.wait_network):
+        reporter.emit("waiting", message="En attente d'une connexion Internet pour installer vos applications.")
+        return EX_TEMPFAIL
+    _, apps = load_catalog()
+    arch = native_arch()
+    by_id = {app.id: app for app in apps if app.supported(arch)}
+    installs = [by_id[app_id] for app_id in pending["install"] if app_id in by_id]
+    removals = [by_id[app_id] for app_id in pending["remove"] if app_id in by_id]
+    results = apply_operations(installs, removals, reporter)
+    remaining = {
+        "install": [app.id for app in installs if not results.get(app.id)],
+        "remove": [app.id for app in removals if not results.get(app.id)],
+    }
+    write_pending(remaining)
+    write_result(results)
+    success = not remaining["install"] and not remaining["remove"]
+    reporter.emit("complete", success=success, results=results,
+                  message="Vos applications sont prêtes." if success
+                  else "Certaines applications n'ont pas pu être installées.")
+    return EX_OK if success else EX_TEMPFAIL
+
+
+def command_status(args: argparse.Namespace) -> int:
+    payload = {"pending": read_pending()}
+    for key, path in (("last_run", RESULT), ("current", RUNTIME_STATUS)):
+        try:
+            payload[key] = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            payload[key] = None
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False))
+    else:
+        print(f"En attente : {', '.join(payload['pending']['install']) or 'aucune'}")
+    return EX_OK
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="djerba-apps", description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_list = sub.add_parser("list", help="afficher le catalogue")
+    p_list.add_argument("--json", action="store_true")
+
+    for name in ("install", "remove"):
+        p = sub.add_parser(name, help=f"{name} des applications")
+        p.add_argument("ids", nargs="+")
+        p.add_argument("--json-progress", action="store_true")
+
+    p_sel = sub.add_parser("apply-selection", help="appliquer un choix complet")
+    p_sel.add_argument("selection")
+    p_sel.add_argument("--installer", action="store_true")
+    p_sel.add_argument("--json-progress", action="store_true")
+
+    p_pending = sub.add_parser("apply-pending", help="installer la file d'attente")
+    p_pending.add_argument("--wait-network", type=int, default=600)
+    p_pending.add_argument("--json-progress", action="store_true")
+
+    p_status = sub.add_parser("status", help="état de la file d'attente")
+    p_status.add_argument("--json", action="store_true")
+
+    args = parser.parse_args()
+    try:
+        if args.command == "list":
+            return command_list(args)
+        if args.command == "install":
+            return command_install(args)
+        if args.command == "remove":
+            return command_install(args, remove=True)
+        if args.command == "apply-selection":
+            return command_apply_selection(args)
+        if args.command == "apply-pending":
+            return command_apply_pending(args)
+        return command_status(args)
+    except CatalogError as exc:
+        print(f"djerba-apps : {exc}", file=sys.stderr)
+        return EX_USAGE
+
+
+if __name__ == "__main__":
+    sys.exit(main())

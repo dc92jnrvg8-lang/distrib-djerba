@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Djerba Welcome
+Name[fr]=Bienvenue dans Djerba OS
+GenericName=Welcome assistant
+GenericName[fr]=Assistant d'accueil
+Comment=Applications, gaming mode, privacy and system information
+Comment[fr]=Applications, mode jeu, confidentialité et informations système
+Exec=djerba-welcome
+Icon=djerba-welcome
+Terminal=false
+Categories=Qt;KDE;System;Settings;
+Keywords=djerba;bienvenue;welcome;

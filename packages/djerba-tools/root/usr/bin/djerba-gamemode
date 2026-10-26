@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Djerba OS — mode jeu de la session (complète GameMode, qui agit par jeu).
+#
+# Usage : djerba-gamemode on|off|toggle|status [--json]
+#         djerba-gamemode mangohud on|off      superposition MangoHud (FPS,
+#                                              températures) pour les jeux
+#                                              Vulkan/OpenGL, à la reconnexion
+#
+#   on    profil d'énergie « performance » (power-profiles-daemon), effets
+#         visuels coûteux de KWin coupés (flou, contraste, animations de
+#         fenêtres) ; l'état antérieur est mémorisé
+#   off   restaure exactement l'état antérieur
+#
+# Commande utilisateur : aucun droit administrateur requis.
+set -euo pipefail
+
+readonly STATE="${XDG_STATE_HOME:-${HOME}/.local/state}/djerba-gamemode"
+readonly ENV_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/environment.d"
+readonly MANGOHUD_ENV="${ENV_DIR}/90-djerba-mangohud.conf"
+readonly EFFECTS=(blurEnabled contrastEnabled slidingpopupsEnabled kwin4_effect_scaleEnabled)
+
+JSON="false"
+
+log() { printf '[mode jeu] %s\n' "$*"; }
+die() { printf '[mode jeu] %s\n' "$*" >&2; exit 1; }
+
+notify() {
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send --app-name="Djerba OS" --icon=input-gaming "Mode jeu" "$1" || true
+    fi
+}
+
+active() { [[ -f "${STATE}/active" ]]; }
+
+kwin_reconfigure() {
+    if command -v qdbus6 >/dev/null 2>&1; then
+        qdbus6 org.kde.KWin /KWin reconfigure >/dev/null 2>&1 || true
+    else
+        dbus-send --session --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure \
+            >/dev/null 2>&1 || true
+    fi
+}
+
+turn_on() {
+    active && { log "déjà actif"; return 0; }
+    mkdir -p "${STATE}"
+    if command -v powerprofilesctl >/dev/null 2>&1; then
+        powerprofilesctl get > "${STATE}/power-profile" 2>/dev/null || echo balanced > "${STATE}/power-profile"
+        powerprofilesctl set performance 2>/dev/null \
+            || log "profil « performance » indisponible sur ce matériel ; profil inchangé"
+    fi
+    local effect value
+    : > "${STATE}/effects"
+    for effect in "${EFFECTS[@]}"; do
+        value="$(kreadconfig6 --file kwinrc --group Plugins --key "${effect}" --default "")"
+        printf '%s=%s\n' "${effect}" "${value}" >> "${STATE}/effects"
+        kwriteconfig6 --file kwinrc --group Plugins --key "${effect}" --type bool false
+    done
+    kwin_reconfigure
+    touch "${STATE}/active"
+    notify "Activé : performances maximales et effets visuels allégés."
+}
+
+turn_off() {
+    active || { log "déjà inactif"; return 0; }
+    if command -v powerprofilesctl >/dev/null 2>&1 && [[ -s "${STATE}/power-profile" ]]; then
+        powerprofilesctl set "$(cat "${STATE}/power-profile")" 2>/dev/null || true
+    fi
+    local effect value
+    while IFS='=' read -r effect value; do
+        [[ -n "${effect}" ]] || continue
+        if [[ -z "${value}" ]]; then
+            kwriteconfig6 --file kwinrc --group Plugins --key "${effect}" --delete
+        else
+            kwriteconfig6 --file kwinrc --group Plugins --key "${effect}" "${value}"
+        fi
+    done < "${STATE}/effects"
+    kwin_reconfigure
+    rm -f "${STATE}/active"
+    notify "Désactivé : réglages habituels restaurés."
+}
+
+mangohud() {
+    case "${1:-}" in
+        on)
+            mkdir -p "${ENV_DIR}"
+            printf '# Djerba OS — superposition MangoHud pour tous les jeux.\nMANGOHUD=1\n' > "${MANGOHUD_ENV}"
+            notify "Superposition MangoHud activée à la prochaine connexion."
+            ;;
+        off)
+            rm -f "${MANGOHUD_ENV}"
+            notify "Superposition MangoHud désactivée à la prochaine connexion."
+            ;;
+        *) die "usage : djerba-gamemode mangohud on|off" ;;
+    esac
+}
+
+status() {
+    local game="false" mango="false" profile="inconnu"
+    active && game="true"
+    [[ -f "${MANGOHUD_ENV}" ]] && mango="true"
+    if command -v powerprofilesctl >/dev/null 2>&1; then
+        profile="$(powerprofilesctl get 2>/dev/null || echo inconnu)"
+    fi
+    if [[ "${JSON}" == "true" ]]; then
+        printf '{"active": %s, "mangohud": %s, "power_profile": "%s"}\n' "${game}" "${mango}" "${profile}"
+    else
+        echo "Mode jeu : $([[ ${game} == true ]] && echo actif || echo inactif) — profil ${profile} — MangoHud ${mango}"
+    fi
+}
+
+main() {
+    local command="${1:-status}"
+    shift || true
+    if [[ "${command}" == "mangohud" ]]; then
+        mangohud "${1:-}"
+        return
+    fi
+    for argument in "$@"; do
+        [[ "${argument}" == "--json" ]] && JSON="true"
+    done
+    [[ "${EUID}" -ne 0 ]] || die "à lancer en tant qu'utilisateur (pas en root)"
+    case "${command}" in
+        on) turn_on ;;
+        off) turn_off ;;
+        toggle) if active; then turn_off; else turn_on; fi ;;
+        status) status ;;
+        -h|--help) sed -n '3,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+        *) die "commande inconnue : ${command} (voir --help)" ;;
+    esac
+}
+
+main "$@"

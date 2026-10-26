@@ -1,0 +1,4 @@
+[General]
+LogoPath=/usr/share/pixmaps/djerba-os.png
+Website=https://github.com/dc92jnrvg8-lang/distrib-djerba
+Variant=Basé sur Debian 13 « trixie »

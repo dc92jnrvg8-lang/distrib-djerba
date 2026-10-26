@@ -1,0 +1,23 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Undercover Mode
+Name[fr]=Mode discret
+Comment=Switch to a Windows-like look, and back
+Comment[fr]=Basculer vers une apparence façon Windows, et revenir
+Exec=djerba-undercover toggle
+Icon=djerba-undercover-start
+Terminal=false
+Categories=Qt;KDE;Settings;
+Keywords=undercover;incognito;discret;windows;
+Actions=Style10;Style11;
+
+[Desktop Action Style10]
+Name=Windows 10 style
+Name[fr]=Style Windows 10
+Exec=djerba-undercover on --style 10
+
+[Desktop Action Style11]
+Name=Windows 11 style
+Name[fr]=Style Windows 11
+Exec=djerba-undercover on --style 11

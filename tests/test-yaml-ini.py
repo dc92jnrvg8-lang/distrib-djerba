@@ -9,8 +9,9 @@ Exécuté avant toute compilation (lints locaux, CI, build.sh). Il garantit :
   déclarant les sous-volumes BTRFS ``/@`` (racine) et ``/@home`` (/home) ;
 * que ``flathub.conf`` est un INI strict contenant la section
   ``[remote "flathub"]`` et l'URL officielle du dépôt ;
-* que tous les autres YAML (Calamares, netplan) et INI (SDDM, KDE, .desktop)
-  livrés dans ``config/includes.chroot`` sont syntaxiquement parfaits.
+* que tous les autres YAML (Calamares, catalogue d'applications) et INI
+  (SDDM, KDE, .desktop) livrés dans ``config/includes.chroot`` et les
+  paquets Djerba (``packages/*/root``) sont syntaxiquement parfaits.
 
 Code de retour : 0 si tout est valide, 1 sinon.
 """
@@ -32,7 +33,6 @@ MODULES = CALAMARES / "modules"
 MOUNT_CONF = MODULES / "mount.conf"
 FSTAB_CONF = MODULES / "fstab.conf"
 FLATHUB_CONF = CHROOT / "etc" / "flatpak" / "remotes.d" / "flathub.conf"
-NETPLAN_CONF = CHROOT / "etc" / "netplan" / "01-network-manager-all.yaml"
 SETTINGS_CONF = CALAMARES / "settings.conf"
 
 FLATHUB_URL = "https://dl.flathub.org/repo/flathub.flatpakrepo"
@@ -48,6 +48,8 @@ MODULES_WITHOUT_CONF = {
     "initramfscfg",
     "umount",
     "keyboard",
+    "djerbaapps",   # module Djerba sans configuration
+    "netinstall",   # configuration générée depuis le catalogue (build.sh)
 }
 
 
@@ -87,9 +89,9 @@ def load_yaml(path: Path) -> Any:
         raise ValidationError(f"YAML invalide : {exc}") from exc
 
 
-def load_ini(path: Path) -> configparser.ConfigParser:
+def load_ini(path: Path, strict: bool = True) -> configparser.ConfigParser:
     parser = configparser.ConfigParser(
-        interpolation=None, strict=True, delimiters=("=",), comment_prefixes=("#", ";")
+        interpolation=None, strict=strict, delimiters=("=",), comment_prefixes=("#", ";")
     )
     parser.optionxform = str  # conserve la casse (KDE, SDDM, .desktop)
     try:
@@ -209,14 +211,6 @@ def check_flathub_conf(path: Path) -> None:
     expect(section.get("url") == FLATHUB_URL, f"url attendue : {FLATHUB_URL}")
 
 
-def check_netplan(path: Path) -> None:
-    data = load_yaml(path)
-    expect(isinstance(data, dict) and set(data) == {"network"}, "racine 'network' unique attendue")
-    network = data["network"]
-    expect(network.get("version") == 2, "network.version doit valoir 2")
-    expect(network.get("renderer") == "NetworkManager", "network.renderer doit être NetworkManager")
-
-
 def check_settings(path: Path) -> None:
     data = load_yaml(path)
     expect(isinstance(data, dict), "la racine doit être un dictionnaire")
@@ -247,12 +241,22 @@ def check_generic_ini(path: Path) -> None:
     load_ini(path)
 
 
+def check_systemd_unit(path: Path) -> None:
+    # systemd autorise la répétition d'une clé (ExecStartPre=, After=…) :
+    # syntaxe INI validée sans l'interdiction des doublons.
+    parser = load_ini(path, strict=False)
+    for section in ("Unit", "Service"):
+        if not parser.has_section(section):
+            raise ValidationError(f"section [{section}] absente")
+    if not parser.has_option("Service", "ExecStart"):
+        raise ValidationError("ExecStart absent de [Service]")
+
+
 def main() -> int:
     checks: list[tuple[Path, Callable[[Path], None]]] = [
         (MOUNT_CONF, check_mount_conf),
         (FSTAB_CONF, check_fstab_conf),
         (FLATHUB_CONF, check_flathub_conf),
-        (NETPLAN_CONF, check_netplan),
         (SETTINGS_CONF, check_settings),
     ]
     dedicated = {path for path, _ in checks}
@@ -268,6 +272,15 @@ def main() -> int:
     for pattern in ini_globs:
         for path in sorted(CHROOT.glob(pattern)):
             checks.append((path, check_generic_ini))
+    for pattern in ("packages/*/root/etc/xdg/autostart/*.desktop",
+                    "packages/*/root/usr/share/applications/*.desktop",
+                    "packages/*/root/etc/xdg/*rc"):
+        for path in sorted(ROOT.glob(pattern)):
+            checks.append((path, check_generic_ini))
+    for path in sorted(ROOT.glob("packages/*/root/usr/lib/systemd/system/*.service")):
+        checks.append((path, check_systemd_unit))
+    for path in sorted(ROOT.glob("packages/*/root/usr/share/djerba/*.yaml")):
+        checks.append((path, check_generic_yaml))
 
     failures = 0
     for path, check in checks:

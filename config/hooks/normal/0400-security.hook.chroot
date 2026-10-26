@@ -52,6 +52,10 @@ net.ipv4.conf.all.log_martians = 1
 net.ipv4.icmp_echo_ignore_broadcasts = 1
 CONF
 
+# --- Tor : uniquement à la demande (mode anonyme, djerba-anonsurf) ------------
+systemctl disable tor.service
+systemctl mask tor@default.service
+
 # --- AppArmor actif au démarrage -------------------------------------------------
 systemctl enable apparmor.service
 

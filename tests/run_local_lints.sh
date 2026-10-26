@@ -90,11 +90,24 @@ for script in "${SHELL_SCRIPTS[@]}"; do
             fi
             ;;
         *)
-            if grep -qE '^set -eu$|^set -eux$' "${script}"; then
-                pass "${script} (POSIX sh : set -eu)"
-            else
-                fail "${script} : 'set -eu' absent"
-            fi
+            case "${script}" in
+                */DEBIAN/*)
+                    # Scripts de mainteneur Debian : convention « set -e »
+                    # (variables positionnelles de dpkg facultatives).
+                    if grep -qE '^set -e$' "${script}"; then
+                        pass "${script} (script de mainteneur : set -e)"
+                    else
+                        fail "${script} : 'set -e' absent"
+                    fi
+                    ;;
+                *)
+                    if grep -qE '^set -eu$|^set -eux$' "${script}"; then
+                        pass "${script} (POSIX sh : set -eu)"
+                    else
+                        fail "${script} : 'set -eu' absent"
+                    fi
+                    ;;
+            esac
             ;;
     esac
     if [[ ! -x "${script}" ]]; then
@@ -131,7 +144,7 @@ while IFS= read -r -d '' policy; do
     else
         fail "${policy}"
     fi
-done < <(find config/includes.chroot -name '*.policy' -print0)
+done < <(find config/includes.chroot packages -name '*.policy' -print0)
 
 section "sudoers"
 if command -v visudo >/dev/null 2>&1; then
@@ -159,7 +172,7 @@ if [[ -n "${QMLLINT}" ]]; then
         else
             fail "${qml}"
         fi
-    done < <(find config/includes.chroot -name '*.qml' -print0)
+    done < <(find config/includes.chroot packages -name '*.qml' -print0)
 else
     printf 'qmllint indisponible : le QML est validé au chargement par test-features.sh.\n'
 fi

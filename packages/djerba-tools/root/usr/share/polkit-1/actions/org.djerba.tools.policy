@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Djerba OS</vendor>
+  <vendor_url>https://github.com/dc92jnrvg8-lang/distrib-djerba</vendor_url>
+
+  <action id="org.djerba.apps">
+    <description>Install or remove applications</description>
+    <description xml:lang="fr">Installer ou supprimer des applications</description>
+    <message>Authentication is required to install or remove applications</message>
+    <message xml:lang="fr">Une authentification est nécessaire pour installer ou supprimer des applications</message>
+    <icon_name>plasmadiscover</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/djerba-apps</annotate>
+  </action>
+
+  <action id="org.djerba.anonsurf">
+    <description>Enable or disable anonymous mode (Tor)</description>
+    <description xml:lang="fr">Activer ou désactiver le mode anonyme (Tor)</description>
+    <message>Authentication is required to change the anonymous mode</message>
+    <message xml:lang="fr">Une authentification est nécessaire pour changer le mode anonyme</message>
+    <icon_name>tor</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/djerba-anonsurf</annotate>
+  </action>
+
+</policyconfig>

@@ -188,6 +188,18 @@ case "${result}" in
         else
             echo "[qemu] démarrage système vérifié (émulation TCG) ; session graphique non vérifiable sans KVM"
         fi
+        # /etc/issue (avant l'invite du getty) affiche PRETTY_NAME ; sans
+        # invite (TCG), seule la bannière « Welcome to … » de systemd est
+        # éventuellement disponible.
+        if grep -qaE 'Welcome to .*Djerba OS|Djerba OS.*tty(S0|AMA0)' "${SERIAL_TEXT}"; then
+            echo "[qemu] identité Djerba OS affichée au démarrage"
+        elif ! grep -qa 'djerba login:' "${SERIAL_TEXT}"; then
+            echo "[qemu] identité non vérifiable sans invite de connexion (émulation TCG)"
+        else
+            echo "[qemu] le démarrage n'affiche pas « Djerba OS » (os-release de la distribution de base ?)" >&2
+            grep -aE 'Welcome to' "${SERIAL_TEXT}" | tail -n 1 >&2 || true
+            exit 1
+        fi
         sleep "${DESKTOP_WAIT}"
         PPM="${OUT}/desktop-${ARCH}.ppm"
         if qmp screendump "{\"filename\": \"${PPM}\"}"; then

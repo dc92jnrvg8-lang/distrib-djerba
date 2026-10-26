@@ -1,0 +1,259 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Djerba OS — mode anonyme : tout le trafic passe par Tor (inspiré d'AnonSurf).
+#
+# Usage : djerba-anonsurf start|stop|restart|toggle|status|change|myip [--json]
+#
+#   start    applique d'abord le coupe-circuit nftables (aucune fuite possible),
+#            puis démarre Tor et attend la fin de son amorçage :
+#              * TCP sortant  -> TransPort de Tor (127.0.0.1:9040)
+#              * DNS (UDP 53) -> DNSPort de Tor (127.0.0.1:5353), .onion compris
+#              * réseau local (RFC 1918) et DHCP autorisés, tout le reste bloqué
+#                (IPv6, UDP, ICMP), y compris si Tor s'arrête
+#   stop     retire les règles, arrête Tor, vide le cache DNS
+#   change   nouvelle identité Tor (SIGNAL NEWNYM : nouveaux circuits)
+#   myip     adresse IP publique vue d'Internet et passage ou non par Tor
+#   status   état du mode anonyme (--json pour l'assistant)
+set -euo pipefail
+
+readonly TABLE="djerba_anonsurf"
+readonly SERVICE="djerba-anonsurf-tor.service"
+readonly TOR_USER="debian-tor"
+readonly TRANS_PORT=9040
+readonly DNS_PORT=5353
+readonly CONTROL_SOCKET="/run/tor/control"
+readonly COOKIE="/run/tor/control.authcookie"
+readonly STATE_DIR="/run/djerba-anonsurf"
+readonly BOOTSTRAP_TIMEOUT=120
+
+JSON="false"
+
+log() { printf '[mode anonyme] %s\n' "$*"; }
+die() { printf '[mode anonyme] %s\n' "$*" >&2; exit 1; }
+
+require_root() {
+    [[ "${EUID}" -eq 0 ]] || die "droits administrateur requis : pkexec djerba-anonsurf $*"
+}
+
+notify_users() {
+    # Notification de bureau pour chaque session graphique active.
+    local message="$1" uid user
+    command -v notify-send >/dev/null 2>&1 || return 0
+    while read -r uid user; do
+        [[ -S "/run/user/${uid}/bus" ]] || continue
+        runuser -u "${user}" -- env DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" \
+            notify-send --app-name="Djerba OS" --icon=tor "Mode anonyme" "${message}" 2>/dev/null || true
+    done < <(loginctl list-users --no-legend 2>/dev/null | awk '{print $1, $2}')
+}
+
+rules_active() {
+    nft list table inet "${TABLE}" >/dev/null 2>&1
+}
+
+apply_rules() {
+    local tor_uid
+    tor_uid="$(id -u "${TOR_USER}")"
+    nft -f - <<EOF
+table inet ${TABLE}
+delete table inet ${TABLE}
+table inet ${TABLE} {
+    set local4 {
+        type ipv4_addr
+        flags interval
+        elements = { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 }
+    }
+
+    chain nat_output {
+        type nat hook output priority dstnat; policy accept;
+        meta skuid ${tor_uid} return
+        udp dport 53 redirect to :${DNS_PORT}
+        ip daddr 10.192.0.0/10 meta l4proto tcp redirect to :${TRANS_PORT}
+        ip daddr 127.0.0.0/8 return
+        ip daddr @local4 return
+        meta nfproto ipv4 meta l4proto tcp redirect to :${TRANS_PORT}
+    }
+
+    chain filter_output {
+        type filter hook output priority filter; policy drop;
+        oifname "lo" accept
+        meta skuid ${tor_uid} accept
+        ip daddr @local4 accept
+        udp sport 68 udp dport 67 accept
+        meta nfproto ipv4 icmp type { echo-request } ip daddr @local4 accept
+        counter log prefix "djerba-anonsurf drop: " level info limit rate 5/minute
+    }
+}
+EOF
+}
+
+remove_rules() {
+    if rules_active; then
+        nft delete table inet "${TABLE}"
+    fi
+}
+
+tor_control() {
+    # Envoie des commandes au socket de contrôle de Tor (authentification par cookie).
+    python3 - "${CONTROL_SOCKET}" "${COOKIE}" "$@" <<'PY'
+import socket
+import sys
+
+path, cookie_path, *commands = sys.argv[1:]
+with open(cookie_path, "rb") as handle:
+    cookie = handle.read().hex()
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(10)
+client.connect(path)
+stream = client.makefile("rwb")
+
+
+def send(line):
+    stream.write((line + "\r\n").encode())
+    stream.flush()
+    reply = []
+    while True:
+        raw = stream.readline().decode(errors="replace").rstrip("\r\n")
+        reply.append(raw)
+        if len(raw) >= 4 and raw[3] == " ":
+            return reply
+
+
+if not send(f"AUTHENTICATE {cookie}")[-1].startswith("250"):
+    sys.exit("authentification refusée par Tor")
+for command in commands:
+    for line in send(command):
+        print(line)
+send("QUIT")
+PY
+}
+
+bootstrap_progress() {
+    tor_control "GETINFO status/bootstrap-phase" 2>/dev/null \
+        | sed -n 's/.*PROGRESS=\([0-9]*\).*/\1/p' | head -n 1
+}
+
+wait_bootstrap() {
+    local elapsed=0 progress
+    while [[ "${elapsed}" -lt "${BOOTSTRAP_TIMEOUT}" ]]; do
+        progress="$(bootstrap_progress || true)"
+        if [[ "${progress}" == "100" ]]; then
+            return 0
+        fi
+        log "connexion au réseau Tor : ${progress:-0} %"
+        sleep 3
+        elapsed=$((elapsed + 3))
+    done
+    return 1
+}
+
+flush_dns() {
+    resolvectl flush-caches 2>/dev/null || true
+}
+
+start() {
+    require_root start
+    install -d -m 0755 "${STATE_DIR}"
+    rm -f "${STATE_DIR}/active"
+    touch "${STATE_DIR}/starting"
+    log "activation du coupe-circuit (nftables)"
+    apply_rules
+    flush_dns
+    log "démarrage de Tor"
+    systemctl stop tor.service >/dev/null 2>&1 || true
+    systemctl start "${SERVICE}"
+    if ! wait_bootstrap; then
+        notify_users "Tor ne parvient pas à se connecter : le trafic reste bloqué. Désactivez le mode anonyme pour retrouver Internet."
+        die "Tor n'a pas terminé son amorçage en ${BOOTSTRAP_TIMEOUT} s ; le trafic reste bloqué (djerba-anonsurf stop pour revenir)."
+    fi
+    date +%s > "${STATE_DIR}/since"
+    rm -f "${STATE_DIR}/starting"
+    touch "${STATE_DIR}/active"
+    flush_dns
+    log "mode anonyme actif : tout le trafic passe par Tor"
+    notify_users "Activé : tout le trafic passe désormais par le réseau Tor."
+}
+
+stop() {
+    require_root stop
+    log "retrait des règles"
+    remove_rules
+    systemctl stop "${SERVICE}" >/dev/null 2>&1 || true
+    rm -rf "${STATE_DIR}"
+    flush_dns
+    log "mode anonyme désactivé"
+    notify_users "Désactivé : connexion directe rétablie."
+}
+
+change_identity() {
+    require_root change
+    systemctl is-active --quiet "${SERVICE}" || die "le mode anonyme n'est pas actif"
+    tor_control "SIGNAL NEWNYM" >/dev/null
+    flush_dns
+    log "nouvelle identité Tor demandée (nouveaux circuits)"
+    notify_users "Nouvelle identité : de nouveaux circuits Tor sont utilisés."
+}
+
+my_ip() {
+    local answer
+    if answer="$(curl -fsS --max-time 30 https://check.torproject.org/api/ip 2>/dev/null)"; then
+        if [[ "${JSON}" == "true" ]]; then
+            printf '%s\n' "${answer}"
+        else
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print(f"IP publique : {d.get(\"IP\")} — via Tor : {\"oui\" if d.get(\"IsTor\") else \"non\"}")' <<< "${answer}"
+        fi
+    else
+        die "impossible de joindre check.torproject.org"
+    fi
+}
+
+status() {
+    # Lisible sans privilège : l'état est publié dans /run/djerba-anonsurf ;
+    # en root, la présence réelle des règles nftables fait foi.
+    local active="false" starting="false" tor="false" progress="0" since=""
+    if [[ "${EUID}" -eq 0 ]]; then
+        if rules_active; then active="true"; fi
+    elif [[ -f "${STATE_DIR}/active" ]]; then
+        active="true"
+    fi
+    if [[ -f "${STATE_DIR}/starting" ]]; then starting="true"; fi
+    if systemctl is-active --quiet "${SERVICE}"; then
+        tor="true"
+        if [[ "${EUID}" -eq 0 ]]; then
+            progress="$(bootstrap_progress || echo 0)"
+        elif [[ -f "${STATE_DIR}/active" ]]; then
+            progress="100"
+        fi
+    fi
+    if [[ -r "${STATE_DIR}/since" ]]; then since="$(cat "${STATE_DIR}/since")"; fi
+    if [[ "${JSON}" == "true" ]]; then
+        printf '{"active": %s, "starting": %s, "tor": %s, "bootstrap": %s, "since": "%s"}\n' \
+            "${active}" "${starting}" "${tor}" "${progress:-0}" "${since}"
+    else
+        if [[ "${active}" == "true" ]]; then
+            echo "Mode anonyme : ACTIF (Tor : ${tor}, amorçage ${progress:-?} %)"
+        else
+            echo "Mode anonyme : inactif"
+        fi
+    fi
+}
+
+main() {
+    local command="${1:-status}"
+    shift || true
+    for argument in "$@"; do
+        [[ "${argument}" == "--json" ]] && JSON="true"
+    done
+    case "${command}" in
+        start) start ;;
+        stop) stop ;;
+        restart) stop; start ;;
+        toggle) if rules_active; then stop; else start; fi ;;
+        change|newnym) change_identity ;;
+        myip) my_ip ;;
+        status) status ;;
+        -h|--help) sed -n '3,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+        *) die "commande inconnue : ${command} (voir --help)" ;;
+    esac
+}
+
+main "$@"

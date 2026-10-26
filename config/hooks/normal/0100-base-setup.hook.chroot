@@ -20,26 +20,28 @@ CONF
 # includes.chroot/usr/local/share/ca-certificates/ (proxy d'entreprise…).
 update-ca-certificates
 
-# --- Locales (méthode Ubuntu : locale-gen enregistre les locales demandées
-# dans /var/lib/locales/supported.d/ puis les compile) -----------------------
-locale-gen en_US.UTF-8 fr_FR.UTF-8
+# --- Locales (méthode Debian : locale-gen compile les entrées actives de
+# /etc/locale.gen) ---------------------------------------------------------------
+for locale in en_US fr_FR; do
+    sed -i -E "s/^# *(${locale}\.UTF-8 UTF-8)/\1/" /etc/locale.gen
+    grep -qx "${locale}.UTF-8 UTF-8" /etc/locale.gen || echo "${locale}.UTF-8 UTF-8" >> /etc/locale.gen
+done
+locale-gen
 update-locale LANG=fr_FR.UTF-8
 
-# --- Identité de la distribution ----------------------------------------------
-cat > /etc/djerba-release <<'CONF'
-DJERBA_NAME="Djerba OS"
-DJERBA_BASE="Ubuntu 24.04 LTS (noble)"
-DJERBA_HOME_URL="https://github.com/dc92jnrvg8-lang/distrib-djerba"
-CONF
-printf 'Djerba OS (Ubuntu 24.04 LTS) \\n \\l\n\n' > /etc/issue
-printf 'Djerba OS (Ubuntu 24.04 LTS)\n' > /etc/issue.net
+# L'identité de la distribution (/usr/lib/os-release, logo de « À propos »)
+# est fournie par le paquet djerba-branding (dpkg-divert). /etc/issue est un
+# conffile de base-files : il ne peut être dérouté (Charte Debian 10.7.4) et
+# reçoit donc ici sa valeur locale.
+djerba_release="$(. /etc/os-release && echo "${PRETTY_NAME}")"
+[[ "${djerba_release}" == Djerba* ]]
+printf '%s \\n \\l\n\n' "${djerba_release}" > /etc/issue
+printf '%s\n' "${djerba_release}" > /etc/issue.net
 
 # --- Droits des fichiers sensibles fournis par includes.chroot ----------------
-chown root:root /etc/sudoers.d/live-user /etc/netplan/01-network-manager-all.yaml
+chown root:root /etc/sudoers.d/live-user
 chmod 0440 /etc/sudoers.d/live-user
-chmod 0600 /etc/netplan/01-network-manager-all.yaml
 visudo -cf /etc/sudoers.d/live-user
-chmod 0755 /usr/local/bin/djerba-welcome
 
 # --- Réseau : NetworkManager gère toutes les interfaces -----------------------
 systemctl enable NetworkManager.service

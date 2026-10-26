@@ -1,0 +1,15 @@
+#!/bin/sh
+# Djerba OS — djerba-tools : active le service de premier démarrage.
+set -e
+
+case "$1" in
+    configure)
+        mkdir -p /var/lib/djerba/apps
+        systemctl enable djerba-apps-firstboot.service >/dev/null 2>&1 || true
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload || true
+        fi
+        ;;
+esac
+
+exit 0

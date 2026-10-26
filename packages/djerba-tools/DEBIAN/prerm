@@ -1,0 +1,14 @@
+#!/bin/sh
+# Djerba OS — djerba-tools : coupe le mode anonyme et retire le service.
+set -e
+
+case "$1" in
+    remove|purge)
+        if [ -x /usr/bin/djerba-anonsurf ]; then
+            /usr/bin/djerba-anonsurf stop >/dev/null 2>&1 || true
+        fi
+        systemctl disable djerba-apps-firstboot.service >/dev/null 2>&1 || true
+        ;;
+esac
+
+exit 0

@@ -163,24 +163,69 @@ Presentation {
 {% endblock -%}
 
 {%- block stylesheet -%}
-/* Djerba OS — feuille de style Calamares (générée par assets_generator). */
+/* Djerba OS — feuille de style Calamares (générée par assets_generator).
+ *
+ * Calamares s'exécute en root via pkexec, sans le thème sombre de KDE :
+ * Qt applique sa palette claire par défaut. Toutes les surfaces (fenêtre,
+ * vues défilantes, résumé, partitions, listes) sont donc redéfinies ici
+ * pour garder un contraste lisible partout. */
 QWidget {
     font-family: "Inter";
     font-size: 10pt;
 }
 
-#mainApp {
-    background-color: {{ c.night }};
-}
-
-#sidebarApp {
-    background-color: {{ c.night }};
-}
-
-#mainApp QLabel,
-#mainApp QCheckBox,
-#mainApp QRadioButton {
+#mainApp, #mainApp QWidget {
     color: {{ c.white }};
+    background-color: {{ c.night }};
+}
+
+#sidebarApp, #sidebarMenuApp, #sidebarApp QWidget {
+    background-color: {{ c.night }};
+}
+
+#mainApp QLabel, #mainApp QCheckBox, #mainApp QRadioButton, #mainApp QGroupBox {
+    color: {{ c.white }};
+    background-color: transparent;
+}
+
+#mainApp QLabel:disabled, #mainApp QCheckBox:disabled, #mainApp QRadioButton:disabled {
+    color: {{ c.muted }};
+}
+
+/* Vues défilantes : la fenêtre d'affichage hérite du fond nuit. */
+#mainApp QScrollArea,
+#mainApp QAbstractScrollArea,
+#mainApp QWidget#qt_scrollarea_viewport {
+    background-color: {{ c.night }};
+    border: none;
+}
+
+/* Page « Résumé ». */
+#summaryStep, #summaryStep QWidget {
+    background-color: {{ c.night }};
+}
+#summaryTitle {
+    color: {{ c.white }};
+    font-size: 13pt;
+}
+#summaryItemTitle {
+    color: {{ c.turquoise }};
+    font-size: 12pt;
+    font-weight: 600;
+    background-color: transparent;
+}
+#summaryItemBody {
+    color: {{ c.white }};
+    background-color: {{ c.deep }};
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 10px;
+    padding: 10px 14px;
+}
+
+/* Page « Partitions ». */
+#partitionLabel, #partitionLabel QWidget {
+    color: {{ c.white }};
+    background-color: transparent;
 }
 
 #mainApp QPushButton {
@@ -210,7 +255,7 @@ QWidget {
 #mainApp QComboBox,
 #mainApp QSpinBox {
     color: {{ c.white }};
-    background-color: rgba(255, 255, 255, 0.08);
+    background-color: {{ c.deep }};
     border: 1px solid rgba(255, 255, 255, 0.20);
     border-radius: 8px;
     padding: 5px 8px;
@@ -223,16 +268,36 @@ QWidget {
     border: 2px solid {{ c.turquoise }};
 }
 
+#mainApp QComboBox QAbstractItemView {
+    color: {{ c.white }};
+    background-color: {{ c.deep }};
+    selection-background-color: {{ c.turquoise }};
+    selection-color: {{ c.night }};
+}
+
 #mainApp QListView,
 #mainApp QTreeView,
-#mainApp QTableView {
+#mainApp QTableView,
+#mainApp QTextBrowser,
+#mainApp QPlainTextEdit {
     color: {{ c.white }};
-    background-color: rgba(255, 255, 255, 0.05);
-    alternate-background-color: rgba(255, 255, 255, 0.08);
+    background-color: {{ c.deep }};
+    alternate-background-color: #0D2747;
     border: 1px solid rgba(255, 255, 255, 0.14);
     border-radius: 10px;
     selection-background-color: {{ c.turquoise }};
     selection-color: {{ c.night }};
+}
+
+#mainApp QTreeView::item, #mainApp QListView::item {
+    padding: 4px;
+}
+
+#mainApp QHeaderView::section {
+    color: {{ c.muted }};
+    background-color: {{ c.night }};
+    border: none;
+    padding: 6px;
 }
 
 #mainApp QProgressBar {
@@ -250,7 +315,9 @@ QWidget {
                                       stop: 0 {{ c.turquoise }}, stop: 1 {{ c.aqua }});
 }
 
-#sidebarMenuApp {
-    background-color: {{ c.night }};
+#mainApp QToolTip {
+    color: {{ c.white }};
+    background-color: {{ c.deep }};
+    border: 1px solid {{ c.turquoise }};
 }
 {% endblock -%}

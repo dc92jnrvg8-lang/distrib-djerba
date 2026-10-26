@@ -5,9 +5,10 @@
 # Étapes :
 #   1. contrôles préalables (root, outils, live-build moderne)
 #   2. rafraîchissement APT avec reprise automatique (micro-coupures ARM64)
-#   3. choix du noyau : lowlatency si publié pour l'architecture, sinon generic
-#   4. lints et validation YAML/INI (tests/run_local_lints.sh)
-#   5. génération de l'identité visuelle (assets_generator/generate_assets.py)
+#   3. lints et validation YAML/INI (tests/run_local_lints.sh)
+#   4. génération de l'identité visuelle (assets_generator/generate_assets.py)
+#   5. construction des paquets Djerba (packages/build-packages.sh), déposés
+#      dans config/packages.chroot/ où live-build les installe nativement
 #   6. lb clean / lb config / lb build (reprise native par étapes en cas
 #      d'échec réseau : live-build ne rejoue que les étapes non terminées)
 #   7. publication de l'ISO et de sa somme SHA-256 dans artifacts/
@@ -115,7 +116,7 @@ preflight() {
     local lb_version
     lb_version="$(dpkg-query -W -f='${Version}' live-build 2>/dev/null || true)"
     [[ "${lb_version}" == 1:* ]] || die "live-build moderne (1:2023xxxx+) requis, trouvé : ${lb_version:-aucun}."
-    [[ -r /usr/share/keyrings/ubuntu-archive-keyring.gpg ]] || die "ubuntu-keyring manquant."
+    [[ -r /usr/share/keyrings/debian-archive-keyring.gpg ]] || die "debian-archive-keyring manquant."
     log "live-build ${lb_version} — cible ${ARCH} — version ${VERSION}"
 }
 
@@ -130,17 +131,9 @@ refresh_apt() {
     done
 }
 
-select_kernel_flavour() {
-    # L'hôte est un Ubuntu 24.04 de même architecture que la cible avec les
-    # mêmes composantes : ses index APT reflètent donc le dépôt de l'ISO.
-    if apt-cache show --no-all-versions linux-image-lowlatency >/dev/null 2>&1; then
-        DJERBA_KERNEL_FLAVOUR="lowlatency"
-    else
-        warn "linux-image-lowlatency indisponible pour ${ARCH} : repli sur linux-image-generic."
-        DJERBA_KERNEL_FLAVOUR="generic"
-    fi
-    export DJERBA_KERNEL_FLAVOUR
-    log "Noyau retenu : linux-image-${DJERBA_KERNEL_FLAVOUR}"
+build_packages() {
+    log "Construction des paquets Djerba"
+    "${ROOT}/packages/build-packages.sh" --version "${VERSION}" --output "${ROOT}/config/packages.chroot"
 }
 
 run_lints() {
@@ -158,6 +151,7 @@ generate_assets() {
     else
         log "Génération de l'identité visuelle"
         QT_QPA_PLATFORM=offscreen python3 "${ROOT}/assets_generator/generate_assets.py" --version "${VERSION}"
+        python3 "${ROOT}/tools/catalog-to-netinstall.py" --arch "${ARCH}"
     fi
     [[ -f "${ROOT}/config/bootloaders/grub-pc/splash.png" ]] \
         || die "Assets absents : lancez assets_generator/generate_assets.py."
@@ -209,9 +203,9 @@ main() {
     fi
     preflight
     refresh_apt
-    select_kernel_flavour
     run_lints
     generate_assets
+    build_packages
     live_build
     publish
 }

@@ -1,13 +1,5 @@
 # Djerba OS — réponses debconf appliquées nativement par live-build
 # (chroot_preseed) avant l'installation des listes de paquets.
-#
-# Steam (x86_64) : l'image distribue le lanceur Steam préinstallé ; son
-# utilisation reste soumise à l'accord de souscription Steam présenté par
-# Valve lors de la création/connexion du compte (voir README).
-steam-installer steam/question select I AGREE
-steam-installer steam/license note
-steam-installer steam/purge note
-
 keyboard-configuration keyboard-configuration/layoutcode string fr
 keyboard-configuration keyboard-configuration/model select Generic 105-key PC
 console-setup console-setup/charmap47 select UTF-8

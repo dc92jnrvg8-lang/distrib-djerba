@@ -39,6 +39,9 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = Path(__file__).resolve().parent / "templates"
+# Sorties : identité durable empaquetée dans djerba-branding (installée sur
+# le système live comme sur la cible) ; branding Calamares propre au live.
+BRANDING = ROOT / "build" / "djerba-branding"
 CHROOT = ROOT / "config" / "includes.chroot"
 
 PRODUCT = "Djerba OS"
@@ -66,28 +69,37 @@ PLYMOUTH_RING = 360
 SLIDES = [
     {
         "title": "Bienvenue sur Djerba OS",
-        "body": "Un système léger et sécurisé, taillé pour le jeu, construit sur Ubuntu 24.04 LTS.",
+        "body": "Un système léger, sûr et taillé pour le jeu, construit sur Debian 13 « trixie ».",
         "accent": COLORS["turquoise"],
     },
     {
-        "title": "Prêt pour le jeu",
-        "body": "Noyau à faible latence, GameMode, Vulkan, Steam sur x86_64 et Flathub prêts à l’emploi.",
+        "title": "Vos applications, votre choix",
+        "body": "Steam, Lutris, Heroic, Bottles, Discord, OBS… Les applications cochées s’installent "
+                "dès le premier démarrage, avec une barre de progression dans l’assistant.",
         "accent": COLORS["coral"],
+    },
+    {
+        "title": "Prêt pour le jeu",
+        "body": "Noyau à préemption complète, GameMode, MangoHud, vkBasalt et Vulkan ; "
+                "le mode jeu libère toutes les performances en un clic.",
+        "accent": COLORS["aqua"],
+    },
+    {
+        "title": "Mode anonyme et mode discret",
+        "body": "Tout le trafic via Tor avec coupe-circuit anti-fuite, et une apparence façon "
+                "Windows 10 ou 11 pour passer inaperçu en public.",
+        "accent": COLORS["sand"],
+    },
+    {
+        "title": "Sécurité par défaut",
+        "body": "Pare-feu UFW, antivirus ClamAV, profils AppArmor et mises à jour de sécurité "
+                "Debian automatiques.",
+        "accent": COLORS["turquoise"],
     },
     {
         "title": "BTRFS et zstd",
         "body": "Sous-volumes @ et @home, compression transparente et options optimisées pour SSD.",
-        "accent": COLORS["aqua"],
-    },
-    {
-        "title": "Sécurité par défaut",
-        "body": "Pare-feu UFW actif, profils AppArmor, noyau durci et mises à jour de sécurité automatiques.",
-        "accent": COLORS["sand"],
-    },
-    {
-        "title": "Plasma sous Wayland",
-        "body": "Le bureau KDE Plasma sous Wayland, avec des effets de verre fluides à 60 images par seconde.",
-        "accent": COLORS["turquoise"],
+        "accent": COLORS["coral"],
     },
 ]
 
@@ -132,50 +144,63 @@ def reset_dir(path: Path) -> Path:
 # Primitives vectorielles
 # --------------------------------------------------------------------------
 def logo_fragment(prefix: str = "lg") -> str:
-    """Logo Djerba OS : soleil couchant sur trois vagues, dans un carré de verre.
+    """Logo Djerba OS : monogramme « D » dont l'œil est une arche de menzel
+    djerbien, ouverte sur un soleil couchant et le lagon, dans un carré de verre.
 
     Fragment SVG pour un viewBox 0 0 256 256 ; ``prefix`` rend les
     identifiants uniques lorsque le logo est inséré dans un autre document.
     """
     c = COLORS
     p = prefix
+    # Arche en fer à cheval : piédroits verticaux, voûte légèrement outrepassée.
+    arch = "M104 182 V118 A28 28 0 0 1 160 118 V182 Z"
+    letter = "M80 46 H126 A82 82 0 0 1 126 210 H80 A14 14 0 0 1 66 196 V60 A14 14 0 0 1 80 46 Z"
     return f"""
     <defs>
-      <linearGradient id="{p}Glass" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/>
-        <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.05"/>
+      <linearGradient id="{p}Tile" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="{c['deep']}"/>
+        <stop offset="0.55" stop-color="{c['night']}"/>
+        <stop offset="1" stop-color="{c['lagoon']}"/>
       </linearGradient>
-      <linearGradient id="{p}Edge" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.65"/>
-        <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.10"/>
-        <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.35"/>
+      <radialGradient id="{p}Halo" cx="0.5" cy="0.62" r="0.55">
+        <stop offset="0" stop-color="{c['turquoise']}" stop-opacity="0.55"/>
+        <stop offset="1" stop-color="{c['turquoise']}" stop-opacity="0"/>
+      </radialGradient>
+      <linearGradient id="{p}Letter" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="{c['white']}"/>
+        <stop offset="1" stop-color="{c['sand']}"/>
       </linearGradient>
-      <linearGradient id="{p}Sun" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="{c['sand']}"/>
-        <stop offset="1" stop-color="{c['coral']}"/>
+      <linearGradient id="{p}Sky" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="{c['coral']}"/>
+        <stop offset="1" stop-color="{c['sand']}"/>
       </linearGradient>
-      <linearGradient id="{p}Wave1" x1="0" y1="0" x2="1" y2="0">
+      <linearGradient id="{p}Sea" x1="0" y1="0" x2="1" y2="0">
         <stop offset="0" stop-color="{c['turquoise']}"/>
         <stop offset="1" stop-color="{c['aqua']}"/>
       </linearGradient>
-      <linearGradient id="{p}Wave2" x1="0" y1="0" x2="1" y2="0">
-        <stop offset="0" stop-color="{c['lagoon']}"/>
-        <stop offset="1" stop-color="{c['turquoise']}"/>
+      <linearGradient id="{p}Edge" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.70"/>
+        <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.08"/>
+        <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.40"/>
       </linearGradient>
-      <clipPath id="{p}Clip">
-        <rect x="16" y="16" width="224" height="224" rx="60"/>
-      </clipPath>
+      <linearGradient id="{p}Shine" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.20"/>
+        <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0"/>
+      </linearGradient>
+      <clipPath id="{p}Arch"><path d="{arch}"/></clipPath>
     </defs>
-    <rect x="16" y="16" width="224" height="224" rx="60" fill="{c['night']}" fill-opacity="0.55"/>
-    <g clip-path="url(#{p}Clip)">
-      <circle cx="128" cy="124" r="52" fill="url(#{p}Sun)"/>
-      <path d="M16 142 C 52 122, 88 122, 128 140 S 204 158, 240 138 L 240 240 L 16 240 Z" fill="url(#{p}Wave2)" fill-opacity="0.95"/>
-      <path d="M16 170 C 56 150, 92 152, 128 168 S 200 186, 240 164 L 240 240 L 16 240 Z" fill="url(#{p}Wave1)"/>
-      <path d="M16 200 C 60 184, 96 186, 128 198 S 196 214, 240 196 L 240 240 L 16 240 Z" fill="{c['deep']}" fill-opacity="0.85"/>
-      <path d="M40 182 C 70 172, 98 174, 126 184" fill="none" stroke="{c['white']}" stroke-opacity="0.55" stroke-width="4" stroke-linecap="round"/>
+    <rect x="16" y="16" width="224" height="224" rx="62" fill="url(#{p}Tile)"/>
+    <rect x="16" y="16" width="224" height="224" rx="62" fill="url(#{p}Halo)"/>
+    <path d="{letter} {arch}" fill="url(#{p}Letter)" fill-rule="evenodd"/>
+    <g clip-path="url(#{p}Arch)">
+      <rect x="100" y="86" width="64" height="100" fill="url(#{p}Sky)"/>
+      <circle cx="132" cy="152" r="17" fill="{c['white']}" fill-opacity="0.92"/>
+      <path d="M100 156 C 112 150, 122 150, 132 156 S 152 162, 164 156 V186 H100 Z" fill="url(#{p}Sea)"/>
+      <path d="M100 168 C 112 162, 122 163, 132 168 S 152 174, 164 168 V186 H100 Z" fill="{c['lagoon']}"/>
+      <path d="M108 162 C 116 159, 122 159, 128 162" fill="none" stroke="{c['white']}" stroke-opacity="0.7" stroke-width="2.5" stroke-linecap="round"/>
     </g>
-    <rect x="16" y="16" width="224" height="224" rx="60" fill="url(#{p}Glass)"/>
-    <rect x="17" y="17" width="222" height="222" rx="59" fill="none" stroke="url(#{p}Edge)" stroke-width="3"/>
+    <rect x="16" y="16" width="224" height="112" rx="62" fill="url(#{p}Shine)"/>
+    <rect x="17.5" y="17.5" width="221" height="221" rx="60.5" fill="none" stroke="url(#{p}Edge)" stroke-width="3"/>
     """
 
 
@@ -278,7 +303,7 @@ def soft_dot(size: int, color: str) -> Image.Image:
 # Fond d'écran Plasma
 # --------------------------------------------------------------------------
 def generate_wallpaper(ctx: Context) -> Path:
-    base = reset_dir(CHROOT / "usr" / "share" / "wallpapers" / "Djerba")
+    base = reset_dir(BRANDING / "usr" / "share" / "wallpapers" / "Djerba")
     images = base / "contents" / "images"
     for width, height in ((3840, 2160), (1920, 1080)):
         svg = scene_svg(ctx, width, height, menu_panel=False, show_wordmark=False,
@@ -335,14 +360,15 @@ Image=Djerba
 """
 
 
-# Disposition « Horizon » : barre des tâches centrée (menu et
+# Disposition « Horizon » : barre des tâches flottante et centrée (menu et
 # applications au centre, zone de notification à droite), à la manière de
-# Windows 11, construite avec l'API de script native de Plasma 5.27.
+# Windows 11, construite avec l'API de script native de Plasma 6.
 HORIZON_LAYOUT = """\
 // Djerba OS — disposition « Horizon » (générée par assets_generator).
 var panel = new Panel;
 panel.location = "bottom";
 panel.height = 2 * Math.floor(gridUnit * 2.75 / 2);
+panel.floating = true;
 
 panel.addWidget("org.kde.plasma.panelspacer");
 
@@ -403,10 +429,11 @@ def draw_taskbar_preview(image: Image.Image, centered: bool) -> Image.Image:
 
 
 def build_look_and_feel(ctx: Context, wallpaper: Path, package_id: str, name: str,
-                        description: str, layout: str | None) -> None:
+                        description: str, layout: str | None, defaults: str | None = None,
+                        centered: bool | None = None) -> None:
     """Paquet Look-and-Feel : les éléments absents (écran de verrouillage,
     écran de démarrage…) sont fournis nativement par le paquet de repli Breeze."""
-    base = reset_dir(CHROOT / "usr" / "share" / "plasma" / "look-and-feel" / package_id)
+    base = reset_dir(BRANDING / "usr" / "share" / "plasma" / "look-and-feel" / package_id)
     metadata = {
         "KPackageStructure": "Plasma/LookAndFeel",
         "KPlugin": {
@@ -423,29 +450,170 @@ def build_look_and_feel(ctx: Context, wallpaper: Path, package_id: str, name: st
         "X-Plasma-APIVersion": "2",
     }
     write_text(base / "metadata.json", json.dumps(metadata, indent=4, ensure_ascii=False))
-    accent = ",".join(str(v) for v in hex_to_rgb(COLORS["turquoise"]))
-    write_text(base / "contents" / "defaults", LOOK_AND_FEEL_DEFAULTS.format(
-        accent=accent,
-        night=",".join(str(v) for v in hex_to_rgb(COLORS["night"])),
-        white=",".join(str(v) for v in hex_to_rgb(COLORS["white"])),
-        muted=",".join(str(v) for v in hex_to_rgb(COLORS["muted"])),
-    ))
+    if defaults is None:
+        accent = ",".join(str(v) for v in hex_to_rgb(COLORS["turquoise"]))
+        defaults = LOOK_AND_FEEL_DEFAULTS.format(
+            accent=accent,
+            night=",".join(str(v) for v in hex_to_rgb(COLORS["night"])),
+            white=",".join(str(v) for v in hex_to_rgb(COLORS["white"])),
+            muted=",".join(str(v) for v in hex_to_rgb(COLORS["muted"])),
+        )
+    write_text(base / "contents" / "defaults", defaults)
     if layout is not None:
         write_text(base / "contents" / "layouts" / "org.kde.plasma.desktop-layout.js", layout)
     previews = base / "contents" / "previews"
     previews.mkdir(parents=True)
     image = draw_taskbar_preview(Image.open(wallpaper).resize((1280, 720), Image.LANCZOS),
-                                 centered=layout is not None)
+                                 centered=(layout is not None) if centered is None else centered)
     image.resize((640, 360), Image.LANCZOS).save(previews / "preview.png", optimize=True)
     image.save(previews / "fullscreenpreview.jpg", quality=90)
     log(f"Look-and-Feel Plasma « {name} » -> {base.relative_to(ROOT)}")
+
+
+# --------------------------------------------------------------------------
+# Mode discret (djerba-undercover) : apparence claire façon Windows 10/11
+# --------------------------------------------------------------------------
+UNDERCOVER_ACCENT = "#0067C0"
+
+UNDERCOVER_DEFAULTS = """\
+[kdeglobals][General]
+ColorScheme=BreezeLight
+AccentColor=0,103,192
+
+[kdeglobals][Icons]
+Theme=breeze
+
+[kdeglobals][KDE]
+widgetStyle=Breeze
+
+[kcminputrc][Mouse]
+cursorTheme=breeze_cursors
+
+[kwinrc][org.kde.kdecoration2]
+library=org.kde.breeze
+theme=Breeze
+
+[plasmarc][Theme]
+name=default
+
+[Wallpaper]
+Image=DjerbaDiscret
+"""
+
+UNDERCOVER_LAYOUT = """\
+// Djerba OS — disposition du mode discret, style {style} (générée par assets_generator).
+var panel = new Panel;
+panel.location = "bottom";
+panel.height = 2 * Math.floor(gridUnit * 2.6 / 2);
+panel.floating = false;
+{leading}
+var kickoff = panel.addWidget("org.kde.plasma.kickoff");
+kickoff.currentConfigGroup = ["Shortcuts"];
+kickoff.writeConfig("global", "Alt+F1");
+kickoff.currentConfigGroup = ["General"];
+kickoff.writeConfig("icon", "djerba-undercover-start");
+
+var tasks = panel.addWidget("org.kde.plasma.icontasks");
+tasks.currentConfigGroup = ["General"];
+tasks.writeConfig("launchers", [
+    "applications:org.kde.dolphin.desktop",
+    "applications:firefox.desktop",
+    "applications:org.kde.discover.desktop",
+    "applications:systemsettings.desktop"
+]);
+
+panel.addWidget("org.kde.plasma.panelspacer");
+panel.addWidget("org.kde.plasma.systemtray");
+panel.addWidget("org.kde.plasma.digitalclock");
+panel.addWidget("org.kde.plasma.showdesktop");
+
+var desktopsArray = desktopsForActivity(currentActivity());
+for (var j = 0; j < desktopsArray.length; j++) {{
+    desktopsArray[j].wallpaperPlugin = "org.kde.image";
+}}
+"""
+
+
+def undercover_wallpaper_svg(width: int, height: int) -> str:
+    """Fond bleu clair abstrait (rubans translucides), sans motif déposé."""
+    ribbons = []
+    for index in range(7):
+        t = index / 6
+        start_y = height * (0.18 + 0.1 * t)
+        control_y = height * (0.95 - 0.12 * t)
+        end_y = height * (0.42 + 0.08 * t)
+        stroke = height * (0.07 - 0.006 * index)
+        opacity = 0.16 + 0.07 * (1 - t)
+        ribbons.append(
+            f'<path d="M {-width * 0.1:.0f} {start_y:.0f} C {width * 0.3:.0f} {control_y:.0f}, '
+            f'{width * 0.62:.0f} {height * 0.05:.0f}, {width * 1.1:.0f} {end_y:.0f}" fill="none" '
+            f'stroke="url(#ribbon)" stroke-width="{stroke:.0f}" stroke-linecap="round" '
+            f'stroke-opacity="{opacity:.2f}"/>'
+        )
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E6F0FB"/>
+      <stop offset="0.55" stop-color="#6FA6E6"/>
+      <stop offset="1" stop-color="#0B4FA0"/>
+    </linearGradient>
+    <linearGradient id="ribbon" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.5" stop-color="#9CC8F5"/>
+      <stop offset="1" stop-color="#1F6FD1"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="{width}" height="{height}" fill="url(#sky)"/>
+  <ellipse cx="{width * 0.5}" cy="{height * 0.48}" rx="{width * 0.32}" ry="{height * 0.36}" fill="url(#glow)"/>
+  {''.join(ribbons)}
+</svg>
+"""
+
+
+def undercover_start_icon() -> str:
+    """Icône de menu neutre : grille d'applications 3 × 3."""
+    squares = []
+    for row in range(3):
+        for column in range(3):
+            squares.append(
+                f'<rect x="{6 + column * 20}" y="{6 + row * 20}" width="16" height="16" rx="4" '
+                f'fill="{UNDERCOVER_ACCENT}"/>'
+            )
+    return ('<svg xmlns="http://www.w3.org/2000/svg" width="68" height="68" viewBox="0 0 68 68">'
+            + "".join(squares) + "</svg>\n")
+
+
+def generate_undercover(ctx: Context) -> None:
+    base = reset_dir(BRANDING / "usr" / "share" / "wallpapers" / "DjerbaDiscret")
+    images = base / "contents" / "images"
+    for width, height in ((3840, 2160), (1920, 1080)):
+        svg_to_png(undercover_wallpaper_svg(width, height), images / f"{width}x{height}.png")
+    Image.open(images / "1920x1080.png").convert("RGB").resize((400, 225), Image.LANCZOS).save(
+        base / "contents" / "screenshot.png", optimize=True)
+    write_text(base / "metadata.json", json.dumps({"KPlugin": {
+        "Authors": [{"Name": "Djerba OS"}], "Id": "DjerbaDiscret",
+        "License": "CC-BY-SA-4.0", "Name": "Djerba Discret"}}, indent=4, ensure_ascii=False))
+    write_text(BRANDING / "usr" / "share" / "icons" / "hicolor" / "scalable" / "apps"
+               / "djerba-undercover-start.svg", undercover_start_icon())
+    wallpaper = images / "1920x1080.png"
+    for style, leading in (("10", ""), ("11", 'panel.addWidget("org.kde.plasma.panelspacer");')):
+        build_look_and_feel(
+            ctx, wallpaper, f"org.djerba.undercover{style}.desktop", f"Discret (style {style})",
+            "Djerba OS — mode discret : apparence claire façon Windows, réversible",
+            layout=UNDERCOVER_LAYOUT.format(style=style, leading=leading),
+            defaults=UNDERCOVER_DEFAULTS, centered=(style == "11"))
+    log(f"mode discret -> {base.relative_to(ROOT)}")
 
 
 def generate_look_and_feel(ctx: Context, wallpaper: Path) -> None:
     build_look_and_feel(ctx, wallpaper, "org.djerba.desktop", "Djerba",
                         "Djerba OS — lagon nocturne et verre dépoli", layout=None)
     build_look_and_feel(ctx, wallpaper, "org.djerba.horizon.desktop", "Djerba Horizon",
-                        "Djerba OS — barre des tâches centrée, à la manière de Windows 11", layout=HORIZON_LAYOUT)
+                        "Djerba OS — barre des tâches flottante et centrée, à la manière de Windows 11", layout=HORIZON_LAYOUT)
 
 
 # --------------------------------------------------------------------------
@@ -565,6 +733,12 @@ def generate_grub(ctx: Context) -> None:
     write_text(theme_dir / "theme.txt", grub_theme(ctx))
     write_text(base / "config.cfg", GRUB_CONFIG)
 
+    # Thème du système installé (GRUB_THEME, paquet djerba-branding).
+    installed = reset_dir(BRANDING / "usr" / "share" / "grub" / "themes" / "djerba")
+    svg_to_png(svg, installed / "background.png")
+    write_text(installed / "theme.txt",
+               grub_theme(ctx).replace('desktop-image: "../splash.png"', 'desktop-image: "background.png"'))
+
     # Surbrillance « verre » en 9 tranches (coins arrondis de 14 px).
     radius = 14
     tile = 2 * radius + 4
@@ -583,7 +757,8 @@ def generate_grub(ctx: Context) -> None:
     }
     for name, box in boxes.items():
         full.crop(box).save(theme_dir / f"select_{name}.png")
-    log(f"GRUB -> {base.relative_to(ROOT)}")
+        full.crop(box).save(installed / f"select_{name}.png")
+    log(f"GRUB -> {base.relative_to(ROOT)}, {installed.relative_to(ROOT)}")
 
 
 # --------------------------------------------------------------------------
@@ -815,7 +990,7 @@ Plymouth.SetQuitFunction(quit_callback);
 
 
 def generate_plymouth(ctx: Context) -> None:
-    base = reset_dir(CHROOT / "usr" / "share" / "plymouth" / "themes" / "djerba")
+    base = reset_dir(BRANDING / "usr" / "share" / "plymouth" / "themes" / "djerba")
     scene = scene_svg(ctx, 1920, 1080, menu_panel=False, show_wordmark=False,
                       logo_scale=0.0, logo_y=0.42, show_logo=False)
     svg_to_png(scene, base / "background.png")
@@ -874,7 +1049,7 @@ def generate_plymouth(ctx: Context) -> None:
 # SDDM
 # --------------------------------------------------------------------------
 def generate_sddm(ctx: Context, wallpaper: Path) -> None:
-    base = reset_dir(CHROOT / "usr" / "share" / "sddm" / "themes" / "djerba")
+    base = reset_dir(BRANDING / "usr" / "share" / "sddm" / "themes" / "djerba")
     write_text(base / "Main.qml",
                ctx.template("sddm.qml.j2").render(c=COLORS, product=PRODUCT, version=ctx.version))
     shutil.copyfile(wallpaper, base / "background.png")
@@ -899,7 +1074,7 @@ def generate_sddm(ctx: Context, wallpaper: Path) -> None:
         "ConfigFile=theme.conf\n"
         "Theme-Id=djerba\n"
         "Theme-API=2.0\n"
-        "QtVersion=5\n",
+        "QtVersion=6\n",
     )
     log(f"SDDM -> {base.relative_to(ROOT)}")
 
@@ -937,13 +1112,37 @@ def generate_calamares(ctx: Context) -> None:
 # --------------------------------------------------------------------------
 # Assistant d'accueil
 # --------------------------------------------------------------------------
-def generate_welcome() -> None:
-    assets = reset_dir(CHROOT / "usr" / "local" / "share" / "djerba-welcome" / "ui" / "assets")
+def generate_identity(ctx: Context) -> None:
+    """Nom du système, logo et icônes (paquet djerba-branding)."""
+    version = ctx.version
+    os_release = (
+        f'PRETTY_NAME="Djerba OS {version}"\n'
+        'NAME="Djerba OS"\n'
+        f'VERSION_ID="{version}"\n'
+        f'VERSION="{version} (basé sur Debian 13 « trixie »)"\n'
+        "VERSION_CODENAME=trixie\n"
+        "DEBIAN_CODENAME=trixie\n"
+        "ID=djerba\n"
+        "ID_LIKE=debian\n"
+        f'HOME_URL="{PROJECT_URL}"\n'
+        f'SUPPORT_URL="{PROJECT_URL}/issues"\n'
+        f'BUG_REPORT_URL="{PROJECT_URL}/issues"\n'
+        "LOGO=djerba-os\n"
+        'ANSI_COLOR="38;2;0;194;203"\n'
+    )
+    write_text(BRANDING / "usr" / "lib" / "os-release", os_release)
+
+    icons = BRANDING / "usr" / "share" / "icons" / "hicolor"
+    for name in ("djerba-os", "djerba-welcome"):
+        write_text(icons / "scalable" / "apps" / f"{name}.svg", logo_document())
+        for size in (48, 64, 128, 256):
+            svg_to_png(logo_document(), icons / f"{size}x{size}" / "apps" / f"{name}.png", size, size)
+    svg_to_png(logo_document(), BRANDING / "usr" / "share" / "pixmaps" / "djerba-os.png", 256, 256)
+
+    assets = reset_dir(BRANDING / "usr" / "share" / "djerba" / "assets")
     write_text(assets / "logo.svg", logo_document())
     soft_dot(64, COLORS["white"]).save(assets / "particle.png")
-    icon = CHROOT / "usr" / "share" / "icons" / "hicolor" / "scalable" / "apps" / "djerba-welcome.svg"
-    write_text(icon, logo_document())
-    log(f"assistant d'accueil -> {assets.relative_to(ROOT)}")
+    log(f"identité système et icônes -> {BRANDING.relative_to(ROOT)}")
 
 
 def main() -> int:
@@ -961,15 +1160,17 @@ def main() -> int:
         autoescape=False,
     )
     ctx = Context(version=args.version, env=env)
+    reset_dir(BRANDING)
 
     wallpaper = generate_wallpaper(ctx)
     generate_look_and_feel(ctx, wallpaper)
+    generate_undercover(ctx)
     generate_grub(ctx)
     if not args.skip_plymouth:
         generate_plymouth(ctx)
     generate_sddm(ctx, wallpaper)
     generate_calamares(ctx)
-    generate_welcome()
+    generate_identity(ctx)
     log("identité visuelle générée")
     return 0
 
