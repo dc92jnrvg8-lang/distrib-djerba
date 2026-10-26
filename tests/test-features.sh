@@ -158,7 +158,7 @@ check "zram en zstd" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/default/zramswap 
 check "UFW activé" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/ufw/ufw.conf | grep -q '^ENABLED=yes'"
 check "Durcissement sysctl" sq_has "/etc/sysctl.d/90-djerba-hardening.conf"
 check "Optimisations sysctl jeu" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/sysctl.d/90-djerba-performance.conf | grep -q 'vm.max_map_count = 2147483642'"
-check "Plymouth Djerba par défaut" sh -c "unsquashfs -lls '${SQUASHFS}' /etc/alternatives/default.plymouth | grep -q 'djerba/djerba.plymouth'"
+check "Plymouth Djerba par défaut" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/plymouth/plymouthd.conf | grep -qx 'Theme=djerba'"
 
 # ============================================================== chroot
 mkdir -p "${WORK}/probe"

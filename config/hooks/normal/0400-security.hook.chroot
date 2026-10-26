@@ -56,6 +56,9 @@ CONF
 systemctl disable tor.service
 systemctl mask tor@default.service
 
+# --- Antivirus : signatures ClamAV tenues à jour par freshclam --------------------
+systemctl enable clamav-freshclam.service
+
 # --- AppArmor actif au démarrage -------------------------------------------------
 systemctl enable apparmor.service
 
