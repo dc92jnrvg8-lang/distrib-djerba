@@ -1142,6 +1142,11 @@ def generate_identity(ctx: Context) -> None:
     assets = reset_dir(BRANDING / "usr" / "share" / "djerba" / "assets")
     write_text(assets / "logo.svg", logo_document())
     soft_dot(64, COLORS["white"]).save(assets / "particle.png")
+    # Fond de l'assistant : la scène du fond d'écran sans le logo, qui
+    # apparaîtrait sinon entre les panneaux de verre.
+    svg_to_png(scene_svg(ctx, 1920, 1080, menu_panel=False, show_wordmark=False,
+                         logo_scale=0.0, logo_y=0.40, show_logo=False),
+               assets / "backdrop.png")
     log(f"identité système et icônes -> {BRANDING.relative_to(ROOT)}")
 
 
