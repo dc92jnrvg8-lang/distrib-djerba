@@ -92,6 +92,11 @@ table inet ${TABLE} {
     chain filter_output {
         type filter hook output priority filter; policy drop;
         oifname "lo" accept
+        # Paquets redirigés vers Tor par nat_output : à ce stade, leur
+        # destination est déjà 127.0.0.1 mais l'interface de sortie n'est pas
+        # encore « lo » (le routage n'est refait qu'après les chaînes output).
+        ct status dnat accept
+        ip daddr 127.0.0.0/8 accept
         meta skuid ${tor_uid} accept
         ip daddr @local4 accept
         udp sport 68 udp dport 67 accept

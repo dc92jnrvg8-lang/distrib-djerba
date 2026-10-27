@@ -34,17 +34,6 @@ OFFLINE_CHECKS = [
     ("Résolution locale via resolved (_gateway / localhost)", "getent ahosts localhost >/dev/null", 30),
     ("Mode anonyme inactif au démarrage",
      "djerba-anonsurf status --json | grep -q '\"active\": false'", 30),
-    ("Mode anonyme sans réseau : échec propre et retour arrière",
-     "! sudo DJERBA_ANONSURF_TIMEOUT=40 djerba-anonsurf start --verbose; "
-     "! sudo nft list table inet djerba_anonsurf >/dev/null 2>&1", 240),
-    ("Tor démarre sous AppArmor avec la configuration Djerba",
-     "sudo journalctl -b -u djerba-anonsurf-tor --no-pager | grep -q 'Bootstrapped'", 30),
-    # Debian ne charge pas les profils AppArmor sur un média live (apparmor.service :
-    # ConditionPathExists=!/run/live/overlay/work) ; ils le sont une fois installé.
-    # Seul « label not found » (profil non chargé) est donc admis ici.
-    ("Aucun refus AppArmor pour Tor (hors profil non chargé du live)",
-     "d=$(sudo journalctl -b -k --no-pager | grep 'apparmor=\"DENIED\".*system_tor' "
-     "| grep -v 'info=\"label not found\"' || true); printf '%s\\n' \"$d\" | tail -n 5; test -z \"$d\"", 30),
     ("Mode jeu : état JSON", "djerba-gamemode status --json | python3 -m json.tool >/dev/null", 60),
     ("Mode jeu : bascule et restauration",
      f"{SESSION}; djerba-gamemode on && djerba-gamemode status --json | grep -q '\"active\": true' "
@@ -67,6 +56,21 @@ OFFLINE_CHECKS = [
      "&& pgrep -u 1000 -x plasmashell >/dev/null", 300),
 ]
 
+# Sans réseau : Tor ne peut pas se connecter, le mode anonyme doit s'annuler.
+OFFLINE_ONLY = [
+    ("Mode anonyme sans réseau : échec propre et retour arrière",
+     "! sudo DJERBA_ANONSURF_TIMEOUT=40 djerba-anonsurf start --verbose; "
+     "! sudo nft list table inet djerba_anonsurf >/dev/null 2>&1", 240),
+    ("Tor démarre sous AppArmor avec la configuration Djerba",
+     "sudo journalctl -b -u djerba-anonsurf-tor --no-pager | grep -q 'Bootstrapped'", 30),
+    # Debian ne charge pas les profils AppArmor sur un média live (apparmor.service :
+    # ConditionPathExists=!/run/live/overlay/work) ; ils le sont une fois installé.
+    # Seul « label not found » (profil non chargé) est donc admis ici.
+    ("Aucun refus AppArmor pour Tor (hors profil non chargé du live)",
+     "d=$(sudo journalctl -b -k --no-pager | grep 'apparmor=\"DENIED\".*system_tor' "
+     "| grep -v 'info=\"label not found\"' || true); printf '%s\\n' \"$d\" | tail -n 5; test -z \"$d\"", 30),
+]
+
 NETWORK_CHECKS = [
     ("Résolution DNS d'un nom Internet", "getent hosts deb.debian.org >/dev/null", 60),
     ("HTTPS (curl) vers deb.debian.org",
@@ -82,6 +86,9 @@ NETWORK_CHECKS = [
      "! curl -6 -fsS --max-time 10 -o /dev/null https://www.debian.org/", 60),
     ("Mode anonyme : arrêt et connexion directe rétablie",
      "sudo djerba-anonsurf stop && curl -fsS -o /dev/null --max-time 30 https://deb.debian.org/debian/", 120),
+    ("Aucun refus AppArmor pour Tor (hors profil non chargé du live)",
+     "d=$(sudo journalctl -b -k --no-pager | grep 'apparmor=\"DENIED\".*system_tor' "
+     "| grep -v 'info=\"label not found\"' || true); printf '%s\\n' \"$d\" | tail -n 5; test -z \"$d\"", 30),
 ]
 
 
@@ -152,7 +159,7 @@ def main() -> int:
     console.send("sleep 45; echo __SETTLED_$((1+1))__")
     console.read_until(r"__SETTLED_2__", 120)
 
-    checks = OFFLINE_CHECKS + (NETWORK_CHECKS if network else [])
+    checks = OFFLINE_CHECKS + (NETWORK_CHECKS if network else OFFLINE_ONLY)
     failures = 0
     for index, (label, command, timeout) in enumerate(checks):
         console.send(f"( {command} ) >/tmp/check-{index}.log 2>&1; echo __RC_{index}=$?__")
