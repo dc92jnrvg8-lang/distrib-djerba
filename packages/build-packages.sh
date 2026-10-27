@@ -81,6 +81,15 @@ build_package() {
                   -type f -print0 2>/dev/null)
     find "${stage}/etc/sudoers.d" -type f -exec chmod 0440 {} + 2>/dev/null || true
 
+    # Manifeste signé des points d'entrée autorisés à solliciter le démon root
+    # (core/trust.py) : empreintes SHA-256 calculées sur les fichiers livrés.
+    if [[ -f "${stage}/usr/bin/djerba-ai" ]]; then
+        mkdir -p "${stage}/usr/share/djerba-ai"
+        (cd "${stage}" && sha256sum usr/bin/djerba-ai) | sed 's|  usr/|  /usr/|' \
+            > "${stage}/usr/share/djerba-ai/trusted-callers.sha256"
+        chmod 0644 "${stage}/usr/share/djerba-ai/trusted-callers.sha256"
+    fi
+
     local installed_size
     installed_size="$(du -sk --exclude=DEBIAN "${stage}" | cut -f1)"
     echo "Installed-Size: ${installed_size}" >> "${stage}/DEBIAN/control"

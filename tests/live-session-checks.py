@@ -26,7 +26,8 @@ ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\r")
 SESSION = ("export XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 "
            "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus")
 
-# Capacité d'exemple vérifiée par le bac à sable du démon root (nobody, 15 s, Git).
+# Capacité d'exemple et ses tests Pytest, vérifiés par le bac à sable du démon root
+# (runtime hybride systemd : namespaces, seccomp-bpf, cgroups v2 ; 15 s par test ; Git).
 PLUGIN = base64.b64encode(b"""from djerba_ai.tools.base import BaseTool, ok
 
 
@@ -39,9 +40,22 @@ class Inverse(BaseTool):
 
     def execute(self, params, verbose=False):
         return ok(params["texte"][::-1])
+""").decode()
+PLUGIN_TESTS = base64.b64encode(b"""import socket
 
-    def selftest(self):
-        return self.run({"texte": "abc"})["message"] == "cba"
+from texte_inverse import Inverse
+
+
+def test_inverse():
+    assert Inverse().run({"texte": "abc"})["message"] == "cba"
+
+
+def test_reseau_coupe():
+    try:
+        socket.create_connection(("1.1.1.1", 53), timeout=2)
+    except OSError:
+        return
+    raise AssertionError("reseau accessible")
 """).decode()
 RPC = "python3 -c 'import base64, sys; from djerba_ai.core import ipc; "
 
@@ -79,10 +93,11 @@ OFFLINE_CHECKS = [
     ("Agent IA : journal d'audit JSON (/var/log/djerba/audit.log)",
      "sudo tail -n 1 /var/log/djerba/audit.log | python3 -c 'import json, sys; e = json.load(sys.stdin); "
      "assert e[\"method\"] == \"config.set\" and e[\"uid\"] == 0 and e[\"success\"]'", 30),
-    ("Agent IA : capacité générée vérifiée dans le bac à sable (nobody, 15 s, Git)",
+    ("Agent IA : capacité générée et ses tests Pytest vérifiés dans le bac à sable (15 s par test, Git)",
      "sudo " + RPC + f"r = ipc.call(\"sys.test_plugin\", {{\"name\": \"texte_inverse\", "
-     f"\"content\": base64.b64decode(\"{PLUGIN}\").decode()}}, timeout=120); "
-     "assert r[\"success\"] and r[\"tools\"] == [\"texte_inverse\"], r' "
+     f"\"content\": base64.b64decode(\"{PLUGIN}\").decode(), "
+     f"\"tests\": base64.b64decode(\"{PLUGIN_TESTS}\").decode()}}, timeout=300); print(r); "
+     "assert r[\"success\"] and r[\"tools\"] == [\"texte_inverse\"] and r[\"tests_passed\"] == 2, r' "
      "&& sudo git -C /var/lib/djerba-ai/sandbox log -1 --pretty=%s | grep -q texte_inverse", 180),
     ("Agent IA : application isolée (systemd-run --scope) refusée par le démon root",
      f"{SESSION}; systemd-run --user --scope --quiet --unit=djerba-app-test-$$ "
@@ -100,6 +115,28 @@ OFFLINE_CHECKS = [
      f"{SESSION}; for i in $(seq 90); do test -S /run/user/1000/djerba-ai/gui.sock && break; sleep 1; done; "
      "test -S /run/user/1000/djerba-ai/gui.sock && timeout 10 djerba-ai --spotlight "
      "&& timeout 10 djerba-ai --page settings", 150),
+    ("Agent IA : bac à sable hybride réel (systemd : namespaces, seccomp-bpf, cgroups v2)",
+     "sudo " + RPC + "r = ipc.call(\"sys.sandbox_probe\", {}, timeout=120); print(r); "
+     "assert r[\"success\"] and r[\"backend\"] == \"systemd\", r'", 180),
+    ("Agent IA : journal d'audit chaîné intègre",
+     "sudo " + RPC + "r = ipc.call(\"audit.verify\", {}, timeout=60); print(r); "
+     "assert r[\"success\"] and r[\"entries\"] > 0, r'", 60),
+    ("Agent IA : appelant non signé refusé, point d'entrée signé accepté",
+     RPC + "ipc.call(\"audit.tail\", {}, timeout=30)' 2>&1 | grep -q 'appelant non fiable' "
+     "&& ! djerba-ai run audit_log 2>&1 | grep -q 'appelant non fiable'", 60),
+    ("Agent IA : bus de contexte chiffré et horodaté",
+     f"{SESSION}; for i in $(seq 30); do test -s /run/user/1000/djerba-ai/context.bin && break; sleep 1; done; "
+     "! grep -q 'cpu_percent' /run/user/1000/djerba-ai/context.bin "
+     "&& djerba-ai run context_now | grep -q 'Bus de contexte'", 60),
+    ("Agent IA : télémétrie Prometheus et santé (Uptime Kuma)",
+     "curl -fsS --noproxy '*' http://127.0.0.1:9464/metrics | grep -q '^djerba_up 1' "
+     "&& curl -sS --noproxy '*' http://127.0.0.1:9464/health | grep -q '\"status\"'", 60),
+    ("Agent IA : tâche de fond isolée (Ghost Runner)",
+     f"{SESSION}; djerba-ai run ghost_run '{{\"tool\": \"os_index_build\", \"params\": "
+     "\"{\\\"path\\\": \\\"/tmp/docs\\\"}\"}' | grep -q '\"success\": true' "
+     "&& for i in $(seq 90); do journalctl --user --no-pager -o cat -u 'djerba-ghost-os-index-build-*' "
+     "| grep -q 'Index de /tmp/docs' && break; sleep 1; done; "
+     "journalctl --user --no-pager -o cat -u 'djerba-ghost-os-index-build-*' | grep -q 'Index de /tmp/docs'", 150),
     ("Store : catalogue JSON",
      "djerba-apps list --json | python3 -c 'import json,sys; assert len(json.load(sys.stdin)[\"apps\"]) >= 10'", 60),
     ("Mode discret : bascule Windows 11 puis restauration à l'identique",

@@ -13,6 +13,11 @@ case "$1" in
         if [ ! -e /var/log/djerba/audit.log ]; then
             install -m 0640 -o root -g adm /dev/null /var/log/djerba/audit.log
         fi
+        # Le journal d'audit tourne lui-même (chaîne de hachages continue, ajout seul) :
+        # une rotation par logrotate romprait l'attribut append-only.
+        rm -f /etc/logrotate.d/djerba-ai
+        install -d -m 0711 -o root -g root /var/lib/djerba-ai-runs
+        sysctl -q --load=/usr/lib/sysctl.d/60-djerba-ai.conf 2>/dev/null || true
         if [ ! -x /usr/share/djerba-ai/venv/bin/python3 ]; then
             python3 -m venv --system-site-packages /usr/share/djerba-ai/venv >/dev/null 2>&1 || true
         fi

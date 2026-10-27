@@ -139,7 +139,11 @@ else
 fi
 
 section "Agent IA (djerba_ai)"
-if python3 tests/test-djerba-ai.py >"${TMPDIR:-/tmp}/djerba-ai-tests.log" 2>&1; then
+if ! python3 -c 'import cryptography, pydantic, sys; sys.exit(int(pydantic.VERSION.split(".")[0]) < 2)' 2>/dev/null; then
+    # Hôte sans pydantic 2 / cryptography (ex. Ubuntu 24.04) : la suite tourne dans
+    # l'image Debian 13 (étape « Agent tests » de la CI, ./build.sh).
+    printf '[SKIP] tests/test-djerba-ai.py : pydantic 2 et python3-cryptography requis (exécuté dans l'\''image Debian 13)\n'
+elif python3 tests/test-djerba-ai.py >"${TMPDIR:-/tmp}/djerba-ai-tests.log" 2>&1; then
     pass "tests/test-djerba-ai.py ($(grep -Eo 'Ran [0-9]+ tests' "${TMPDIR:-/tmp}/djerba-ai-tests.log"))"
 else
     tail -n 40 "${TMPDIR:-/tmp}/djerba-ai-tests.log"

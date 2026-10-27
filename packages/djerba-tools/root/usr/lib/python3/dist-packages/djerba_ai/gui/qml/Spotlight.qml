@@ -34,6 +34,7 @@ Window {
     property var steps: []
     property int pendingRequest: -1
     property string pendingLabel: ""
+    property string pendingRisk: ""
 
     function present(text, newMode) {
         mode = newMode
@@ -60,8 +61,11 @@ Window {
         function onTokenAppended(text) { if (win.active) win.answer += text }
         function onMessageAdded(role, text) { if (win.active && role === "final") { win.answer = text; win.active = false } }
         function onToolStarted(tool, label, root) { if (win.active) win.steps = win.steps.concat([label]) }
-        function onConfirmRequested(requestId, tool, label, params, root) {
-            if (win.visible) { win.pendingRequest = requestId; win.pendingLabel = label + (root ? " (administrateur)" : "") }
+        function onConfirmRequested(requestId, tool, label, params, root, risk) {
+            if (win.visible) {
+                win.pendingRequest = requestId; win.pendingRisk = risk
+                win.pendingLabel = label + (root ? " (administrateur)" : "") + " — risque " + risk
+            }
         }
     }
 
@@ -146,9 +150,29 @@ Window {
                 visible: win.pendingRequest >= 0
                 Layout.fillWidth: true
                 spacing: 8
-                Text { Layout.fillWidth: true; text: "Djerba souhaite : " + win.pendingLabel; color: win.sand; font.pixelSize: 13; wrapMode: Text.WordWrap }
+                Text { Layout.fillWidth: true; text: "Djerba souhaite : " + win.pendingLabel; color: win.pendingRisk === "élevé" ? win.coral : win.sand; font.pixelSize: 13; wrapMode: Text.WordWrap }
+                TextField {
+                    id: phrase
+                    visible: win.pendingRisk === "élevé"
+                    Layout.preferredWidth: 140
+                    placeholderText: "CONFIRMER"
+                    placeholderTextColor: win.muted
+                    color: win.white
+                    background: Rectangle { radius: 8; color: win.veil(0.07); border.color: win.coral }
+                }
                 ActionButton { text: "Refuser"; onClicked: { backend.answerConfirmation(win.pendingRequest, false); win.pendingRequest = -1 } }
-                ActionButton { text: "Autoriser"; primary: true; onClicked: { backend.answerConfirmation(win.pendingRequest, true); win.pendingRequest = -1 } }
+                ActionButton {
+                    text: "Autoriser"; primary: true
+                    enabled: win.pendingRisk !== "élevé" || phrase.text.trim().toUpperCase() === "CONFIRMER"
+                    onClicked: {
+                        if (win.pendingRisk === "élevé") {
+                            if (!backend.validateHighRisk(win.pendingRequest, phrase.text)) return
+                        } else {
+                            backend.answerConfirmation(win.pendingRequest, true)
+                        }
+                        win.pendingRequest = -1; phrase.text = ""
+                    }
+                }
             }
 
             // Réponse

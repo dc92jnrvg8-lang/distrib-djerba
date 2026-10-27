@@ -334,6 +334,86 @@ def _capability_create(params: dict, _verbose: bool) -> dict:
         key: value for key, value in result.items() if key not in ("success", "message")})
 
 
+def _ghost_run(params: dict, _verbose: bool) -> dict:
+    import json
+    from djerba_ai.core import ghost
+    from djerba_ai.tools import registry
+    tool = registry().get(params["tool"])
+    if tool is None:
+        return fail(f"capacité inconnue : {params['tool']}")
+    if tool.requires_root or tool.dangerous:
+        return fail("une tâche de fond ne peut ni obtenir les droits root ni agir sans confirmation")
+    try:
+        arguments = json.loads(params.get("params") or "{}")
+        tool.validate(arguments)
+        unit = ghost.run_tool(tool.name, arguments)
+    except (ValueError, ghost.GhostError) as exc:
+        return fail(str(exc))
+    return ok(f"« {tool.name} » tourne en tâche de fond ({unit}).", unit=unit)
+
+
+def _ghost_list(_params: dict, _verbose: bool) -> dict:
+    from djerba_ai.core import ghost
+    found = ghost.tasks()
+    return ok(f"{len(found)} tâche(s) de fond", tasks=found)
+
+
+def _ghost_logs(params: dict, _verbose: bool) -> dict:
+    from djerba_ai.core import ghost
+    try:
+        return ok(f"Journal de {params['unit']}", output=ghost.logs(params["unit"]))
+    except ghost.GhostError as exc:
+        return fail(str(exc))
+
+
+def _ghost_stop(params: dict, _verbose: bool) -> dict:
+    from djerba_ai.core import ghost
+    try:
+        ghost.stop(params["unit"])
+    except ghost.GhostError as exc:
+        return fail(str(exc))
+    return ok(f"{params['unit']} arrêtée.")
+
+
+def _context_now(_params: dict, _verbose: bool) -> dict:
+    from djerba_ai.core import contextbus
+    snapshot = contextbus.read()
+    if not snapshot:
+        return fail("bus de contexte inactif (démon djerba-ai.service arrêté ?)")
+    return ok(contextbus.context_block(), snapshot=snapshot)
+
+
+def _engine_handshake(_params: dict, _verbose: bool) -> dict:
+    from djerba_ai.core.engine import CognitiveEngine
+    capabilities = CognitiveEngine(_config()).capabilities(force=True)
+    return (ok if capabilities.reachable else fail)(
+        f"{capabilities.provider} « {capabilities.model} » : {capabilities.latency_ms} ms, contexte "
+        f"{capabilities.context_window}, profil {capabilities.profile}", **capabilities.model_dump())
+
+
+def _audit_verify(_params: dict, _verbose: bool) -> dict:
+    result = _ipc("audit.verify", {})
+    return result
+
+
+def _lesson_record(params: dict, _verbose: bool) -> dict:
+    lesson_id = _memory().learn(params["kind"], params["content"], source="agent")
+    return ok(f"Leçon n°{lesson_id} retenue ({params['kind']}).", id=lesson_id)
+
+
+def _lessons_list(params: dict, _verbose: bool) -> dict:
+    rows = _memory().lessons(params.get("kind") or None, limit=params["limit"])
+    return ok(f"{len(rows)} leçon(s)", lessons=rows)
+
+
+def _dlp_vault(_params: dict, _verbose: bool) -> dict:
+    entries = _memory().vault_entries()
+    return ok(f"{len(entries)} secret(s) intercepté(s) et chiffré(s) dans le coffre (valeurs jamais affichées).",
+              entries=entries)
+
+
+UNIT_PATTERN = r"^djerba-ghost-[a-z0-9-]{1,60}\.service$"
+
 MODEL = r"^[A-Za-z0-9._:/-]{2,100}$"
 
 TOOLS = [
@@ -434,6 +514,43 @@ TOOLS = [
                   parameters={"lines": {"type": "integer", "description": "nombre", "default": 50,
                                         "minimum": 1, "maximum": 500}},
                   keywords=("audit", "journal", "historique des actions", "qui a fait")),
+    function_tool("lesson_record", C, "Retient une leçon apprise, une préférence ou un retour d'expérience "
+                  "(après un échec résolu, une préférence exprimée…).", _lesson_record,
+                  parameters={"kind": {"type": "string", "enum": ["leçon", "préférence", "retour"], "default": "leçon",
+                                       "description": "type"},
+                              "content": {"type": "string", "description": "la leçon, en une phrase",
+                                          "pattern": r"^[^\x00]{5,600}$"}},
+                  required=("content",), keywords=("retiens", "leçon", "préférence", "à l'avenir")),
+    function_tool("lessons_list", C, "Leçons apprises, préférences et retours d'expérience mémorisés.", _lessons_list,
+                  parameters={"kind": {"type": "string", "enum": ["", "leçon", "préférence", "retour"], "default": "",
+                                       "description": "type (vide : tous)"},
+                              "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20,
+                                        "description": "nombre"}},
+                  keywords=("leçons", "ce que tu as appris", "préférences")),
+    function_tool("dlp_vault", C, "Secrets interceptés par la protection DLP (métadonnées seulement).", _dlp_vault,
+                  keywords=("dlp", "secrets", "fuite", "coffre")),
+    function_tool("ghost_run", C, "Lance une capacité en tâche de fond isolée (unité systemd djerba-ghost-*).",
+                  _ghost_run,
+                  parameters={"tool": {"type": "string", "description": "capacité (sans droits root)",
+                                       "pattern": r"^[a-z0-9_.]{2,80}$"},
+                              "params": {"type": "string", "description": "paramètres JSON", "default": "{}",
+                                         "pattern": r"^[^\x00]{0,4000}$"}},
+                  required=("tool",), keywords=("en arrière-plan", "tâche de fond", "background", "ghost")),
+    function_tool("ghost_list", C, "Tâches de fond de Djerba (en cours et terminées).", _ghost_list,
+                  keywords=("tâches de fond", "arrière-plan")),
+    function_tool("ghost_logs", C, "Journal d'une tâche de fond.", _ghost_logs,
+                  parameters={"unit": {"type": "string", "description": "unité", "pattern": UNIT_PATTERN}},
+                  required=("unit",)),
+    function_tool("ghost_stop", C, "Arrête une tâche de fond.", _ghost_stop,
+                  parameters={"unit": {"type": "string", "description": "unité", "pattern": UNIT_PATTERN}},
+                  required=("unit",), keywords=("arrêter la tâche",)),
+    function_tool("context_now", C, "État vivant de l'OS (bus de contexte horodaté : CPU, mémoire, E/S, fenêtre "
+                  "active, erreurs récentes).", _context_now,
+                  keywords=("que se passe-t-il", "état actuel", "fenêtre active", "charge", "contexte")),
+    function_tool("engine_handshake", C, "Mesure le moteur d'IA actif (latence, contexte, capacités, profil).",
+                  _engine_handshake, keywords=("latence", "capacités du modèle", "handshake")),
+    function_tool("audit_verify", C, "Vérifie l'intégrité du journal d'audit (chaîne de hachages).", _audit_verify,
+                  keywords=("intégrité", "journal d'audit falsifié", "vérifier l'audit")),
     function_tool("venv_install", C, "Installe des paquets Python dans le venv interne de Djerba (jamais de pip global).",
                   _venv_install,
                   parameters={"packages": {"type": "string", "description": "paquets séparés par des virgules",

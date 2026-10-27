@@ -128,6 +128,15 @@ jobs:
             -v "${PWD}:/build" -w /build \
             "${DOCKER_IMAGE}" ./build.sh --arch "${{ matrix.debarch }}" --skip-lints --skip-assets
 
+      # Tests de l'agent dans l'image Debian 13 (pydantic 2, seccomp, pytest-timeout),
+      # en root : bac à sable réel (namespaces, seccomp-bpf, cgroups v2, Pytest).
+      - name: Agent tests (Debian 13, bac à sable réel)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --privileged -e DJERBA_AI_ROOT_TESTS=1 -e QT_QPA_PLATFORM=offscreen \
+            -v "${PWD}:/build" -w /build "${DOCKER_IMAGE}" python3 tests/test-djerba-ai.py
+
       - name: Feature tests (contenu de l'ISO)
         shell: bash
         run: |

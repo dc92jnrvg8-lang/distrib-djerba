@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Masquage des secrets avant toute écriture (mémoire SQLite, journal d'audit).
+"""Masquage des secrets avant toute écriture (mémoire, journal d'audit, bus de contexte).
 
-Clés d'API connues (OpenAI, Google, GitHub, GitLab, Slack, AWS, Hugging Face,
-Anthropic…), jetons « Bearer », JWT, clés privées PEM, URL contenant un mot de
-passe et affectations « password= / token= / secret= / api_key= ».
+Délègue au DLP à deux niveaux (core.dlp) : règles déterministes pour repérer
+les candidats, puis analyse contextuelle pour écarter les faux positifs
+(valeurs gabarits, expressions de code, exemples).
 """
 
 from __future__ import annotations
@@ -11,34 +11,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
-MASK = "[secret masqué]"
+from djerba_ai.core.dlp import MASK, mask
 
-PATTERNS = [
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL),
-    re.compile(r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{16,}"),             # OpenAI, Anthropic
-    re.compile(r"\bAIza[0-9A-Za-z_-]{30,}"),                            # Google
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"),                        # GitHub
-    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{40,}"),
-    re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}"),                          # GitLab
-    re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"),                     # Slack
-    re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),                       # AWS
-    re.compile(r"\bhf_[A-Za-z0-9]{30,}"),                               # Hugging Face
-    re.compile(r"\btskey-[A-Za-z0-9-]{20,}"),                           # Tailscale
-    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),  # JWT
-    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]{16,}=*"),
-    re.compile(r"(?i)(?<=://)[^\s:/@]+:[^\s@/]+(?=@)"),                 # utilisateur:motdepasse@hôte
-]
-ASSIGNMENT = re.compile(
-    r"(?i)\b(pass(?:word|wd|phrase)?|mot[ _]de[ _]passe|mdp|secret|token|api[_-]?key|apikey|access[_-]?key|"
-    r"private[_-]?key|client[_-]?secret)(\s*[:=]\s*|\s+est\s+|\s+is\s+)(\"[^\"]*\"|'[^']*'|\S+)")
+__all__ = ["MASK", "sanitize", "sanitize_value"]
 
 
 def sanitize(text: str) -> str:
-    if not text:
-        return text
-    for pattern in PATTERNS:
-        text = pattern.sub(MASK, text)
-    return ASSIGNMENT.sub(lambda match: f"{match.group(1)}{match.group(2)}{MASK}", text)
+    return mask(text) if text else text
 
 
 def sanitize_value(value: Any) -> Any:

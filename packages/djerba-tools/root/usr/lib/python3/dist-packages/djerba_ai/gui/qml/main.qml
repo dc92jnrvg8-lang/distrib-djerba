@@ -21,7 +21,7 @@ ApplicationWindow {
     readonly property bool dark: system.window.hslLightness < 0.5
     readonly property color night: dark ? "#070B18" : "#F1F5F9"
     readonly property color deep: dark ? "#0A1F3D" : "#E0F2F1"
-    readonly property color surface: dark ? win.surface : "#FFFFFF"
+    readonly property color surface: dark ? "#0B1426" : "#FFFFFF"
     readonly property color turquoise: dark ? "#00C2CB" : "#0E9AA7"
     readonly property color aqua: dark ? "#5EEAD4" : "#0F766E"
     readonly property color coral: dark ? "#FF7A59" : "#C2410C"
@@ -32,7 +32,7 @@ ApplicationWindow {
     function stateColor(state) {
         return state === "ok" ? "#2DD4BF" : state === "fallback" ? "#F59E0B" : state === "busy" ? "#38BDF8" : "#F43F5E"
     }
-    readonly property var pages: ["chat", "system", "selfheal", "studio", "tools", "settings"]
+    readonly property var pages: ["chat", "dashboard", "system", "selfheal", "studio", "tools", "settings"]
     property int page: Math.max(0, pages.indexOf(backend.startPage))
     property string progressText: ""
     property int progressValue: 0
@@ -109,6 +109,7 @@ ApplicationWindow {
                 Repeater {
                     model: [
                         { label: "Discussion", icon: "dialog-messages" },
+                        { label: "Tableau de bord", icon: "office-chart-line" },
                         { label: "Système", icon: "computer" },
                         { label: "Auto-réparation", icon: "tools-wizard" },
                         { label: "Studio", icon: "applications-development" },
@@ -169,6 +170,9 @@ ApplicationWindow {
 
             // ======================================================== Discussion
             ChatPage { id: chat }
+
+            // ======================================================== Tableau de bord
+            DashboardPage { }
 
             // ======================================================== Système
             Glass {

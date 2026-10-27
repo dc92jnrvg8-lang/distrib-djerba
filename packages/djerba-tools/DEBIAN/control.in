@@ -14,7 +14,8 @@ Depends: djerba-branding (= @VERSION@), python3, python3-yaml, python3-dbus,
  tor, nftables, curl, systemd-resolved, plasma-workspace, kde-cli-tools,
  libkf6config-bin, power-profiles-daemon, qml6-module-qtquick3d, git, shellcheck,
  upower, rfkill, pciutils, usbutils, xdg-user-dirs, zstd, smartmontools, util-linux,
- python3-pyflakes, python3-venv, logrotate
+ python3-pyflakes, python3-venv, python3-pydantic (>= 2), python3-cryptography, python3-seccomp,
+ python3-pytest, python3-pytest-timeout, python3-gi
 Recommends: flatpak, torsocks, linux-cpupower, lm-sensors, x11-utils
 Suggests: tailscale
 Description: outils et assistant d'accueil de Djerba OS
@@ -26,9 +27,11 @@ Description: outils et assistant d'accueil de Djerba OS
  - djerba-undercover : mode discret, apparence façon Windows réversible
  - djerba-gamemode et Djerba Game Center : mode jeu (processeur, KWin,
    MangoHud, GE-Proton, lanceurs)
- - djerba-ai : agent IA natif souverain — cerveau local (Ollama), distant
-   (Tailscale) ou en ligne (OpenAI, Gemini) avec repli automatique,
-   configuration centrale /etc/djerba/config.toml, plus de 240 capacités
-   système, démon root autorisé par polkit et journal d'audit, auto-réparation
-   et auto-extension en bac à sable Git, barre Spotlight (Meta+Espace),
-   Studio de création d'applications isolées
+ - djerba-ai : agent IA natif, cœur de l'OS — couche cognitive découplée du
+   moteur (Ollama local, Tailscale, OpenAI/Gemini ; schémas Pydantic, garde
+   anti-injection, bascule à chaud), bus de contexte chiffré, télémétrie
+   Prometheus, plus de 260 capacités, démon root (JSON-RPC strict,
+   appelants signés, polkit, audit chaîné en ajout seul), bac à sable
+   hybride (namespaces, seccomp-bpf, cgroups v2, gVisor si présent),
+   auto-évolution testée par Pytest, mémoire chiffrée et DLP à deux niveaux,
+   barre Spotlight (Meta+Espace), tableau de bord et Studio

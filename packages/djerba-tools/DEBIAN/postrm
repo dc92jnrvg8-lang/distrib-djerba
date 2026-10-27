@@ -5,7 +5,7 @@ set -e
 
 case "$1" in
     purge)
-        rm -rf /etc/djerba /usr/share/djerba-ai/venv /var/lib/djerba-ai
+        rm -rf /etc/djerba /usr/share/djerba-ai/venv /var/lib/djerba-ai /var/lib/djerba-ai-runs
         rmdir /usr/share/djerba-ai 2>/dev/null || true
         ;;
 esac

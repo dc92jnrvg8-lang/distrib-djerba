@@ -92,6 +92,16 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "system.sandbox_attempts": {"type": "integer", "default": 3, "minimum": 1, "maximum": 3},
     "system.watchdog": {"type": "boolean", "default": True},
     "system.disk_alert_percent": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
+    "system.audit_max_mb": {"type": "integer", "default": 10, "minimum": 1, "maximum": 500},
+    # Bac à sable hybride (namespaces, seccomp-bpf, cgroups v2)
+    "sandbox.backend": {"type": "string", "default": "auto", "enum": ["auto", "systemd", "unshare", "gvisor"]},
+    "sandbox.memory_mb": {"type": "integer", "default": 512, "minimum": 128, "maximum": 4096},
+    "sandbox.cpu_percent": {"type": "integer", "default": 50, "minimum": 10, "maximum": 100},
+    # Bus de contexte et télémétrie
+    "context.interval": {"type": "integer", "default": 5, "minimum": 2, "maximum": 60},
+    "context.window_titles": {"type": "boolean", "default": True},
+    "telemetry.enabled": {"type": "boolean", "default": True},
+    "telemetry.port": {"type": "integer", "default": 9464, "minimum": 1024, "maximum": 65535},
     # Interface
     "ui.onboarded": {"type": "boolean", "default": False},
 }

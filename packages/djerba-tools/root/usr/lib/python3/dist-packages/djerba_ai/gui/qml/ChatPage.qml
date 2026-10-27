@@ -53,11 +53,11 @@ Rectangle {
                     messages.setProperty(last, "text", text)
                     messages.setProperty(last, "status", "done")
                 } else {
-                    messages.append({ kind: "assistant", text: text, status: "done", tool: "", detail: "", requestId: 0, runId: 0, root: false })
+                    messages.append({ kind: "assistant", text: text, status: "done", tool: "", detail: "", requestId: 0, runId: 0, root: false, risk: "" })
                 }
                 return
             }
-            messages.append({ kind: role, text: text, status: "done", tool: "", detail: "", requestId: 0, runId: 0, root: false })
+            messages.append({ kind: role, text: text, status: "done", tool: "", detail: "", requestId: 0, runId: 0, root: false, risk: "" })
             list.positionViewAtEnd()
         }
         function onTokenAppended(text) {
@@ -65,7 +65,7 @@ Rectangle {
             if (last >= 0 && messages.get(last).kind === "assistant" && messages.get(last).status === "streaming")
                 messages.setProperty(last, "text", messages.get(last).text + text)
             else
-                messages.append({ kind: "assistant", text: text, status: "streaming", tool: "", detail: "", requestId: 0, runId: 0, root: false })
+                messages.append({ kind: "assistant", text: text, status: "streaming", tool: "", detail: "", requestId: 0, runId: 0, root: false, risk: "" })
             list.positionViewAtEnd()
         }
         function onToolStarted(tool, label, root) {
@@ -74,7 +74,7 @@ Rectangle {
                 if (messages.get(last).text.trim() === "") messages.remove(last)
                 else messages.setProperty(last, "status", "done")
             }
-            messages.append({ kind: "tool", text: label, status: "running", tool: tool, detail: "", requestId: 0, runId: 0, root: root })
+            messages.append({ kind: "tool", text: label, status: "running", tool: tool, detail: "", requestId: 0, runId: 0, root: root, risk: "" })
             list.positionViewAtEnd()
         }
         function onToolFinished(tool, success, message, runId) {
@@ -84,13 +84,13 @@ Rectangle {
             messages.setProperty(index, "detail", message)
             messages.setProperty(index, "runId", runId)
         }
-        function onConfirmRequested(requestId, tool, label, params, root) {
-            messages.append({ kind: "confirm", text: label, status: "running", tool: tool, detail: params, requestId: requestId, runId: 0, root: root })
+        function onConfirmRequested(requestId, tool, label, params, root, risk) {
+            messages.append({ kind: "confirm", text: label, status: "running", tool: tool, detail: params, requestId: requestId, runId: 0, root: root, risk: risk })
             list.positionViewAtEnd()
         }
         function onSuggestions(items) {
             for (var i = 0; i < items.length; ++i)
-                messages.append({ kind: "suggestion", text: items[i].description, status: "done", tool: items[i].tool, detail: items[i].category, requestId: 0, runId: 0, root: items[i].root })
+                messages.append({ kind: "suggestion", text: items[i].description, status: "done", tool: items[i].tool, detail: items[i].category, requestId: 0, runId: 0, root: items[i].root, risk: "" })
         }
     }
 
@@ -110,7 +110,7 @@ Rectangle {
             RowLayout {
                 anchors.fill: parent; anchors.margins: 12
                 Text { Layout.fillWidth: true; text: "Moteur d'IA indisponible : Djerba propose directement les actions correspondant à vos demandes."; color: win.white; font.pixelSize: 13; wrapMode: Text.WordWrap }
-                ChatButton { text: "Configurer"; onClicked: win.page = 5 }
+                ChatButton { text: "Configurer"; onClicked: win.page = win.pages.indexOf("settings") }
             }
         }
 
@@ -163,6 +163,7 @@ Rectangle {
                 required property int requestId
                 required property int runId
                 required property bool root
+                required property string risk
                 width: ListView.view.width
                 height: bubble.height
                 opacity: 0
@@ -235,9 +236,30 @@ Rectangle {
                             Text { text: "Djerba souhaite : " + row.text; color: win.white; font.pixelSize: 14; font.weight: Font.DemiBold; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                             Text { visible: row.detail !== "{}"; text: "Paramètres : " + row.detail; color: win.muted; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere }
                             Text { visible: row.root; text: "Votre mot de passe administrateur sera demandé."; color: win.sand; font.pixelSize: 12 }
+                            Text { visible: row.risk === "élevé"; text: "Action à haut risque : validation explicite requise (tapez CONFIRMER)."; color: win.coral; font.pixelSize: 12; font.weight: Font.DemiBold; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                            TextField {
+                                id: phrase
+                                visible: row.risk === "élevé" && row.status === "running"
+                                Layout.preferredWidth: 220
+                                placeholderText: "CONFIRMER"
+                                placeholderTextColor: win.muted
+                                color: win.white
+                                background: Rectangle { radius: 8; color: win.veil(0.07); border.color: win.coral }
+                            }
                             RowLayout {
                                 visible: row.status === "running"
-                                ChatButton { text: "Autoriser"; primary: true; onClicked: { messages.setProperty(row.index, "status", "accepted"); backend.answerConfirmation(row.requestId, true) } }
+                                ChatButton {
+                                    text: "Autoriser"; primary: true
+                                    enabled: row.risk !== "élevé" || phrase.text.trim().toUpperCase() === "CONFIRMER"
+                                    onClicked: {
+                                        if (row.risk === "élevé") {
+                                            if (!backend.validateHighRisk(row.requestId, phrase.text)) return
+                                        } else {
+                                            backend.answerConfirmation(row.requestId, true)
+                                        }
+                                        messages.setProperty(row.index, "status", "accepted")
+                                    }
+                                }
                                 ChatButton { text: "Refuser"; onClicked: { messages.setProperty(row.index, "status", "refused"); backend.answerConfirmation(row.requestId, false) } }
                             }
                             Text { visible: row.status !== "running"; text: row.status === "accepted" ? "Autorisé" : "Refusé"; color: win.muted; font.pixelSize: 12 }

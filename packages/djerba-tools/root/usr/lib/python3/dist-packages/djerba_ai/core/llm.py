@@ -173,6 +173,7 @@ class LocalOllamaProvider(BaseLLMProvider):
         self.endpoint = endpoint.rstrip("/")
         self.context_window = context_window
         self.first_byte_timeout = first_byte_timeout
+        self.think = False
 
     def available(self, timeout: float = 3) -> bool:
         try:
@@ -217,7 +218,9 @@ class LocalOllamaProvider(BaseLLMProvider):
                                    "options": {"num_ctx": self.context_window, "temperature": 0.3}}
         if tools:
             payload["tools"] = tools
-        content, calls = [], []
+        if self.think:
+            payload["think"] = True  # modèles de raisonnement : réflexion visible séparée de la réponse
+        content, calls, thinking = [], [], []
         with _request(f"{self.endpoint}/api/chat", payload, timeout=self.first_byte_timeout) as response:
             for raw in response:
                 if not raw.strip():
@@ -226,6 +229,8 @@ class LocalOllamaProvider(BaseLLMProvider):
                 if "error" in event:
                     raise LLMError(event["error"])
                 message = event.get("message", {})
+                if message.get("thinking"):
+                    thinking.append(message["thinking"])
                 piece = message.get("content", "")
                 if piece:
                     content.append(piece)
@@ -237,7 +242,12 @@ class LocalOllamaProvider(BaseLLMProvider):
                     if isinstance(arguments, str):
                         arguments = json.loads(arguments or "{}")
                     calls.append({"name": function.get("name", ""), "arguments": arguments})
-        return {"content": "".join(content), "tool_calls": calls}
+        return {"content": "".join(content), "tool_calls": calls, "thinking": "".join(thinking)}
+
+    def show(self, timeout: float = 5) -> dict[str, Any]:
+        """Fiche du modèle (contexte, taille, capacités) : /api/show."""
+        with _request(f"{self.endpoint}/api/show", {"model": self.model}, timeout=timeout) as response:
+            return json.load(response)
 
 
 # Compatibilité : nom historique.

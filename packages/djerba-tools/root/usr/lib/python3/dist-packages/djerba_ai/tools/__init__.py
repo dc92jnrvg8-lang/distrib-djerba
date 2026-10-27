@@ -130,10 +130,23 @@ def builtin_tools() -> dict[str, BaseTool]:
     return tools
 
 
+VENV = Path(os.environ.get("DJERBA_AI_VENV", "/usr/share/djerba-ai/venv"))
+
+
+def _venv_site_packages() -> None:
+    """Rend importables les dépendances installées dans le venv interne (PEP 668)."""
+    import sys
+    for path in sorted(VENV.glob("lib/python3*/site-packages")):
+        if str(path) not in sys.path:
+            sys.path.append(str(path))
+
+
 def load_plugins(approved: list[str]) -> tuple[dict[str, BaseTool], list[str]]:
     """Charge les greffons approuvés de l'utilisateur (jamais root)."""
     tools: dict[str, BaseTool] = {}
     errors: list[str] = []
+    if approved:
+        _venv_site_packages()
     for name in approved:
         path = PLUGIN_DIR / f"{name}.py"
         if not re.fullmatch(r"[a-z0-9_]{1,48}", name) or not path.is_file():

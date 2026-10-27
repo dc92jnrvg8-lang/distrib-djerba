@@ -1,0 +1,7 @@
+# Djerba OS — exemple de configuration Prometheus pour l'agent Djerba.
+# Le démon utilisateur expose ses métriques en local : http://127.0.0.1:9464/metrics
+scrape_configs:
+  - job_name: djerba-ai
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["127.0.0.1:9464"]

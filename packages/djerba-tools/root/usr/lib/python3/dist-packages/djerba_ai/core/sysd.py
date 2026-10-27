@@ -2,13 +2,31 @@
 """djerba-ai-sysd — démon root de l'agent Djerba (JSON-RPC sur socket UNIX).
 
 Activé par socket (/run/djerba-ai/sysd.sock), il s'arrête après quelques
-minutes d'inactivité. Chaque connexion est identifiée par SO_PEERCRED, puis
-l'action est autorisée par polkit pour *ce processus* (agent d'authentification
-KDE, mot de passe administrateur, mémorisé quelques minutes pour
-org.djerba.ai.exec ; jamais mémorisé pour un déploiement de correctif).
+minutes d'inactivité. Chaîne de contrôle de chaque requête :
+
+1. **analyse déterministe** : enveloppe JSON-RPC 2.0 et paramètres validés par
+   des schémas Pydantic stricts (core.schemas) ; tout champ inconnu, type
+   approximatif ou méthode absente est rejeté avant tout traitement ;
+2. **identité noyau** : SO_PEERCRED (pid, uid, gid) ; tout processus d'une
+   application du Studio ou d'une tâche de fond (cgroups djerba-app-*,
+   djerba-ghost-*) est refusé ;
+3. **appelant de confiance** (core.trust) : interpréteur système en mode
+   isolé exécutant un point d'entrée signé de Djerba — jamais un script
+   quelconque de l'utilisateur ;
+4. **autorisation polkit** pour *ce processus* (mot de passe administrateur,
+   mémorisé quelques minutes pour org.djerba.ai.exec ; jamais pour un
+   déploiement de correctif) ;
+5. **audit immuable** (core.audit) : la demande est inscrite *avant*
+   exécution, le résultat ensuite, dans un journal chaîné en ajout seul.
+
+Le code non fiable (correctifs, capacités générées et leurs tests) ne
+s'exécute que dans le runtime hybride (core.sandbox : espaces de noms,
+seccomp-bpf, cgroups v2, gVisor si présent).
 
 Méthodes :
   sys.ping                       version (sans autorisation)
+  sys.metrics                    télémétrie du démon (requêtes, refus, latences)
+  sys.sandbox_probe {backend}    vérifie l'isolation réelle du bac à sable
   sys.exec_tool {name, params, verbose}
                                  exécute un outil *intégré* marqué requires_root
                                  (les greffons utilisateur ne sont jamais chargés ici)
@@ -25,10 +43,12 @@ Méthodes :
   sys.list_patches               correctifs proposés et déployés
   sys.install_ollama             installe le moteur Ollama officiel (archive vérifiée
                                  par SHA-256) et son service systemd
-  sys.test_plugin {name, content}
-                                 auto-extension : la capacité écrite par l'agent est
-                                 vérifiée dans le bac à sable (syntaxe, pyflakes,
-                                 chargement et auto-test sous « nobody », 15 s au plus)
+  sys.test_plugin {name, content, tests, requirements}
+                                 auto-extension : la capacité écrite par l'agent et ses
+                                 tests Pytest sont vérifiés dans le bac à sable (syntaxe,
+                                 pyflakes, chargement, tests : 15 s au plus par test),
+                                 dépendances dans un venv temporaire ; en cas d'échec,
+                                 git reset --hard, venv supprimé, dossier purgé
   sys.venv_install {packages}    dépendances Python dans le venv interne
                                  /usr/share/djerba-ai/venv (jamais de pip global, PEP 668)
   config.get / config.set {key, value}
@@ -38,11 +58,7 @@ Méthodes :
                                  les jetons sont relayés en notifications « llm.token »
   llm.cloud_health, llm.cloud_models
   audit.tail {lines}             fin du journal d'audit (/var/log/djerba/audit.log)
-
-Isolation : un processus lancé dans une portée « djerba-app-* » (applications
-générées par le Studio, systemd-run --scope) est refusé quelle que soit la
-méthode, et le refus est journalisé. Toute action critique est inscrite au
-journal d'audit (JSON).
+  audit.verify                   contrôle de la chaîne de hachages du journal
 """
 
 from __future__ import annotations
@@ -65,8 +81,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from djerba_ai import __version__
-from djerba_ai.core import audit, ipc, llm
+from djerba_ai.core import audit, ipc, llm, sandbox, telemetry, trust
 from djerba_ai.core.config import CLOUD_ENDPOINTS, SCHEMA, ConfigError, Store, public_view
+from djerba_ai.core.schemas import parse_rpc
 
 STATE_DIR = Path("/var/lib/djerba-ai")
 SANDBOX = STATE_DIR / "sandbox"
@@ -88,9 +105,10 @@ VENV = Path(os.environ.get("DJERBA_AI_VENV", "/usr/share/djerba-ai/venv"))
 PLUGIN_NAME = re.compile(r"^[a-z0-9_]{3,48}$")
 REQUIREMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}(\[[A-Za-z0-9,_-]+\])?"
                          r"((==|>=|<=|~=|!=|<|>)[A-Za-z0-9.*+!-]{1,40})?$")
-APP_SCOPE = re.compile(r"/djerba-app-[^/\n]*\.scope")
+APP_SCOPE = re.compile(r"/djerba-(?:app|ghost)-[^/\n]*\.(?:scope|service)")
 #: méthodes sans effet ni donnée sensible : non journalisées
-QUIET = {"sys.ping", "sys.list_patches", "config.get", "audit.tail", "llm.cloud_health", "llm.cloud_models"}
+QUIET = {"sys.ping", "sys.metrics", "sys.list_patches", "config.get", "audit.tail", "audit.verify",
+         "llm.cloud_health", "llm.cloud_models"}
 
 Authorizer = Callable[[int, int, str], bool]
 Emit = Callable[[str, dict], None]
@@ -171,20 +189,31 @@ def interpreter(content: str) -> str:
 NOBODY = ["setpriv", "--reuid=65534", "--regid=65534", "--clear-groups", "--no-new-privs", "--inh-caps=-all"]
 
 
-def run_unprivileged(argv: list[str], env: dict | None = None) -> tuple[int, str]:
-    """Exécute sous « nobody », sans privilèges, avec le délai strict du bac à sable."""
-    try:
-        result = subprocess.run([*NOBODY, *argv], capture_output=True, text=True, timeout=sandbox_timeout(), cwd="/",
-                                env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/nonexistent",
-                                     "LC_ALL": "C.UTF-8", **(env or {})})
-        return result.returncode, (result.stdout + result.stderr)[-1500:]
-    except subprocess.TimeoutExpired:
-        return 124, f"délai de {sandbox_timeout()} s dépassé : exécution interrompue"
+def sandbox_settings() -> dict:
+    values = Store().load()
+    return {"backend": values.get("sandbox.backend", "auto"), "memory_mb": int(values.get("sandbox.memory_mb", 512)),
+            "cpu_percent": int(values.get("sandbox.cpu_percent", 50)),
+            "timeout": int(values.get("system.sandbox_timeout", 15))}
+
+
+def run_sandboxed(argv: list[str], work: Path, env: dict | None = None, timeout: int | None = None) -> tuple[int, str]:
+    """Exécute dans le runtime hybride (namespaces, seccomp-bpf, cgroups v2)."""
+    settings = sandbox_settings()
+    runtime = sandbox.Sandbox(settings["backend"], settings["memory_mb"], settings["cpu_percent"])
+    outcome = runtime.run(argv, work, env or {}, timeout or settings["timeout"])
+    return outcome.code, outcome.output[-4000:]
 
 
 def smoke(language: str, path: Path) -> tuple[int, str]:
-    """Exécute « --help » sous l'utilisateur nobody, sans privilèges."""
-    code, output = run_unprivileged([language, str(path), "--help"])
+    """Exécute « --help » d'une copie du script dans un dossier jetable du bac à sable."""
+    work = sandbox.workdir("smoke")
+    try:
+        copy = work / "script"
+        shutil.copyfile(path, copy)
+        copy.chmod(0o755)
+        code, output = run_sandboxed([language, str(copy), "--help"], work)
+    finally:
+        sandbox.purge(work)
     return code, output[-500:]
 
 
@@ -376,81 +405,148 @@ def install_ollama() -> dict:
 
 
 # ---------------------------------------------------------------- Auto-extension
-PLUGIN_RUNNER = """
-import importlib.util, json, sys
+PLUGIN_DISCOVERY = """
+import importlib, json, sys
 from djerba_ai.tools.base import BaseTool
-spec = importlib.util.spec_from_file_location("candidate", sys.argv[1])
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+module = importlib.import_module(sys.argv[1])
 tools = [obj for obj in vars(module).values()
-         if isinstance(obj, type) and issubclass(obj, BaseTool) and obj.__module__ == "candidate" and obj.name]
+         if isinstance(obj, type) and issubclass(obj, BaseTool) and obj.__module__ == module.__name__ and obj.name]
 assert tools, "aucune classe BaseTool définie"
 names = []
 for cls in tools:
     tool = cls()
     assert not tool.requires_root, "une capacité générée ne peut pas être root"
     tool.schema()
-    if hasattr(tool, "selftest"):
-        assert tool.selftest() is True, f"{cls.name} : auto-test en échec"
     names.append(cls.name)
 print(json.dumps(names))
 """
+TEST_TIMEOUT = 15  # secondes par test (pytest-timeout)
 
 
-def test_plugin(uid: int, name: str, content: str) -> dict:
-    """Vérifie une capacité écrite par l'agent ; annule tout en cas d'échec."""
-    if not PLUGIN_NAME.match(name):
+def count_tests(source: str) -> int:
+    """Nombre de tests Pytest (fonctions test_*, y compris dans les classes Test*)."""
+    import ast
+    tree = ast.parse(source)
+    count = 0
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):
+            count += 1
+        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+            count += sum(1 for item in node.body if isinstance(item, ast.FunctionDef) and item.name.startswith("test"))
+    return count
+
+
+def temporary_venv(work: Path, requirements: list[str]) -> tuple[Path, str]:
+    """venv jetable pour les dépendances d'une capacité : créé et rempli sous « nobody »,
+    roues binaires uniquement (aucun code d'installation exécuté)."""
+    venv = work / ".venv"
+    environment = {"PATH": "/usr/bin:/bin", "HOME": str(work), "LC_ALL": "C.UTF-8", "PIP_NO_CACHE_DIR": "1"}
+    steps = [[*NOBODY, sys.executable, "-m", "venv", "--system-site-packages", str(venv)],
+             [*NOBODY, str(venv / "bin" / "python3"), "-m", "pip", "install", "--disable-pip-version-check",
+              "--no-input", "--require-virtualenv", "--only-binary=:all:", *requirements]]
+    for step in steps:
+        result = subprocess.run(step, capture_output=True, text=True, timeout=600, env=environment, cwd=work)
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or result.stdout).strip()[-800:])
+    return venv / "bin" / "python3", f"{len(requirements)} dépendance(s) installée(s) dans un venv temporaire"
+
+
+def test_plugin(uid: int, name: str, content: str, tests: str = "", requirements: list[str] | None = None) -> dict:
+    """Pipeline d'assurance qualité d'une capacité écrite par l'agent.
+
+    syntaxe → pyflakes → tests Pytest présents → (venv temporaire) → découverte
+    des capacités → Pytest (15 s par test) ; le tout dans le bac à sable hybride.
+    Échec : git reset --hard, nettoyage du dépôt, venv et dossier de travail
+    supprimés, mémoire libérée. Succès : capacité et tests consignés dans Git.
+    """
+    import gc
+    if not PLUGIN_NAME.match(name) or not name[0].isalpha():
         raise ipc.RPCError(ipc.INVALID_PARAMS, "nom de capacité invalide")
-    if len(content) > 200 * 1024 or "\x00" in content:
+    if len(content) > 200 * 1024 or "\x00" in content or "\x00" in tests:
         raise ipc.RPCError(ipc.INVALID_PARAMS, "contenu invalide")
+    requirements = list(requirements or [])
     ensure_sandbox()
     relative = Path("plugins") / str(uid) / f"{name}.py"
-    target = SANDBOX / relative
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
+    test_relative = Path("plugins") / str(uid) / "tests" / f"test_{name}.py"
+    for path, text in ((relative, content), (test_relative, tests)):
+        (SANDBOX / path).parent.mkdir(parents=True, exist_ok=True)
+        (SANDBOX / path).write_text(text, encoding="utf-8")
     checks: list[dict] = []
 
-    def record(check: str, success: bool, detail: str = "") -> None:
-        checks.append({"check": check, "success": success, "detail": detail[-1200:]})
+    def record(check: str, success: bool, detail: str = "") -> bool:
+        checks.append({"check": check, "success": success, "detail": detail[-1500:]})
+        return success
 
-    try:
-        compile(content, f"{name}.py", "exec")
-        record("syntaxe python", True)
-    except SyntaxError as exc:
-        record("syntaxe python", False, f"ligne {exc.lineno} : {exc.msg}")
-    if all(check["success"] for check in checks):
-        try:
-            lint = subprocess.run(["python3", "-m", "pyflakes", str(target)], capture_output=True, text=True,
-                                  timeout=sandbox_timeout())
-            record("pyflakes", lint.returncode == 0, lint.stdout + lint.stderr)
-        except subprocess.TimeoutExpired:
-            record("pyflakes", False, "délai dépassé")
+    def ok_so_far() -> bool:
+        return all(check["success"] for check in checks)
+
     tools: list[str] = []
-    if all(check["success"] for check in checks):
-        workdir = Path(tempfile.mkdtemp(prefix="djerba-plugin-"))
-        workdir.chmod(0o755)
-        copy = workdir / f"{name}.py"
-        shutil.copyfile(target, copy)
-        copy.chmod(0o644)
-        package_root = str(Path(__file__).resolve().parent.parent.parent)
-        try:
-            code, output = run_unprivileged(["python3", "-c", PLUGIN_RUNNER, str(copy)],
-                                            env={"PYTHONPATH": package_root, "PYTHONDONTWRITEBYTECODE": "1"})
-        finally:
-            shutil.rmtree(workdir, ignore_errors=True)
-        record(f"chargement et auto-test sous nobody ({sandbox_timeout()} s max)", code == 0, output)
-        if code == 0:
+    count = 0
+    backend = ""
+    work: Path | None = None
+    try:
+        for label, source in (("syntaxe python (capacité)", content), ("syntaxe python (tests)", tests)):
             try:
-                tools = json.loads(output.strip().splitlines()[-1])
-            except (ValueError, IndexError):
-                tools = []
-    if not all(check["success"] for check in checks):
+                compile(source, label, "exec")
+                record(label, True)
+            except SyntaxError as exc:
+                record(label, False, f"ligne {exc.lineno} : {exc.msg}")
+        if ok_so_far():
+            count = count_tests(tests)
+            record("tests Pytest fournis", count > 0,
+                   f"{count} test(s)" if count else "au moins une fonction test_* est obligatoire")
+        if ok_so_far():
+            try:
+                lint = subprocess.run([sys.executable, "-m", "pyflakes", str(SANDBOX / relative),
+                                       str(SANDBOX / test_relative)], capture_output=True, text=True,
+                                      timeout=sandbox_timeout())
+                record("pyflakes", lint.returncode == 0, lint.stdout + lint.stderr)
+            except subprocess.TimeoutExpired:
+                record("pyflakes", False, "délai dépassé")
+        if ok_so_far():
+            work = sandbox.workdir("plugin")
+            for source, target in ((content, f"{name}.py"), (tests, f"test_{name}.py")):
+                (work / target).write_text(source, encoding="utf-8")
+                (work / target).chmod(0o644)
+            python = sys.executable
+            if requirements:
+                try:
+                    venv_python, detail = temporary_venv(work, requirements)
+                    python = str(venv_python)
+                    record("dépendances (venv temporaire)", True, detail)
+                except (RuntimeError, subprocess.TimeoutExpired) as exc:
+                    record("dépendances (venv temporaire)", False, str(exc))
+        if ok_so_far() and work is not None:
+            package_root = str(Path(__file__).resolve().parent.parent.parent)
+            env = {"PYTHONPATH": f"{work}:{package_root}", "PYTHONDONTWRITEBYTECODE": "1"}
+            settings = sandbox_settings()
+            runtime = sandbox.Sandbox(settings["backend"], settings["memory_mb"], settings["cpu_percent"])
+            outcome = runtime.run([python, "-B", "-c", PLUGIN_DISCOVERY, name], work, env, settings["timeout"])
+            backend = outcome.backend
+            if record(f"chargement de la capacité ({outcome.backend})", outcome.code == 0, outcome.output):
+                try:
+                    tools = json.loads(outcome.output.strip().splitlines()[-1])
+                except (ValueError, IndexError):
+                    record("liste des capacités", False, outcome.output)
+        if ok_so_far() and work is not None:
+            budget = min(TEST_TIMEOUT * (count + 1), 300)
+            outcome = runtime.run([python, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                                   f"--timeout={TEST_TIMEOUT}", "--timeout-method=signal", "-o",
+                                   "console_output_style=classic", f"test_{name}.py"], work, env, budget)
+            record(f"tests Pytest ({count}, {TEST_TIMEOUT} s max chacun, {outcome.backend})", outcome.code == 0,
+                   outcome.output)
+    finally:
+        if work is not None:
+            sandbox.purge(work)  # venv temporaire et fichiers de travail supprimés
+        gc.collect()
+    if not ok_so_far():
         git("reset", "-q", "--hard", "HEAD")
-        git("clean", "-q", "-fd", "plugins")
+        git("clean", "-q", "-fdx", "--", "plugins")
         return {"success": False, "rolled_back": True, "checks": checks}
-    git("add", str(relative))
-    git("commit", "-q", "--allow-empty", "-m", f"Capacité {name} (uid {uid}) : {', '.join(tools)}")
-    return {"success": True, "checks": checks, "tools": tools, "content": content}
+    git("add", str(relative), str(test_relative))
+    git("commit", "-q", "--allow-empty", "-m", f"Capacité {name} (uid {uid}) : {', '.join(tools)} — {count} test(s)")
+    return {"success": True, "checks": checks, "tools": tools, "content": content, "tests": tests,
+            "tests_passed": count, "backend": backend, "requirements": requirements}
 
 
 def venv_install(packages: list[str]) -> dict:
@@ -462,8 +558,10 @@ def venv_install(packages: list[str]) -> dict:
     if not python.exists():
         subprocess.run(["/usr/bin/python3", "-m", "venv", "--system-site-packages", str(VENV)], check=True,
                        capture_output=True, timeout=600)
+    # Roues binaires uniquement : aucun script d'installation n'est exécuté en root.
     result = subprocess.run([str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
-                             "--require-virtualenv", *packages], capture_output=True, text=True, timeout=1800)
+                             "--require-virtualenv", "--only-binary=:all:", *packages], capture_output=True, text=True,
+                            timeout=1800)
     if result.returncode != 0:
         return {"success": False, "message": (result.stderr or result.stdout).strip().splitlines()[-1][:300]}
     return {"success": True, "message": f"Installé dans {VENV} : {', '.join(packages)}", "venv": str(VENV)}
@@ -506,9 +604,13 @@ def cloud_health() -> dict:
 
 
 # ---------------------------------------------------------------- Serveur
+Verifier = Callable[[int, int], tuple[bool, str]]
+
+
 class Dispatcher:
-    def __init__(self, authorizer: Authorizer = polkit_authorize) -> None:
+    def __init__(self, authorizer: Authorizer = polkit_authorize, verifier: Verifier = trust.verify) -> None:
         self.authorizer = authorizer
+        self.verifier = verifier
         self._registry = None
 
     def registry(self):
@@ -521,27 +623,46 @@ class Dispatcher:
         if not self.authorizer(pid, uid, action):
             raise ipc.RPCError(ipc.NOT_AUTHORIZED, "autorisation refusée")
 
+    def _refuse(self, method: str, params: dict, pid: int, uid: int, message: str) -> None:
+        telemetry.inc("djerba_sysd_denied_total", method=method)
+        audit.record("refus", uid=uid, pid=pid, method=method, tool=str(params.get("name", "")),
+                     params=self._audit_params(method, params), success=False, message=message)
+        raise ipc.RPCError(ipc.NOT_AUTHORIZED, message)
+
     def dispatch(self, method: str, params: dict, pid: int, uid: int, emit: Emit | None = None) -> Any:
-        """Point d'entrée : isolation, traitement, journal d'audit."""
-        if isolated(pid):
-            audit.record("refus", uid=uid, pid=pid, method=method, success=False,
-                         message="processus d'une application isolée (djerba-app-*)")
-            raise ipc.RPCError(ipc.NOT_AUTHORIZED, "les applications isolées n'ont pas accès au démon root")
+        """Point d'entrée : isolation, appelant de confiance, audit avant/après, traitement."""
         started = time.monotonic()
+        telemetry.inc("djerba_sysd_requests_total", method=method)
+        if isolated(pid):
+            self._refuse(method, params, pid, uid, "les applications isolées et tâches de fond n'ont pas accès "
+                                                   "au démon root")
+        if method not in trust.OPEN_METHODS:
+            trusted, reason = self.verifier(pid, uid)
+            if not trusted:
+                self._refuse(method, params, pid, uid, f"appelant non fiable : {reason}")
+        intent = None
+        if method not in QUIET:
+            # Registre immuable : la demande est consignée AVANT toute exécution.
+            intent = audit.record("demande", uid=uid, pid=pid, method=method, tool=str(params.get("name", "")),
+                                  params=self._audit_params(method, params))
         try:
             result = self.handle(method, params, pid, uid, emit or (lambda *_: None))
         except ipc.RPCError as exc:
+            if exc.code == ipc.NOT_AUTHORIZED:
+                telemetry.inc("djerba_sysd_denied_total", method=method)
             if method not in QUIET or exc.code == ipc.NOT_AUTHORIZED:
                 audit.record("refus" if exc.code == ipc.NOT_AUTHORIZED else "erreur", uid=uid, pid=pid,
-                             method=method, tool=str(params.get("name", "")), params=self._audit_params(method, params),
-                             success=False, message=str(exc))
+                             method=method, tool=str(params.get("name", "")), success=False, message=str(exc),
+                             ref=intent.get("seq") if intent else None)
             raise
+        finally:
+            telemetry.observe("djerba_sysd_latency_seconds", time.monotonic() - started, method=method)
         if method not in QUIET:
             success = result.get("success", True) if isinstance(result, dict) else True
             message = result.get("message", "") if isinstance(result, dict) else ""
             audit.record("action", uid=uid, pid=pid, method=method, tool=str(params.get("name", "")),
-                         params=self._audit_params(method, params), success=success, message=message,
-                         duration_ms=int((time.monotonic() - started) * 1000))
+                         success=success, message=message, duration_ms=int((time.monotonic() - started) * 1000),
+                         ref=intent.get("seq") if intent else None)
         return result
 
     @staticmethod
@@ -557,6 +678,21 @@ class Dispatcher:
     def handle(self, method: str, params: dict, pid: int, uid: int, emit: Emit) -> Any:
         if method == "sys.ping":
             return {"version": __version__, "uid": uid}
+        if method == "sys.metrics":
+            return telemetry.REGISTRY.snapshot()
+        if method == "sys.sandbox_probe":
+            self.require(pid, uid, ACTION_EXTEND)
+            settings = sandbox_settings()
+            backend = params.get("backend", "auto")
+            try:
+                return sandbox.probe(sandbox.Sandbox(settings["backend"] if backend == "auto" else backend,
+                                                     settings["memory_mb"], settings["cpu_percent"]),
+                                     settings["timeout"])
+            except sandbox.SandboxError as exc:
+                raise ipc.RPCError(ipc.TOOL_FAILED, str(exc)) from exc
+        if method == "audit.verify":
+            self.require(pid, uid, ACTION_AUDIT)
+            return audit.verify()
         if method == "sys.list_patches":
             return list_patches()
         if method == "sys.exec_tool":
@@ -580,7 +716,8 @@ class Dispatcher:
             return install_ollama()
         if method == "sys.test_plugin":
             self.require(pid, uid, ACTION_EXTEND)
-            return test_plugin(uid, str(params.get("name", "")), str(params.get("content", "")))
+            return test_plugin(uid, str(params.get("name", "")), str(params.get("content", "")),
+                               str(params.get("tests", "")), list(params.get("requirements") or []))
         if method == "sys.venv_install":
             self.require(pid, uid, ACTION_SETUP)
             return venv_install(list(params.get("packages") or []))
@@ -624,17 +761,14 @@ class Handler(socketserver.StreamRequestHandler):
                 message = ipc.read_message(self.rfile)
                 if message is None:
                     return
-                request_id = message.get("id")
-                if message.get("jsonrpc") != "2.0" or not isinstance(message.get("method"), str):
-                    raise ipc.RPCError(ipc.INVALID_REQUEST, "requête JSON-RPC 2.0 attendue")
-                params = message.get("params") or {}
-                if not isinstance(params, dict):
-                    raise ipc.RPCError(ipc.INVALID_PARAMS, "paramètres nommés attendus")
+                request_id = message.get("id") if isinstance(message.get("id"), (int, str)) else None
+                request, model = parse_rpc(message)  # schéma strict : tout écart est rejeté
+                params = model.model_dump()
 
                 def emit(method: str, payload: dict) -> None:
                     ipc.write_message(self.wfile, {"jsonrpc": "2.0", "method": method, "params": payload})
 
-                result = self.server.dispatcher.dispatch(message["method"], params, pid, uid, emit)
+                result = self.server.dispatcher.dispatch(request.method, params, pid, uid, emit)
                 response = {"jsonrpc": "2.0", "id": request_id, "result": result}
             except ipc.RPCError as exc:
                 response = {"jsonrpc": "2.0", "id": request_id, "error": {"code": exc.code, "message": str(exc)}}

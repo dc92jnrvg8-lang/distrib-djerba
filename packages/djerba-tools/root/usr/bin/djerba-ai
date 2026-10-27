@@ -1,6 +1,10 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 # SPDX-License-Identifier: GPL-3.0-or-later
 """djerba-ai — l'agent IA de Djerba OS.
+
+Point d'entrée signé : exécuté par l'interpréteur système en mode isolé (-I),
+son empreinte figure dans /usr/share/djerba-ai/trusted-callers.sha256 ; le
+démon root n'accepte les actions sensibles que de lui.
 
 Usage :
     djerba-ai [--page chat|system|selfheal|studio|tools|settings] application graphique (mode Studio)
@@ -43,7 +47,7 @@ def gui(argv: list[str]) -> int:
             attempts.append(dict(os.environ, **{CHILD: "1", "QT_QUICK_BACKEND": "software"}))
         code = 1
         for environment in attempts:
-            code = subprocess.call([sys.executable, os.path.abspath(__file__), *argv], env=environment)
+            code = subprocess.call([sys.executable, "-I", os.path.abspath(__file__), *argv], env=environment)
             if code >= 0:
                 return code
             print(f"djerba-ai : rendu interrompu (signal {-code}) ; nouvel essai en rendu logiciel.", file=sys.stderr)

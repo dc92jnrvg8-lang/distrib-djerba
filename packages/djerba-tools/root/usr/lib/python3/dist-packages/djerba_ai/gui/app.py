@@ -41,7 +41,7 @@ from djerba_ai.gui import instance
 from djerba_ai.tools import CATEGORIES, CATEGORY_LABELS, registry
 
 QML_DIR = Path(os.environ.get("DJERBA_AI_QML", Path(__file__).with_name("qml")))
-PAGES = ("chat", "system", "selfheal", "studio", "tools", "settings")
+PAGES = ("chat", "dashboard", "system", "selfheal", "studio", "tools", "settings")
 MODEL_KEYS = {"local": "llm.local.model", "tailscale": "llm.tailscale.model", "cloud": "llm.cloud.model"}
 BRAINS = (("local", "Ollama local", "Sur cet ordinateur : rien ne sort de la machine."),
           ("tailscale", "Mac Mini (Tailscale)", "Un ordinateur puissant de votre réseau privé Tailscale."),
@@ -85,7 +85,12 @@ class Backend(QObject):
     tokenAppended = pyqtSignal(str, arguments=["text"])
     toolStarted = pyqtSignal(str, str, bool, arguments=["tool", "label", "root"])
     toolFinished = pyqtSignal(str, bool, str, int, arguments=["tool", "success", "message", "runId"])
-    confirmRequested = pyqtSignal(int, str, str, str, bool, arguments=["requestId", "tool", "label", "params", "root"])
+    confirmRequested = pyqtSignal(int, str, str, str, bool, str,
+                                  arguments=["requestId", "tool", "label", "params", "root", "risk"])
+    # Tableau de bord : flux de pensées, télémétrie, validations
+    traceAdded = pyqtSignal(str, str, str, str, arguments=["kind", "text", "time", "level"])
+    telemetryChanged = pyqtSignal()
+    validationsChanged = pyqtSignal()
     suggestions = pyqtSignal("QVariantList", arguments=["items"])
     busyChanged = pyqtSignal()
     conversationsChanged = pyqtSignal()
@@ -120,6 +125,10 @@ class Backend(QObject):
         self._history: list = []
         self._gpu = gpu.detect()
         self._fell_back = False
+        self._telemetry: dict = {}
+        self._cpu_history: list[float] = []
+        self._pending: dict[int, dict] = {}
+        self._validations: list[dict] = []
         self._conversation = 0
         self._busy = False
         self._engine = {"available": False, "installed": [], "ollama_present": False}
@@ -142,6 +151,10 @@ class Backend(QObject):
         self._watcher.directoryChanged.connect(self._config_changed)
         self._brain_timer = QTimer(self, interval=30000, timeout=self.refreshBrains)
         self._brain_timer.start()
+        self._telemetry_timer = QTimer(self, interval=3000, timeout=self.refreshTelemetry)
+        self._telemetry_timer.start()
+        from djerba_ai.core import telemetry as _telemetry
+        _telemetry.publish_forever("gui")
 
     def _watch_config(self) -> None:
         paths = [str(path) for path in (CONFIG_PUBLIC, CONFIG_PUBLIC.parent, Config.FALLBACK) if path.exists()]
@@ -364,6 +377,11 @@ class Backend(QObject):
                 self.suggestions.emit(payload["items"])
             elif kind == "final":
                 self.messageAdded.emit("final", payload["text"])
+            elif kind == "trace":
+                self.traceAdded.emit(payload.get("kind", ""), payload.get("text", ""), payload.get("time", ""),
+                                     payload.get("level", payload.get("risk", "")))
+            elif kind == "guard":
+                self.notify.emit(f"Garde anti-injection ({payload['origin']}) : risque {payload['level']}.")
             elif kind == "notice":
                 # Bascule transparente sur le modèle local (fournisseur distant injoignable).
                 self._fell_back = True
@@ -376,10 +394,24 @@ class Backend(QObject):
             request_id = self._next_request
             self._next_request += 1
             self._confirm_events[request_id] = (event, answer)
-            self.confirmRequested.emit(request_id, tool, description.get("description", ""),
-                                       json.dumps(params, ensure_ascii=False), bool(description.get("requires_root")))
+            risk = str(description.get("risk", "modéré"))
+            entry = {"id": request_id, "tool": tool, "label": description.get("description", ""),
+                     "params": json.dumps(params, ensure_ascii=False), "risk": risk,
+                     "root": bool(description.get("requires_root")), "time": time.strftime("%H:%M:%S"),
+                     "status": "en attente"}
+            self._pending[request_id] = entry
+            QTimer.singleShot(0, self.validationsChanged.emit)
+            self.confirmRequested.emit(request_id, tool, entry["label"], entry["params"], entry["root"], risk)
+            if risk == "élevé":
+                self.systemNotice.emit("Djerba : validation explicite requise",
+                                       f"{entry['label']} — action à haut risque, à valider dans le tableau de bord.")
             event.wait()
             self._confirm_events.pop(request_id, None)
+            entry["status"] = "autorisée" if answer[0] else "refusée"
+            self._pending.pop(request_id, None)
+            self._validations.insert(0, entry)
+            del self._validations[50:]
+            QTimer.singleShot(0, self.validationsChanged.emit)
             return answer[0]
 
         def work():
@@ -405,6 +437,7 @@ class Backend(QObject):
             answer[0] = False
             event.set()
         self._brain_timer.stop()
+        self._telemetry_timer.stop()
         for task in list(self._tasks):
             # Contrôles de santé bornés par leurs délais (5 s par cerveau) : attente suffisante.
             task.wait(20000)
@@ -412,9 +445,95 @@ class Backend(QObject):
     @pyqtSlot(int, bool)
     def answerConfirmation(self, request_id: int, accepted: bool) -> None:
         entry = self._confirm_events.get(request_id)
+        pending = self._pending.get(request_id, {})
+        if entry and pending.get("risk") == "élevé" and accepted:
+            return  # une action à haut risque exige la validation explicite (validateHighRisk)
         if entry:
             entry[1][0] = accepted
             entry[0].set()
+
+    @pyqtSlot(int, str, result=bool)
+    def validateHighRisk(self, request_id: int, phrase: str) -> bool:
+        """Validation explicite d'une action à haut risque : saisie de « CONFIRMER »."""
+        entry = self._confirm_events.get(request_id)
+        if entry is None or phrase.strip().upper() != "CONFIRMER":
+            return False
+        entry[1][0] = True
+        entry[0].set()
+        return True
+
+    # ---------------------------------------------------------------- Tableau de bord
+    @pyqtProperty("QVariantList", notify=validationsChanged)
+    def pendingValidations(self) -> list:
+        return list(self._pending.values())
+
+    @pyqtProperty("QVariantList", notify=validationsChanged)
+    def validationHistory(self) -> list:
+        return self._validations
+
+    @pyqtProperty("QVariantMap", notify=telemetryChanged)
+    def telemetry(self) -> dict:
+        return self._telemetry
+
+    @pyqtProperty("QVariantList", notify=telemetryChanged)
+    def cpuHistory(self) -> list:
+        return self._cpu_history
+
+    @pyqtSlot()
+    def refreshTelemetry(self) -> None:
+        from djerba_ai.core import contextbus
+        from djerba_ai.core import telemetry as metrics
+        snapshot = contextbus.read() or {}
+        data = snapshot.get("metrics", {})
+        memory = data.get("memory", {})
+        registry = metrics.REGISTRY.snapshot()
+
+        def total(name: str) -> float:
+            return sum(value for key, value in registry["counters"].items() if json.loads(key)[0] == name)
+
+        latencies = [item for key, item in registry["histograms"].items()
+                     if json.loads(key)[0] == "djerba_llm_latency_seconds"]
+        count = sum(item["count"] for item in latencies)
+        stats = metrics.process_stats(os.getpid()) or (0, 0.0)
+        self._telemetry = {
+            "live": bool(snapshot), "age": int(time.time() - snapshot.get("epoch", time.time())),
+            "cpu": data.get("cpu_percent", 0.0), "load": round(data.get("load", 0.0), 2),
+            "memory_used_gb": round((memory.get("total", 0) - memory.get("available", 0)) / 1e9, 1),
+            "memory_total_gb": round(memory.get("total", 0) / 1e9, 1),
+            "disk_read_mbs": round(data.get("disk_read_bps", 0) / 1e6, 2),
+            "disk_write_mbs": round(data.get("disk_write_bps", 0) / 1e6, 2),
+            "window": (snapshot.get("window") or {}).get("application", ""),
+            "window_status": snapshot.get("window_status", "bus de contexte inactif"),
+            "errors": len(snapshot.get("journal_errors", [])),
+            "agent_rss_mb": round(stats[0] / 1e6, 1), "agent_cpu_s": round(stats[1], 1),
+            "llm_requests": int(total("djerba_llm_requests_total")),
+            "llm_latency_ms": int(1000 * sum(item["sum"] for item in latencies) / count) if count else 0,
+            "tool_runs": int(total("djerba_tool_runs_total")), "guard_flags": int(total("djerba_guard_flags_total")),
+            "dlp_secrets": int(total("djerba_dlp_secrets_total")), "fallbacks": int(total("djerba_llm_fallbacks_total")),
+            "exporter": f"http://127.0.0.1:{self.config.get('telemetry.port')}/metrics",
+        }
+        if snapshot:
+            self._cpu_history = (self._cpu_history + [float(data.get("cpu_percent", 0.0))])[-60:]
+        self.telemetryChanged.emit()
+
+    def _rpc_notify(self, method: str, label: str) -> None:
+        def work():
+            try:
+                return ipc.call(method, {}, timeout=120)
+            except ipc.RPCError as exc:
+                return {"success": False, "message": str(exc)}
+
+        self.progress.emit(label, -1)
+        self._background(work, lambda result: (self.progress.emit("", 100),
+                                               self.notify.emit(str(result.get("message", "")))))
+
+    @pyqtSlot()
+    def verifyAudit(self) -> None:
+        self._rpc_notify("audit.verify", "Vérification de la chaîne du journal d'audit…")
+
+    @pyqtSlot()
+    def probeSandbox(self) -> None:
+        self._rpc_notify("sys.sandbox_probe", "Vérification de l'isolation du bac à sable…")
 
     @pyqtSlot(int, bool)
     def feedback(self, run_id: int, useful: bool) -> None:

@@ -137,7 +137,11 @@ check "Agent IA : presse-papiers (Meta+Maj+C)" sh -c "unsquashfs -cat '${SQUASHF
 check "Agent IA : icône résidente (autostart)" sq_has "/etc/xdg/autostart/djerba-ai-tray.desktop"
 check "Agent IA : réglages, Spotlight et Studio (QML)" sh -c "grep -qE ' squashfs-root/usr/lib/python3/dist-packages/djerba_ai/gui/qml/Spotlight.qml$' '${WORK}/rootfs.list' && grep -qE ' squashfs-root/usr/lib/python3/dist-packages/djerba_ai/gui/qml/SettingsPage.qml$' '${WORK}/rootfs.list'"
 check "Agent IA : service système après Tailscale et le réseau" sh -c "unsquashfs -cat '${SQUASHFS}' /usr/lib/systemd/system/djerba-ai-sysd.service | grep -q '^Wants=network-online.target tailscaled.service'"
-check "Agent IA : rotation du journal d'audit" sq_has "/etc/logrotate.d/djerba-ai"
+check "Agent IA : couche cognitive, garde anti-injection, bac à sable hybride" sh -c "for m in engine guard schemas sandbox seccomp_launch trust contextbus telemetry ghost dlp crypto; do grep -qE \" squashfs-root/usr/lib/python3/dist-packages/djerba_ai/core/\$m.py\$\" '${WORK}/rootfs.list' || exit 1; done"
+check "Agent IA : manifeste des points d'entrée signés" sq_has "/usr/share/djerba-ai/trusted-callers.sha256"
+check "Agent IA : script KWin du bus de contexte" sq_has "/usr/share/djerba-ai/kwin/active-window.js"
+check "Agent IA : tableau de bord Grafana et configuration Prometheus" sh -c "unsquashfs -cat '${SQUASHFS}' /usr/share/djerba-ai/monitoring/grafana-dashboard.json | python3 -c 'import json,sys; assert len(json.load(sys.stdin)[\"panels\"]) >= 8'"
+check "Agent IA : ptrace restreint (yama)" sh -c "unsquashfs -cat '${SQUASHFS}' /usr/lib/sysctl.d/60-djerba-ai.conf | grep -q '^kernel.yama.ptrace_scope = 1'"
 check "Démarrage automatique de l'assistant" sq_has "/etc/xdg/autostart/djerba-welcome.desktop"
 check "Thème Plymouth Djerba" sq_has "/usr/share/plymouth/themes/djerba/djerba.script"
 check "Animation Plymouth (60 images)" sq_has "/usr/share/plymouth/themes/djerba/throbber-59.png"
@@ -208,7 +212,7 @@ if [[ "${EUID}" -eq 0 ]] && mount -t tmpfs -o size=1M probe "${WORK}/probe" 2>/d
     check "tor.service désactivé (Tor à la demande)" sh -c "! chroot '${WORK}/root' systemctl is-enabled tor.service"
     check "Service djerba-apps-firstboot activé" in_chroot systemctl is-enabled djerba-apps-firstboot.service
     check "Mises à jour ClamAV (freshclam)" in_chroot systemctl is-enabled clamav-freshclam.service
-    check "Agent IA : au moins 240 capacités" sh -c "chroot '${WORK}/root' env HOME=/tmp djerba-ai tools | tail -n 1 | grep -Eq '/ (2[4-9][0-9]|[3-9][0-9]{2}) capacités'"
+    check "Agent IA : au moins 260 capacités" sh -c "chroot '${WORK}/root' env HOME=/tmp djerba-ai tools | tail -n 1 | grep -Eq '/ (2[6-9][0-9]|[3-9][0-9]{2}) capacités'"
     check "Agent IA : socket du démon root activée" in_chroot systemctl is-enabled djerba-ai-sysd.socket
     check "Agent IA : démon utilisateur activé pour toutes les sessions" in_chroot test -L /etc/systemd/user/graphical-session.target.wants/djerba-ai.service
     check "Agent IA : imports Python" in_chroot python3 -c 'import djerba_ai.core.agent, djerba_ai.core.sysd, djerba_ai.core.extend, djerba_ai.gui.app'
@@ -218,6 +222,13 @@ if [[ "${EUID}" -eq 0 ]] && mount -t tmpfs -o size=1M probe "${WORK}/probe" 2>/d
     check "Agent IA : journal d'audit root:adm 0640" sh -c "[ \"\$(chroot '${WORK}/root' stat -c '%U:%G %a' /var/log/djerba/audit.log)\" = 'root:adm 640' ]"
     check "Agent IA : venv interne (PEP 668)" in_chroot test -x /usr/share/djerba-ai/venv/bin/python3
     check "Agent IA : pyflakes (contrôle des capacités générées)" in_chroot python3 -m pyflakes --version
+    check "Agent IA : pydantic 2, cryptography, seccomp, pytest-timeout, gi" in_chroot python3 -c 'import pydantic, cryptography, seccomp, pytest_timeout, gi; assert int(pydantic.VERSION.split(".")[0]) >= 2'
+    check "Agent IA : point d'entrée isolé (-I) conforme au manifeste signé" sh -c "chroot '${WORK}/root' head -n 1 /usr/bin/djerba-ai | grep -qx '#!/usr/bin/python3 -I' && chroot '${WORK}/root' sh -c 'cd / && sha256sum -c /usr/share/djerba-ai/trusted-callers.sha256'"
+    check "Agent IA : seccomp-bpf opérationnel (réseau refusé)" in_chroot python3 -I /usr/lib/python3/dist-packages/djerba_ai/core/seccomp_launch.py -- python3 -c 'import socket, sys; s = None
+try: s = socket.socket(socket.AF_INET)
+except PermissionError: sys.exit(0)
+sys.exit(1)'
+    check "Agent IA : dossier des exécutions isolées (0711)" sh -c "[ \"\$(chroot '${WORK}/root' stat -c '%a' /var/lib/djerba-ai-runs)\" = 711 ]"
     check "Agent IA : Qt Quick 3D (orbe)" in_chroot test -d /usr/lib/x86_64-linux-gnu/qt6/qml/QtQuick3D -o -d /usr/lib/aarch64-linux-gnu/qt6/qml/QtQuick3D
     check "Python : PyQt6.QtQuick + dbus" in_chroot python3 -c 'import PyQt6.QtQuick, PyQt6.QtQml, dbus'
     check "Remote Flathub (flatpak remotes)" sh -c "chroot '${WORK}/root' flatpak remotes --system --columns=name | grep -qx flathub"
