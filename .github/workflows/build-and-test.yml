@@ -28,13 +28,16 @@ jobs:
     name: ISO ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 340
+    permissions:
+      contents: write  # publication de l'ISO en assets de release
     strategy:
       fail-fast: false
       matrix:
         arch: [x86_64, arm64]
         include:
+          # Libellés épinglés : « ubuntu-latest » change d'image sans préavis.
           - arch: x86_64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             debarch: amd64
             qemu_timeout: 900
           - arch: arm64
@@ -166,8 +169,8 @@ jobs:
         if: always()
         run: sudo chown -R "$(id -u):$(id -g)" cache artifacts tests/out 2>/dev/null || true
 
-      - name: Split ISO for release (limite GitHub de 2 Gio par fichier)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Split ISO (limite GitHub de 2 Gio par fichier)
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
@@ -179,10 +182,48 @@ jobs:
             echo "ISO découpée : cat ${iso}.part* > ${iso} && sha256sum -c ${iso}.sha256"
           fi
 
-      # Quota de stockage d'artefacts : une ISO pèse ~2,5 Gio par architecture.
-      # Elle n'est donc publiée que sur un tag (job release) ou un lancement
-      # manuel ; une poussée de branche ne garde que les journaux de test.
-      # Sur un tag, l'échec de l'envoi reste bloquant.
+      # L'ISO n'est jamais envoyée comme artefact (quota de stockage : ~2,5 Gio par
+      # architecture) mais comme asset de release, non décompté du quota :
+      # - tag v* : release « Djerba OS vX » ;
+      # - poussée de branche : pré-release roulante « djerba-os-dev » dont les
+      #   assets de l'architecture sont remplacés à chaque build réussi.
+      - name: Publish ISO (assets de release)
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          arch="${{ matrix.debarch }}"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME}"; title="Djerba OS ${GITHUB_REF_NAME}"; flags=()
+          else
+            tag="djerba-os-dev"; title="Djerba OS — version de développement"; flags=(--prerelease)
+          fi
+          notes="ISO live et installables de Djerba OS (amd64 : PC 64 bits ; arm64 : ARM 64 bits).
+          Une ISO de plus de 2 Gio est découpée : cat fichier.iso.part* > fichier.iso puis sha256sum -c fichier.iso.sha256.
+          Dernière publication : ${arch}, commit ${GITHUB_SHA::12} (${GITHUB_REF_NAME}), $(date -u '+%Y-%m-%d %H:%M UTC')."
+          if ! gh release view "${tag}" >/dev/null 2>&1; then
+            gh release create "${tag}" --title "${title}" --notes "${notes}" --target "${GITHUB_SHA}" "${flags[@]}" \
+              || gh release view "${tag}" >/dev/null  # créée entre-temps par l'autre architecture
+          fi
+          # Pré-release roulante : retire les fichiers précédents de cette architecture.
+          if [[ "${tag}" == "djerba-os-dev" ]]; then
+            gh release view "${tag}" --json assets --jq '.assets[].name' | { grep -- "-${arch}\.iso" || true; } \
+              | while read -r asset; do gh release delete-asset "${tag}" "${asset}" -y; done
+            gh release edit "${tag}" --notes "${notes}" >/dev/null
+          fi
+          mapfile -t files < <(ls artifacts/djerba-os-*-"${arch}".iso* 2>/dev/null)
+          [[ "${#files[@]}" -gt 0 ]] || { echo "aucune ISO à publier" >&2; exit 1; }
+          n=0
+          until gh release upload "${tag}" "${files[@]}" --clobber; do
+            n=$((n + 1)); [[ "${n}" -lt 3 ]] || exit 1
+            echo "envoi interrompu, nouvel essai dans 30 s"; sleep 30
+          done
+          echo "Publié : https://github.com/${GITHUB_REPOSITORY}/releases/tag/${tag}"
+
+      # Seuls les journaux de test (quelques Mo) restent des artefacts ; un quota
+      # plein ne fait jamais échouer le build.
       - name: Upload QEMU logs
         if: always()
         continue-on-error: true
@@ -192,38 +233,3 @@ jobs:
           path: tests/out/
           if-no-files-found: ignore
           retention-days: 7
-
-      - name: Upload ISO
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        continue-on-error: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: djerba-os-${{ steps.version.outputs.version }}-${{ matrix.debarch }}
-          path: artifacts/
-          compression-level: 0
-          retention-days: ${{ startsWith(github.ref, 'refs/tags/') && 14 || 3 }}
-
-  release:
-    name: Publish GitHub Release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download ISOs
-        uses: actions/download-artifact@v7
-        with:
-          pattern: djerba-os-*
-          path: release
-          merge-multiple: true
-
-      - name: Publish release
-        uses: softprops/action-gh-release@v3
-        with:
-          name: Djerba OS ${{ github.ref_name }}
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            release/*.iso*
-            release/*.packages
