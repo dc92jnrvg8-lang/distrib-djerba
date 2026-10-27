@@ -1,0 +1,15 @@
+# Djerba OS — démon utilisateur de l'agent Djerba : surveillance du journal
+# (auto-réparation), maintenance quotidienne, mise à jour du modèle.
+[Unit]
+Description=Djerba : surveillance et maintenance
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/djerba-ai daemon
+Restart=on-failure
+RestartSec=30
+Nice=10
+
+[Install]
+WantedBy=graphical-session.target

@@ -511,6 +511,10 @@ ApplicationWindow {
                             onClicked: win.currentPage = 1
                         }
                         GhostButton {
+                            text: qsTr("Parler à Djerba (IA)")
+                            onClicked: backend.openTool("assistant")
+                        }
+                        GhostButton {
                             text: backend.isLive ? qsTr("Continuer à essayer") : qsTr("Fermer")
                             onClicked: win.close()
                         }

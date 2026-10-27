@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""djerba-ai — l'agent IA de Djerba OS.
+
+Usage :
+    djerba-ai [--page chat|system|selfheal|studio|tools|models]   application graphique
+    djerba-ai ask "demande"           discussion en terminal (confirmation o/n des actions)
+    djerba-ai tools [recherche]       capacités disponibles
+    djerba-ai run OUTIL ['{"param": …}'] [--verbose]
+                                      exécute une capacité (JSON des paramètres)
+    djerba-ai health                  bilan de santé
+    djerba-ai doctor                  diagnostic : moteur d'IA, démon root, outils manquants
+    djerba-ai run-app SLUG [--live]   lance une application du Studio
+    djerba-ai daemon                  démon utilisateur (service djerba-ai.service)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+
+CHILD = "DJERBA_AI_CHILD"
+
+
+def gui(argv: list[str]) -> int:
+    # Comme l'assistant d'accueil : si le rendu accéléré plante (pilote, VM),
+    # l'interface est relancée avec le rendu logiciel (orbe 2D).
+    if CHILD not in os.environ:
+        attempts = [dict(os.environ, **{CHILD: "1"})]
+        if os.environ.get("QT_QUICK_BACKEND") != "software":
+            attempts.append(dict(os.environ, **{CHILD: "1", "QT_QUICK_BACKEND": "software"}))
+        code = 1
+        for environment in attempts:
+            code = subprocess.call([sys.executable, os.path.abspath(__file__), *argv], env=environment)
+            if code >= 0:
+                return code
+            print(f"djerba-ai : rendu interrompu (signal {-code}) ; nouvel essai en rendu logiciel.", file=sys.stderr)
+        return 128 - code
+    from djerba_ai.gui.app import main
+    return main([sys.argv[0], *argv])
+
+
+def ask(request: str) -> int:
+    from djerba_ai.core.agent import Agent
+    from djerba_ai.core.config import Config
+    from djerba_ai.core.memory import Memory
+    from djerba_ai.tools import registry
+
+    config = Config()
+    memory = Memory()
+    agent = Agent(config, registry(include_plugins=True, approved=config.get("plugins_approved")), memory)
+    conversation = memory.new_conversation(request[:60])
+
+    def on_event(kind: str, payload: dict) -> None:
+        if kind == "token":
+            print(payload["text"], end="", flush=True)
+        elif kind == "tool_start":
+            print(f"\n\033[36m▶ {payload['label']}\033[0m", flush=True)
+        elif kind == "tool_result":
+            result = payload["result"]
+            mark = "\033[32m✓" if result.get("success") else "\033[31m✗"
+            print(f"{mark} {result.get('message', '')}\033[0m", flush=True)
+        elif kind == "final" and payload.get("degraded"):
+            print(payload["text"])
+
+    def confirm(tool: str, params: dict, description: dict) -> bool:
+        root = " (mot de passe administrateur)" if description.get("requires_root") else ""
+        answer = input(f"\n\033[33mDjerba souhaite : {description.get('description')} {json.dumps(params, ensure_ascii=False)}"
+                       f"{root}. Autoriser ? [o/N] \033[0m")
+        return answer.strip().lower() in ("o", "oui", "y", "yes")
+
+    agent.run(request, conversation, on_event, confirm)
+    print()
+    return 0
+
+
+def tools(query: str) -> int:
+    from djerba_ai.tools import CATEGORY_LABELS, registry
+    reg = registry()
+    selection = reg.search(query, limit=40) if query else sorted(reg.tools.values(), key=lambda t: (t.category, t.name))
+    for tool in selection:
+        flags = ("R" if tool.requires_root else "-") + ("!" if tool.dangerous else "-") \
+            + ("x" if tool.missing_binaries() else "-")
+        print(f"{flags} {tool.name:<26} {CATEGORY_LABELS[tool.category]:<13} {tool.description}")
+    print(f"\n{len(selection)} / {len(reg)} capacités  (R : administrateur, ! : confirmation, x : outil manquant)")
+    return 0
+
+
+def run(name: str, raw: str, verbose: bool) -> int:
+    from djerba_ai.core.executor import Executor
+    from djerba_ai.core.memory import Memory
+    from djerba_ai.tools import registry
+    try:
+        params = json.loads(raw) if raw else {}
+    except ValueError:
+        print("djerba-ai : paramètres JSON invalides", file=sys.stderr)
+        return 2
+    result = Executor(registry(), Memory()).execute(name, params, request=f"[terminal] {name}", verbose=verbose)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("success") else 1
+
+
+def health() -> int:
+    from djerba_ai.core.health import report
+    result = report()
+    print(f"Score de santé : {result['score']}/100")
+    for item in result["items"]:
+        mark = {"ok": "\033[32m✓", "warning": "\033[33m!", "error": "\033[31m✗"}[item["level"]]
+        print(f"{mark} {item['title']}\033[0m — {item['detail']}")
+    return 0
+
+
+def doctor() -> int:
+    from djerba_ai.core import ipc
+    from djerba_ai.core.config import Config
+    from djerba_ai.core.llm import client_from_config
+    from djerba_ai.tools import registry
+    config = Config()
+    client = client_from_config(config)
+    print(f"Moteur  : {config.get('provider')} — {'disponible' if client.available() else 'injoignable'}"
+          f" (modèle « {config.get('model')} »)")
+    try:
+        print(f"Démon root : disponible (version {ipc.call('sys.ping', {}, timeout=10)['version']})")
+    except ipc.RPCError as exc:
+        print(f"Démon root : {exc}")
+    reg = registry()
+    missing = {tool.name: tool.missing_binaries() for tool in reg.tools.values() if tool.missing_binaries()}
+    print(f"Capacités : {len(reg)} ({len(reg) - len(missing)} utilisables)")
+    for name, binaries in sorted(missing.items()):
+        print(f"  - {name} : {', '.join(binaries)} manquant")
+    return 0
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    command = argv[0] if argv and not argv[0].startswith("-") else ""
+    if argv[:1] in (["-h"], ["--help"]):
+        print(__doc__)
+        return 0
+    if not command:
+        return gui(argv)
+    if command == "ask" and len(argv) >= 2:
+        return ask(" ".join(argv[1:]))
+    if command == "tools":
+        return tools(" ".join(argv[1:]))
+    if command == "run" and len(argv) >= 2:
+        verbose = "--verbose" in argv or "-v" in argv
+        rest = [arg for arg in argv[2:] if arg not in ("--verbose", "-v")]
+        return run(argv[1], rest[0] if rest else "", verbose)
+    if command == "health":
+        return health()
+    if command == "doctor":
+        return doctor()
+    if command == "run-app" and len(argv) >= 2:
+        from djerba_ai.tools.devtools import run_app
+        return run_app(argv[1], live="--live" in argv)
+    if command == "daemon":
+        from djerba_ai.core.daemon import main as daemon_main
+        return daemon_main()
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -18,6 +18,7 @@ et en **UEFI ARM64**.
 | Bureau | Plasma 6.3 Wayland, SDDM 0.21 (Qt 6) | idem |
 | Jeu | GameMode, MangoHud, vkBasalt, Vulkan ; Steam, Lutris, Heroic… au choix | idem, sans Steam ni Wine 32 bits |
 | Vie privée | mode anonyme (Tor + coupe-circuit), mode discret façon Windows 10/11 | idem |
+| Agent IA | **Djerba** : 228 capacités système, Ollama ou API compatible OpenAI, auto-réparation, Studio | idem |
 | Sécurité | UFW, ClamAV + ClamTk, AppArmor, mises à jour automatiques | idem |
 | Installation | Calamares, choix des applications, BTRFS `@`/`@home`, zstd, sans swap disque | idem |
 
@@ -31,11 +32,12 @@ et en **UEFI ARM64**.
 4. [Chaîne de construction](#chaîne-de-construction)
 5. [Tests](#tests)
 6. [CI/CD GitHub Actions](#cicd-github-actions)
-7. [Identité visuelle](#identité-visuelle)
-8. [Choix techniques et limites connues](#choix-techniques-et-limites-connues)
-9. [Personnalisation](#personnalisation)
-10. [Dépannage](#dépannage)
-11. [Licences](#licences)
+7. [Agent IA Djerba](#agent-ia-djerba)
+8. [Identité visuelle](#identité-visuelle)
+9. [Choix techniques et limites connues](#choix-techniques-et-limites-connues)
+10. [Personnalisation](#personnalisation)
+11. [Dépannage](#dépannage)
+12. [Licences](#licences)
 
 ---
 
@@ -152,7 +154,12 @@ L'assistant **Djerba Welcome** (PyQt6 + QML) propose cinq pages :
 | Confidentialité | mode anonyme, nouvelle identité Tor, vérification d'IP, mode discret, ClamAV, pare-feu |
 | Système | matériel, noyau, mises à jour, thèmes globaux |
 
-En ligne de commande : `djerba-apps list|install|remove|status`.
+En ligne de commande : `djerba-apps list|install|remove|status`. Les opérations sont
+sérialisées par un verrou global (le service de premier démarrage, l'assistant et
+le terminal ne se gênent jamais), attendent le verrou de dpkg au lieu d'échouer,
+et publient une progression réelle (`--json-progress` : canal d'état d'APT pour
+les paquets, pourcentage de Flatpak) ; l'architecture i386 est activée
+automatiquement pour Steam et Wine.
 
 ### Mode jeu
 
@@ -160,24 +167,33 @@ En ligne de commande : `djerba-apps list|install|remove|status`.
   élevé (Proton), BBR, ordonnanceurs d'E/S adaptés, `irqbalance`.
 * **GameMode** (par jeu : `gamemoderun %command%`), **MangoHud**,
   **vkBasalt**, GOverlay, pilotes Mesa/Vulkan, règles udev `steam-devices`.
-* **`djerba-gamemode`** (mode jeu de session) : profil d'énergie
-  « performance », effets KWin coûteux désactivés, état précédent restauré à
-  l'identique ; superposition MangoHud activable globalement.
+* **Djerba Game Center** (`djerba-game-center`) : mode jeu en un clic, profil
+  d'énergie du processeur, effets KWin, latence minimale (tearing autorisé en
+  plein écran sous Wayland), MangoHud (préréglages, limite d'images/s),
+  **GE-Proton** installé dans Steam (archive vérifiée par SHA-512) et lanceurs
+  détectés. Moteur en ligne de commande : `djerba-gamemode` (`status --json`,
+  `profile`, `effects`, `tearing`, `mangohud`, `proton list|install-ge|remove`) ;
+  l'état précédent est toujours restauré à l'identique.
 * Steam (avec multiarch i386 et accord de licence pré-rempli à la demande de
   l'utilisateur), Lutris, Heroic, Bottles… s'installent depuis l'installateur
   ou l'assistant.
 
 ### Mode anonyme (inspiré d'AnonSurf de Parrot OS)
 
-`djerba-anonsurf start|stop|toggle|change|myip|status` (ou l'assistant, ou le
-menu) fait passer **tout le trafic** de la machine par Tor :
+`djerba-anonsurf start|stop|restart|toggle|change|myip|status [--json] [--verbose]`
+(ou l'assistant, le menu, l'agent) fait passer **tout le trafic** de la machine
+par Tor :
 
 * coupe-circuit **nftables** appliqué *avant* le démarrage de Tor : TCP
   redirigé vers le `TransPort`, DNS vers le `DNSPort` (domaines `.onion`
   compris), IPv6, UDP et ICMP bloqués, réseau local et DHCP autorisés ; si Tor
   s'arrête, **rien ne sort** ;
-* instance Tor dédiée (`djerba-anonsurf-tor.service`), Tor système désactivé
-  par défaut ;
+* instance Tor dédiée (`djerba-anonsurf-tor.service`) configurée par
+  `/etc/tor/djerba-anonsurf.torrc` (seul emplacement que le profil AppArmor de
+  Tor autorise), Tor système désactivé par défaut ;
+* si Tor ne parvient pas à se connecter, tout est annulé (rien n'est sorti
+  entre-temps) et la connexion directe est rétablie, avec le journal de Tor ;
+  un verrou empêche deux bascules simultanées ; `--verbose` détaille chaque étape ;
 * nouvelle identité (`SIGNAL NEWNYM`), vérification via
   `check.torproject.org`, notifications de bureau.
 
@@ -187,12 +203,24 @@ menu) fait passer **tout le trafic** de la machine par Tor :
 
 ### Mode discret (inspiré du mode undercover de Kali)
 
-`djerba-undercover` (ou l'assistant) donne au bureau une apparence **façon
-Windows 10** (barre alignée à gauche) ou **Windows 11** (barre centrée) :
-couleurs claires, accent bleu, fond bleu. La configuration Plasma de
-l'utilisateur est sauvegardée puis **restaurée à l'identique** au retour.
+`djerba-undercover on|off|toggle|status [--style 10|11] [--json] [--verbose]` (ou
+l'assistant) donne au bureau une apparence **façon Windows 10** (barre alignée à
+gauche) ou **Windows 11** (barre centrée) : couleurs claires, accent bleu, fond
+bleu. Comme kali-undercover, l'état du bureau est sauvegardé puis **restauré à
+l'identique** ; le bureau (plasmashell) est arrêté proprement avant chaque
+sauvegarde et restauration — il réécrit sa configuration en quittant, ce qui
+corrompait la session auparavant — et un thème qui échoue est annulé.
 Ces thèmes (`org.djerba.undercover10/11`) sont installés dans le système et
 disponibles **dès la session live**, sans Internet.
+
+### Réseau
+
+`/etc/resolv.conf` pointe vers le stub de **systemd-resolved**, alimenté par
+NetworkManager, et le module NSS `resolve` est installé : la résolution de noms
+fonctionne avec ou sans mode anonyme (en mode anonyme, les requêtes DNS IPv4
+passent par le `DNSPort` de Tor). Auparavant, live-build restaurait en fin de
+construction un `resolv.conf` vide : aucun nom ne se résolvait (Firefox, curl,
+Discover), seuls les accès par adresse IP fonctionnaient.
 
 ### Sécurité
 
@@ -204,6 +232,65 @@ disponibles **dès la session live**, sans Internet.
 * Firefox depuis le **dépôt APT officiel Mozilla** (clé
   `35BA A0B3 3E9E B396 F59C A838 C0BA 5CE6 DC63 15A3`), Flathub au niveau
   système pour Discover.
+
+---
+
+## Agent IA Djerba
+
+**Djerba** (menu « Djerba », `djerba-ai`) est l'agent IA natif de Djerba OS : il
+connaît la configuration de la machine et l'administre avec vous.
+
+| Élément | Rôle |
+|---|---|
+| Application `djerba-ai` | discussion en continu, cartes d'actions et de confirmation, santé du système, auto-réparation, Studio, catalogue des capacités, modèles et réglages ; orbe animée en Qt Quick 3D (2D en rendu logiciel) |
+| `djerba_ai.core` | configuration, mémoire SQLite (`~/.local/share/djerba/memory.db`), clients Ollama / API compatible OpenAI, boucle agentique, contexte système, IPC JSON-RPC, démon root, auto-réparation, démon utilisateur |
+| `djerba_ai.tools` | **228 capacités** découvertes par introspection (classe `BaseTool`) : maintenance 31, performances 27 (dont `game_optimizer`), sécurité 30, bureau 26, applications 27, matériel 20, agent 27, système 21, Studio 19 |
+| `djerba-ai-sysd` | démon root activé par la socket `/run/djerba-ai/sysd.sock` : appelant identifié par `SO_PEERCRED`, autorisation **polkit** du processus (`org.djerba.ai.exec` / `patch` / `deploy` / `setup`) ; n'exécute que les capacités intégrées marquées root |
+| `djerba-ai.service` (utilisateur) | surveillance du journal (incidents d'auto-réparation), maintenance quotidienne, mise à jour hebdomadaire du modèle |
+
+**Fonctionnement.** À chaque demande, l'agent reçoit l'état de la machine
+(version, matériel, session live ou installée, modes anonyme / discret / jeu,
+applications, services en échec, espace disque, réseau) et ce qu'il a retenu de
+vous. Il choisit les capacités pertinentes (recherche + historique de réussite ;
+`tools_search` lui donne accès aux 228), les appelle, lit leurs résultats et
+répond. Toute action sensible est **confirmée** dans l'interface, puis par
+votre mot de passe administrateur (polkit) si elle exige root. Il **apprend**
+de l'usage : actions réussies, vos retours « Utile / Pas utile » et exemples de
+demandes similaires orientent ses choix suivants.
+
+**Modèles.** Ollama n'est pas empaqueté par Debian : le bouton « Installer
+Ollama » télécharge l'archive officielle (GitHub, somme SHA-256 vérifiée) et
+crée son service. Le modèle se change à tout moment (Qwen 2.5 3B/7B, Llama
+3.2/3.1, Qwen 2.5 Coder… selon votre mémoire), ou toute API compatible OpenAI
+(llama.cpp, LM Studio, service en ligne). **Sans moteur**, Djerba reste utile :
+il propose directement les capacités correspondant à la demande.
+
+**Recherche web.** `web_search` (DuckDuckGo) et `web_fetch` pour les questions
+récentes ; désactivable dans les réglages ; passe par Tor en mode anonyme.
+
+**Auto-réparation.** Une erreur d'un outil `djerba-*` dans le journal devient
+un incident (notification). Djerba explique la cause, puis peut proposer un
+correctif : le modèle réécrit le script, le démon root le vérifie dans le bac à
+sable Git `/var/lib/djerba-ai/sandbox` (syntaxe, shellcheck, `--help` exécuté
+sous l'utilisateur `nobody`, comportement identique à l'original) et l'annule
+par `git reset --hard` s'il échoue. Le déploiement n'a lieu **qu'après votre
+accord** (aperçu du diff + mot de passe), de façon atomique dans
+`/usr/local/bin` (prioritaire dans le `PATH`, sans modifier les fichiers du
+paquet) ; « Annuler le correctif » rétablit la version du paquet.
+
+**Studio.** « Crée un jeu Snake en PyQt6 », « une calculatrice HTML5 »… :
+l'application est écrite, testée (lancement hors écran, chargement QML, HTML
+autonome), corrigée une fois si besoin, enregistrée dans
+`~/.local/share/djerba/generated_apps/<nom>/` avec Git et `requirements.txt`,
+et ajoutée au menu de Plasma (`~/.local/share/applications/djerba-<nom>.desktop`,
+`djerba-ai run-app <nom> [--live]` avec rechargement à chaud). Hors ligne, les
+modèles Snake, calculatrice et chronomètre restent disponibles. Djerba peut
+aussi s'écrire de **nouvelles capacités** (greffons dans
+`~/.local/share/djerba/plugins/`), qui ne sont actives qu'après votre accord et
+ne peuvent jamais obtenir les droits root.
+
+En terminal : `djerba-ai ask "…"`, `djerba-ai tools [recherche]`,
+`djerba-ai run OUTIL '{"param": …}'`, `djerba-ai health`, `djerba-ai doctor`.
 
 ---
 
@@ -219,7 +306,8 @@ disponibles **dès la session live**, sans Internet.
 ├── packages/
 │   ├── build-packages.sh                  # dpkg-deb -> config/packages.chroot/
 │   ├── djerba-branding/DEBIAN + root/     # identité (os-release dérouté, GRUB, À propos)
-│   └── djerba-tools/DEBIAN + root/        # djerba-welcome, -apps, -anonsurf, -undercover, -gamemode
+│   └── djerba-tools/DEBIAN + root/        # djerba-welcome, -apps, -anonsurf, -undercover, -gamemode,
+│                                          # -game-center, djerba-ai (+ djerba_ai/ : core, tools, gui)
 ├── tools/catalog-to-netinstall.py         # apps.yaml -> page « Applications » de Calamares
 ├── config/
 │   ├── package-lists/                     # 01 base · 02 bureau · 03 jeu
@@ -229,8 +317,10 @@ disponibles **dès la session live**, sans Internet.
 ├── tests/
 │   ├── run_local_lints.sh                 # shellcheck, py_compile, YAML/INI, XML, visudo
 │   ├── test-yaml-ini.py                   # validateur strict mount.conf / flathub.conf / …
+│   ├── test-djerba-ai.py                  # agent IA : registre, sécurité, boucle, démon root, bac à sable, Studio
 │   ├── test-features.sh                   # inspection ISO + squashfs + chroot
-│   └── test-iso-qemu.sh                   # boot UEFI headless (OVMF / AAVMF)
+│   ├── test-iso-qemu.sh                   # boot UEFI headless (OVMF / AAVMF)
+│   └── test-live-session.sh               # session live réelle via la console série
 ├── build.sh                               # orchestrateur
 └── Dockerfile                             # environnement de build Debian trixie
 ```
@@ -287,6 +377,8 @@ MKSQUASHFS_OPTIONS="-comp zstd -b 1M -Xcompression-level 19 -mem 4G -processors 
 | `tests/test-yaml-ini.py` | avant compilation | YAML strict et schémas Calamares 3.3 (`mount.conf` : `/@`, `/@home`, zstd/ssd/noatime/discard=async) ; INI strict pour `flathub.conf`, SDDM, `.desktop`, KDE ; unités systemd ; catalogue d'applications ; cohérence de `settings.conf` |
 | `tests/run_local_lints.sh` | avant compilation | `shellcheck`, `set -euo pipefail` (ou `set -e` pour les scripts dpkg), bit exécutable, Python strict, XML polkit, `visudo -c` |
 | `tests/test-features.sh` | après le build | ~90 contrôles : EFI/Secure Boot/BIOS, GRUB, squashfs, noyau Debian, **identité Djerba OS** (os-release, À propos, icônes), Plasma Wayland, Calamares + page Applications, mode anonyme, mode discret, ClamAV, jeu, puis en **chroot overlay** : paquets `djerba-*` installés, diversion dpkg, catalogue, polkit, services, chargement QML réel de l'assistant |
+| `tests/test-djerba-ai.py` | avant compilation | 228 capacités et schémas, paramètres hostiles refusés (aucun shell), mémoire, boucle agentique face à un faux serveur Ollama, confirmation refusée, mode dégradé, démon root en JSON-RPC réel (SO_PEERCRED, autorisation), bac à sable (correctif cassé annulé, correctif valide déployé puis retiré), Studio hors ligne, chargement réel de l'interface |
+| `tests/test-live-session.sh` | après le build | démarre l'ISO et se connecte sur la console série : DNS (resolv.conf, NSS), Tor sous AppArmor et retour arrière du mode anonyme, mode jeu, mode discret (bascule puis restauration à l'identique), store, agent IA (capacité, démon root activé par socket, Studio) ; avec `--network` (CI) : résolution, HTTPS, Firefox, mode anonyme complet via Tor sans fuite IPv6 |
 | `tests/test-iso-qemu.sh` | après le build | démarrage **UEFI** (OVMF / AAVMF), console série : succès sur `djerba login:`, **bannière « Djerba OS »** vérifiée, échec sur panique ou shell initramfs ; capture d'écran QMP |
 
 ---
@@ -344,6 +436,12 @@ de verre. Il est décliné en SVG et PNG (48 → 256 px) pour l'icône du menu,
 | Steam / Wine 32 bits | x86_64 seulement ; Steam n'est pas préinstallé mais proposé (licence Valve, multiarch i386) |
 | Flatpak à l'installation | installés au premier démarrage (réseau requis, réessais automatiques) |
 | `flathub.conf` | source de vérité INI lue par le hook 0500, qui enregistre le remote avec `flatpak remote-add` |
+| Interface de l'agent | demandée en PyWebView + Three.js : réalisée en **QML + Qt Quick 3D**, déjà utilisés par tout le système (même rendu, repli logiciel en VM) — PyWebView imposerait un moteur web WebKitGTK (> 100 Mo) dont WebGL est souvent absent en machine virtuelle |
+| Reconnaissance vocale | Faster-Whisper n'existe pas dans Debian (et `python3-whisper` y est une base de données, pas de la reconnaissance vocale) : pas de saisie vocale pour l'instant |
+| `cpupower` pour le mode jeu | power-profiles-daemon pilote déjà gouverneur et EPP ; les deux se contrediraient : `game_optimizer` passe par lui, `cpupower_governor` (paquet `linux-cpupower`) sert sans lui |
+| Suspension du compositeur | possible en session X11 (`org.kde.KWin /Compositor suspend`) ; sous Wayland, KWin *est* le serveur d'affichage : effets coupés et tearing autorisé à la place |
+| Déploiement des correctifs | jamais sans accord (aperçu + mot de passe) et dans `/usr/local/bin`, pas dans `/usr/bin` : les fichiers des paquets restent intacts et un retour arrière est toujours possible |
+| Unités systemd | `/usr/lib/systemd/{system,user}` (usr fusionné de Debian 13) ; le démon utilisateur est activé pour tous les comptes (`systemctl --global`) plutôt que copié dans `~/.config/systemd/user` |
 
 ---
 
@@ -370,7 +468,10 @@ de verre. Il est décliné en SVG et PNG (48 → 256 px) pour l'icône du menu,
 | Curseur invisible sur une partie de l'écran (VM) | curseur logiciel KWin activé automatiquement en VM (`10-djerba-vm-cursor.sh`) |
 | Applications choisies non installées | `djerba-apps status` ; `systemctl status djerba-apps-firstboot` (réessaie toutes les 2 min tant que le réseau manque) |
 | Plus d'Internet après le mode anonyme | `pkexec djerba-anonsurf stop` (le coupe-circuit bloque tout tant que Tor n'est pas connecté) |
-| Revenir de l'apparence Windows | `djerba-undercover off` |
+| Revenir de l'apparence Windows | `djerba-undercover off` (`--verbose` pour le détail) |
+| Pages web qui ne chargent pas | `djerba-anonsurf status` ; `resolvectl status` ; `ls -l /etc/resolv.conf` doit pointer vers `../run/systemd/resolve/stub-resolv.conf` |
+| Djerba (IA) en « mode simplifié » | Modèles et réglages → Installer Ollama, puis télécharger un modèle ; `djerba-ai doctor` |
+| Un correctif de Djerba pose problème | Auto-réparation → « Annuler le correctif », ou `djerba-ai run patch_rollback '{"name": "djerba-…"}'` |
 | L'assistant ne s'ouvre plus | `djerba-welcome`, ou `Autostart=true` dans `~/.config/djerba-welcomerc` |
 
 ---

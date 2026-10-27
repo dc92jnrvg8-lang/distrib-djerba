@@ -12,8 +12,9 @@ Depends: djerba-branding (= @VERSION@), python3, python3-yaml, python3-dbus,
  qml6-module-qtquick-shapes, qml6-module-qt5compat-graphicaleffects,
  qml6-module-qtqml-workerscript, libqt6svg6, qt6-svg-plugins, pkexec, libnotify-bin,
  tor, nftables, curl, systemd-resolved, plasma-workspace, kde-cli-tools,
- libkf6config-bin, power-profiles-daemon
-Recommends: flatpak, torsocks
+ libkf6config-bin, power-profiles-daemon, qml6-module-qtquick3d, git, shellcheck,
+ upower, rfkill, pciutils, usbutils, xdg-user-dirs, zstd, smartmontools, util-linux
+Recommends: flatpak, torsocks, linux-cpupower, lm-sensors
 Description: outils et assistant d'accueil de Djerba OS
  - djerba-welcome : assistant d'accueil et de premier démarrage (PyQt6 + QML)
  - djerba-apps : catalogue d'applications (APT et Flathub), utilisé par
@@ -21,4 +22,8 @@ Description: outils et assistant d'accueil de Djerba OS
  - djerba-anonsurf : mode anonyme, tout le trafic passe par Tor avec
    coupe-circuit nftables
  - djerba-undercover : mode discret, apparence façon Windows réversible
- - djerba-gamemode : mode jeu de la session (performances, effets, MangoHud)
+ - djerba-gamemode et Djerba Game Center : mode jeu (processeur, KWin,
+   MangoHud, GE-Proton, lanceurs)
+ - djerba-ai : agent IA natif (Ollama ou API compatible OpenAI), plus de
+   220 capacités système, démon root autorisé par polkit, auto-réparation
+   en bac à sable Git, Studio de création d'applications

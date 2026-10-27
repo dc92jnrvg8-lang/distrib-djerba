@@ -6,6 +6,7 @@
 #   2. présence de « set -euo pipefail » dans chaque script Bash
 #   3. compilation stricte de tous les scripts Python (py_compile, -W error)
 #   4. validation YAML/INI (tests/test-yaml-ini.py)
+#   5. tests de l'agent IA (tests/test-djerba-ai.py)
 #   5. validation XML (politiques polkit), sudoers (visudo) et QML (qmllint
 #      si disponible)
 set -euo pipefail
@@ -135,6 +136,14 @@ if python3 tests/test-yaml-ini.py; then
     pass "tests/test-yaml-ini.py"
 else
     fail "tests/test-yaml-ini.py"
+fi
+
+section "Agent IA (djerba_ai)"
+if python3 tests/test-djerba-ai.py >"${TMPDIR:-/tmp}/djerba-ai-tests.log" 2>&1; then
+    pass "tests/test-djerba-ai.py ($(grep -Eo 'Ran [0-9]+ tests' "${TMPDIR:-/tmp}/djerba-ai-tests.log"))"
+else
+    tail -n 40 "${TMPDIR:-/tmp}/djerba-ai-tests.log"
+    fail "tests/test-djerba-ai.py"
 fi
 
 section "XML (polkit)"

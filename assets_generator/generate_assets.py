@@ -204,6 +204,36 @@ def logo_fragment(prefix: str = "lg") -> str:
     """
 
 
+def agent_icon_document() -> str:
+    """Icône de l'agent Djerba : orbe de verre turquoise, anneau orbital et étincelle."""
+    c = COLORS
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="aiTile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="{c['deep']}"/><stop offset="1" stop-color="{c['night']}"/>
+    </linearGradient>
+    <radialGradient id="aiOrb" cx="0.38" cy="0.34" r="0.7">
+      <stop offset="0" stop-color="{c['aqua']}"/><stop offset="0.55" stop-color="{c['lagoon']}"/>
+      <stop offset="1" stop-color="{c['deep']}"/>
+    </radialGradient>
+    <radialGradient id="aiHalo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0.55" stop-color="{c['turquoise']}" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="{c['turquoise']}" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="16" y="16" width="224" height="224" rx="62" fill="url(#aiTile)"/>
+  <circle cx="128" cy="128" r="92" fill="url(#aiHalo)"/>
+  <circle cx="128" cy="128" r="58" fill="url(#aiOrb)"/>
+  <ellipse cx="128" cy="128" rx="92" ry="26" fill="none" stroke="{c['aqua']}" stroke-opacity="0.8"
+           stroke-width="5" transform="rotate(-22 128 128)"/>
+  <path d="M168 66 l6 14 14 6 -14 6 -6 14 -6 -14 -14 -6 14 -6 z" fill="{c['sand']}"/>
+  <ellipse cx="108" cy="104" rx="18" ry="11" fill="#FFFFFF" fill-opacity="0.35" transform="rotate(-30 108 104)"/>
+  <rect x="17.5" y="17.5" width="221" height="221" rx="60.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.25"
+        stroke-width="3"/>
+</svg>
+"""
+
+
 def logo_document(size: int = 256) -> str:
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" '
@@ -1138,6 +1168,9 @@ def generate_identity(ctx: Context) -> None:
         for size in (48, 64, 128, 256):
             svg_to_png(logo_document(), icons / f"{size}x{size}" / "apps" / f"{name}.png", size, size)
     svg_to_png(logo_document(), BRANDING / "usr" / "share" / "pixmaps" / "djerba-os.png", 256, 256)
+    write_text(icons / "scalable" / "apps" / "djerba-ai.svg", agent_icon_document())
+    for size in (48, 64, 128, 256):
+        svg_to_png(agent_icon_document(), icons / f"{size}x{size}" / "apps" / "djerba-ai.png", size, size)
 
     assets = reset_dir(BRANDING / "usr" / "share" / "djerba" / "assets")
     write_text(assets / "logo.svg", logo_document())

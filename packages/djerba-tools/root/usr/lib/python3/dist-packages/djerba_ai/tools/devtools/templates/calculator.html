@@ -1,0 +1,113 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Calculatrice — générée par le Studio Djerba (HTML5 autonome, sans réseau). -->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calculatrice — Djerba Studio</title>
+<style>
+  :root { --night: #070B18; --deep: #0A1F3D; --turquoise: #00C2CB; --aqua: #5EEAD4; --coral: #FF7A59; --white: #F8FAFC; --muted: #94A3B8; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: Inter, system-ui, sans-serif;
+         background: radial-gradient(circle at 30% 20%, #0E5E7E 0, var(--deep) 40%, var(--night) 100%); color: var(--white); }
+  .calc { width: min(360px, 92vw); padding: 22px; border-radius: 28px; background: rgba(255,255,255,.08);
+          border: 1px solid rgba(255,255,255,.18); backdrop-filter: blur(24px); box-shadow: 0 30px 80px rgba(0,0,0,.45); }
+  .screen { padding: 14px 10px 20px; text-align: right; }
+  .history { min-height: 20px; color: var(--muted); font-size: 15px; overflow-wrap: anywhere; }
+  .value { font-size: 44px; font-weight: 300; overflow-wrap: anywhere; }
+  .keys { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  button { height: 64px; border: 1px solid rgba(255,255,255,.14); border-radius: 18px; background: rgba(255,255,255,.07);
+           color: var(--white); font-size: 22px; cursor: pointer; transition: transform .08s, background .15s; }
+  button:hover { background: rgba(255,255,255,.14); }
+  button:active { transform: scale(.95); }
+  .op { color: var(--aqua); }
+  .eq { background: linear-gradient(90deg, var(--turquoise), var(--aqua)); color: var(--night); font-weight: 700; }
+  .clear { color: var(--coral); }
+  .wide { grid-column: span 2; }
+</style>
+</head>
+<body>
+<main class="calc" aria-label="Calculatrice">
+  <div class="screen"><div class="history" id="history"></div><div class="value" id="value">0</div></div>
+  <div class="keys" id="keys">
+    <button class="clear" data-action="clear">C</button><button class="op" data-action="back">⌫</button>
+    <button class="op" data-action="percent">%</button><button class="op" data-op="/">÷</button>
+    <button data-digit="7">7</button><button data-digit="8">8</button><button data-digit="9">9</button><button class="op" data-op="*">×</button>
+    <button data-digit="4">4</button><button data-digit="5">5</button><button data-digit="6">6</button><button class="op" data-op="-">−</button>
+    <button data-digit="1">1</button><button data-digit="2">2</button><button data-digit="3">3</button><button class="op" data-op="+">+</button>
+    <button class="wide" data-digit="0">0</button><button data-digit=".">,</button><button class="eq" data-action="equals">=</button>
+  </div>
+</main>
+<script>
+"use strict";
+// Calcul exact pas à pas, sans eval : l'opérande courant et l'opération en attente.
+const state = { value: "0", stored: null, op: null, fresh: false };
+const valueEl = document.getElementById("value");
+const historyEl = document.getElementById("history");
+const symbols = { "+": "+", "-": "−", "*": "×", "/": "÷" };
+
+function format(text) {
+  if (text === "Erreur") return text;
+  const [whole, decimal] = text.split(".");
+  const grouped = Number(whole).toLocaleString("fr-FR", { maximumFractionDigits: 0 });
+  return (whole.startsWith("-") && grouped === "0" ? "-0" : grouped) + (decimal !== undefined ? "," + decimal : "");
+}
+function render() {
+  valueEl.textContent = format(state.value);
+  historyEl.textContent = state.op ? `${format(String(state.stored))} ${symbols[state.op]}` : "";
+}
+function compute(a, b, op) {
+  const result = { "+": a + b, "-": a - b, "*": a * b, "/": b === 0 ? NaN : a / b }[op];
+  return Number.isFinite(result) ? Number(result.toPrecision(12)) : NaN;
+}
+function digit(d) {
+  if (state.value === "Erreur" || state.fresh) { state.value = "0"; state.fresh = false; }
+  if (d === "." && state.value.includes(".")) return;
+  state.value = state.value === "0" && d !== "." ? d : state.value + d;
+}
+function operator(op) {
+  const current = parseFloat(state.value);
+  if (state.op && !state.fresh) {
+    const result = compute(state.stored, current, state.op);
+    state.value = Number.isNaN(result) ? "Erreur" : String(result);
+  }
+  state.stored = parseFloat(state.value);
+  state.op = op;
+  state.fresh = true;
+}
+function action(name) {
+  if (name === "clear") Object.assign(state, { value: "0", stored: null, op: null, fresh: false });
+  if (name === "back") state.value = state.value.length > 1 ? state.value.slice(0, -1) : "0";
+  if (name === "percent") state.value = String(parseFloat(state.value) / 100);
+  if (name === "equals" && state.op) {
+    const result = compute(state.stored, parseFloat(state.value), state.op);
+    historyEl.dataset.last = `${state.stored} ${state.op} ${state.value}`;
+    state.value = Number.isNaN(result) ? "Erreur" : String(result);
+    Object.assign(state, { stored: null, op: null, fresh: true });
+  }
+}
+document.getElementById("keys").addEventListener("click", (event) => {
+  const button = event.target.closest("button");
+  if (!button) return;
+  if (button.dataset.digit) digit(button.dataset.digit);
+  else if (button.dataset.op) operator(button.dataset.op);
+  else action(button.dataset.action);
+  render();
+});
+document.addEventListener("keydown", (event) => {
+  const key = event.key;
+  if (/^[0-9]$/.test(key)) digit(key);
+  else if (key === "." || key === ",") digit(".");
+  else if ("+-*/".includes(key)) operator(key);
+  else if (key === "Enter" || key === "=") action("equals");
+  else if (key === "Backspace") action("back");
+  else if (key === "Escape") action("clear");
+  else return;
+  event.preventDefault();
+  render();
+});
+render();
+</script>
+</body>
+</html>

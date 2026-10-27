@@ -1,0 +1,25 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Djerba
+GenericName=AI assistant
+GenericName[fr]=Assistant IA
+Comment=Djerba OS's AI agent: administer, optimize, repair and create
+Comment[fr]=L'agent IA de Djerba OS : administrer, optimiser, réparer et créer
+Exec=djerba-ai
+Icon=djerba-ai
+Terminal=false
+Categories=Qt;KDE;System;Utility;
+Keywords=ia;ai;assistant;agent;djerba;ollama;chat;
+StartupWMClass=djerba-ai
+Actions=Health;Studio;
+
+[Desktop Action Health]
+Name=System health
+Name[fr]=Santé du système
+Exec=djerba-ai --page system
+
+[Desktop Action Studio]
+Name=Studio
+Name[fr]=Studio
+Exec=djerba-ai --page studio

@@ -1,0 +1,12 @@
+# Djerba OS — socket du démon root de l'agent Djerba (activation à la demande).
+# Ouverte à tous : chaque appel est identifié (SO_PEERCRED) et autorisé par polkit.
+[Unit]
+Description=Djerba : socket du service système de l'agent IA
+
+[Socket]
+ListenStream=/run/djerba-ai/sysd.sock
+SocketMode=0666
+DirectoryMode=0755
+
+[Install]
+WantedBy=sockets.target

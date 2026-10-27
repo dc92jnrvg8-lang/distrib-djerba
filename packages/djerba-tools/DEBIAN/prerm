@@ -8,6 +8,9 @@ case "$1" in
             /usr/bin/djerba-anonsurf stop >/dev/null 2>&1 || true
         fi
         systemctl disable djerba-apps-firstboot.service >/dev/null 2>&1 || true
+        systemctl stop djerba-ai-sysd.socket djerba-ai-sysd.service >/dev/null 2>&1 || true
+        systemctl disable djerba-ai-sysd.socket >/dev/null 2>&1 || true
+        systemctl --global disable djerba-ai.service >/dev/null 2>&1 || true
         ;;
 esac
 

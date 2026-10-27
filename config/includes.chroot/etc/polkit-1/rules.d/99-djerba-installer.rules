@@ -1,14 +1,18 @@
 // Djerba OS (session live) — autorise l'utilisateur live, dans sa session
 // locale et active, à lancer l'installateur (action org.djerba.installer),
 // l'assistant KPMcore utilisé par Calamares pour partitionner, ainsi que les
-// outils Djerba (applications, mode anonyme), sans mot de passe.
+// outils Djerba (applications, mode anonyme, agent IA), sans mot de passe.
 // Supprimé de la cible par Calamares (shellprocess@target-cleanup).
 polkit.addRule(function (action, subject) {
     var installerActions = [
         "org.djerba.installer",
         "org.kde.kpmcore.externalcommand.init",
         "org.djerba.apps",
-        "org.djerba.anonsurf"
+        "org.djerba.anonsurf",
+        "org.djerba.ai.exec",
+        "org.djerba.ai.patch",
+        "org.djerba.ai.deploy",
+        "org.djerba.ai.setup"
     ];
     if (installerActions.indexOf(action.id) >= 0 &&
             subject.user === "djerba" &&

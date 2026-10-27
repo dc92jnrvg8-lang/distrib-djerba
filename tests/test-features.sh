@@ -121,6 +121,14 @@ check "Interface ClamTk" sq_has "/usr/bin/clamtk"
 check "MangoHud" sq_has "/usr/bin/mangohud"
 check "Calamares : choix d'applications (netinstall)" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/calamares/modules/netinstall.conf | grep -q 'djerba-app:'"
 check "Calamares : module djerbaapps" sq_has "/usr/lib/calamares/modules/djerbaapps/main.py"
+check "Djerba Game Center" sq_has "/usr/share/djerba-game-center/ui/main.qml"
+check "Agent IA : application djerba-ai" sq_has "/usr/share/applications/djerba-ai.desktop"
+check "Agent IA : démon root (socket systemd)" sq_has "/usr/lib/systemd/system/djerba-ai-sysd.socket"
+check "Agent IA : démon utilisateur" sq_has "/usr/lib/systemd/user/djerba-ai.service"
+check "Agent IA : actions polkit" sq_has "/usr/share/polkit-1/actions/org.djerba.ai.policy"
+check "Agent IA : optimiseur de jeu" sq_has "/usr/lib/python3/dist-packages/djerba_ai/tools/performance/game_optimizer.py"
+check "Agent IA : Studio (app_generator)" sq_has "/usr/lib/python3/dist-packages/djerba_ai/tools/devtools/app_generator.py"
+check "Agent IA : icône" sq_has "/usr/share/icons/hicolor/scalable/apps/djerba-ai.svg"
 check "Démarrage automatique de l'assistant" sq_has "/etc/xdg/autostart/djerba-welcome.desktop"
 check "Thème Plymouth Djerba" sq_has "/usr/share/plymouth/themes/djerba/djerba.script"
 check "Animation Plymouth (60 images)" sq_has "/usr/share/plymouth/themes/djerba/throbber-59.png"
@@ -191,6 +199,11 @@ if [[ "${EUID}" -eq 0 ]] && mount -t tmpfs -o size=1M probe "${WORK}/probe" 2>/d
     check "tor.service désactivé (Tor à la demande)" sh -c "! chroot '${WORK}/root' systemctl is-enabled tor.service"
     check "Service djerba-apps-firstboot activé" in_chroot systemctl is-enabled djerba-apps-firstboot.service
     check "Mises à jour ClamAV (freshclam)" in_chroot systemctl is-enabled clamav-freshclam.service
+    check "Agent IA : au moins 220 capacités" sh -c "chroot '${WORK}/root' env HOME=/tmp djerba-ai tools | tail -n 1 | grep -Eq '/ (2[2-9][0-9]|[3-9][0-9]{2}) capacités'"
+    check "Agent IA : socket du démon root activée" in_chroot systemctl is-enabled djerba-ai-sysd.socket
+    check "Agent IA : démon utilisateur activé pour toutes les sessions" in_chroot test -L /etc/systemd/user/graphical-session.target.wants/djerba-ai.service
+    check "Agent IA : imports Python" in_chroot python3 -c 'import djerba_ai.core.agent, djerba_ai.core.sysd, djerba_ai.gui.app'
+    check "Agent IA : Qt Quick 3D (orbe)" in_chroot test -d /usr/lib/x86_64-linux-gnu/qt6/qml/QtQuick3D -o -d /usr/lib/aarch64-linux-gnu/qt6/qml/QtQuick3D
     check "Python : PyQt6.QtQuick + dbus" in_chroot python3 -c 'import PyQt6.QtQuick, PyQt6.QtQml, dbus'
     check "Remote Flathub (flatpak remotes)" sh -c "chroot '${WORK}/root' flatpak remotes --system --columns=name | grep -qx flathub"
     check "Firefox épinglé sur le dépôt Mozilla" sh -c "chroot '${WORK}/root' apt-cache policy firefox | grep -q packages.mozilla.org"

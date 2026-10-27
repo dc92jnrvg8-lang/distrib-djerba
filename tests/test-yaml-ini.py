@@ -252,6 +252,12 @@ def check_systemd_unit(path: Path) -> None:
         raise ValidationError("ExecStart absent de [Service]")
 
 
+def check_systemd_socket(path: Path) -> None:
+    parser = load_ini(path, strict=False)
+    if not parser.has_option("Socket", "ListenStream"):
+        raise ValidationError("ListenStream absent de [Socket]")
+
+
 def main() -> int:
     checks: list[tuple[Path, Callable[[Path], None]]] = [
         (MOUNT_CONF, check_mount_conf),
@@ -277,8 +283,12 @@ def main() -> int:
                     "packages/*/root/etc/xdg/*rc"):
         for path in sorted(ROOT.glob(pattern)):
             checks.append((path, check_generic_ini))
-    for path in sorted(ROOT.glob("packages/*/root/usr/lib/systemd/system/*.service")):
-        checks.append((path, check_systemd_unit))
+    for pattern in ("packages/*/root/usr/lib/systemd/system/*.service",
+                    "packages/*/root/usr/lib/systemd/user/*.service"):
+        for path in sorted(ROOT.glob(pattern)):
+            checks.append((path, check_systemd_unit))
+    for path in sorted(ROOT.glob("packages/*/root/usr/lib/systemd/system/*.socket")):
+        checks.append((path, check_systemd_socket))
     for path in sorted(ROOT.glob("packages/*/root/usr/share/djerba/*.yaml")):
         checks.append((path, check_generic_yaml))
 

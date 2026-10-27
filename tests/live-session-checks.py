@@ -46,6 +46,14 @@ OFFLINE_CHECKS = [
     ("Mode jeu : bascule et restauration",
      f"{SESSION}; djerba-gamemode on && djerba-gamemode status --json | grep -q '\"active\": true' "
      "&& djerba-gamemode off && djerba-gamemode status --json | grep -q '\"active\": false'", 120),
+    ("Agent IA : capacité exécutée (os_info)", "djerba-ai run os_info | grep -q '\"success\": true'", 60),
+    ("Agent IA : démon root activé à la demande (sys.ping)",
+     "python3 -c 'from djerba_ai.core import ipc; assert ipc.call(\"sys.ping\", {}, timeout=30)[\"version\"]'", 60),
+    ("Agent IA : diagnostic", "djerba-ai doctor | grep -q 'Démon root : disponible'", 90),
+    ("Agent IA : démon utilisateur actif", f"{SESSION}; systemctl --user is-active --quiet djerba-ai.service", 30),
+    ("Agent IA : Studio hors ligne (Snake)",
+     "djerba-ai run app_generator '{\"instruction\": \"Crée un jeu Snake\"}' | grep -q '\"success\": true' "
+     "&& test -f ~/.local/share/applications/djerba-snake.desktop", 120),
     ("Store : catalogue JSON",
      "djerba-apps list --json | python3 -c 'import json,sys; assert len(json.load(sys.stdin)[\"apps\"]) >= 10'", 60),
     ("Mode discret : bascule Windows 11 puis restauration à l'identique",

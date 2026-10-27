@@ -1,0 +1,16 @@
+# Djerba OS — démon root de l'agent Djerba : exécute les capacités système
+# autorisées par polkit et gère le bac à sable des correctifs.
+[Unit]
+Description=Djerba : service système de l'agent IA
+Requires=djerba-ai-sysd.socket
+After=djerba-ai-sysd.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/djerba-ai-sysd
+StateDirectory=djerba-ai
+StateDirectoryMode=0700
+CacheDirectory=djerba-ai
+ProtectHome=read-only
+PrivateTmp=yes
+Environment=PYTHONDONTWRITEBYTECODE=1

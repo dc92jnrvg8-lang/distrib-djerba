@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Démon root de l'agent Djerba (lancé par djerba-ai-sysd.socket)."""
+import sys
+
+from djerba_ai.core.sysd import main
+
+sys.exit(main())

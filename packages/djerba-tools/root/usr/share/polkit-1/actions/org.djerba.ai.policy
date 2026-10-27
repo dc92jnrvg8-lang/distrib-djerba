@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- Djerba OS — actions de l'agent IA, vérifiées par djerba-ai-sysd pour le
+     processus appelant (SO_PEERCRED). -->
+<policyconfig>
+  <vendor>Djerba OS</vendor>
+  <vendor_url>https://github.com/dc92jnrvg8-lang/distrib-djerba</vendor_url>
+
+  <action id="org.djerba.ai.exec">
+    <description>Let the Djerba AI agent administer the system</description>
+    <description xml:lang="fr">Autoriser l'agent Djerba à administrer le système</description>
+    <message>Djerba needs administrator rights for this action</message>
+    <message xml:lang="fr">Djerba a besoin des droits administrateur pour cette action</message>
+    <icon_name>djerba-ai</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.djerba.ai.patch">
+    <description>Test a fix proposed by the Djerba AI agent in its sandbox</description>
+    <description xml:lang="fr">Tester dans le bac à sable un correctif proposé par l'agent Djerba</description>
+    <message>Authentication is required to test a fix in the sandbox</message>
+    <message xml:lang="fr">Une authentification est nécessaire pour tester un correctif dans le bac à sable</message>
+    <icon_name>djerba-ai</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.djerba.ai.deploy">
+    <description>Deploy or roll back a fix to a Djerba OS tool</description>
+    <description xml:lang="fr">Déployer ou annuler un correctif d'un outil de Djerba OS</description>
+    <message>Authentication is required to change a system tool</message>
+    <message xml:lang="fr">Une authentification est nécessaire pour modifier un outil du système</message>
+    <icon_name>djerba-ai</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.djerba.ai.setup">
+    <description>Install the local AI engine (Ollama)</description>
+    <description xml:lang="fr">Installer le moteur d'IA local (Ollama)</description>
+    <message>Authentication is required to install the AI engine</message>
+    <message xml:lang="fr">Une authentification est nécessaire pour installer le moteur d'IA</message>
+    <icon_name>djerba-ai</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

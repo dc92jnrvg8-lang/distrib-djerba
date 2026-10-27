@@ -143,6 +143,16 @@ jobs:
             -e DJERBA_QEMU_TIMEOUT="${{ matrix.qemu_timeout }}" "${DOCKER_IMAGE}" \
             ./tests/test-iso-qemu.sh "artifacts/djerba-os-${{ steps.version.outputs.version }}-${{ matrix.debarch }}.iso"
 
+      # Session live réelle (KVM) : DNS, HTTPS, Firefox, mode anonyme via Tor,
+      # mode discret, mode jeu, store, agent IA (démon root activé par socket).
+      - name: Live session tests (réseau, Tor, agent IA)
+        if: matrix.debarch == 'amd64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --privileged -v "${PWD}:/build" -w /build "${DOCKER_IMAGE}" \
+            ./tests/test-live-session.sh "artifacts/djerba-os-${{ steps.version.outputs.version }}-${{ matrix.debarch }}.iso" --network
+
       - name: Fix ownership for cache & upload
         if: always()
         run: sudo chown -R "$(id -u):$(id -g)" cache artifacts tests/out 2>/dev/null || true
