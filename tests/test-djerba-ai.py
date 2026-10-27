@@ -876,6 +876,7 @@ class InterfaceTests(unittest.TestCase):
             "from djerba_ai.gui import app as gui\n"
             "application = QApplication(sys.argv)\n"
             "backend = gui.Backend('chat', True, application)\n"
+            "application.aboutToQuit.connect(backend.shutdown)\n"
             "engine = QQmlApplicationEngine()\n"
             "engine.addImageProvider('icon', gui.IconProvider())\n"
             "engine.rootContext().setContextProperty('backend', backend)\n"

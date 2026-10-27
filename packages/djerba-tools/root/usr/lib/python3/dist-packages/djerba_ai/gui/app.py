@@ -404,8 +404,10 @@ class Backend(QObject):
         for event, answer in list(self._confirm_events.values()):
             answer[0] = False
             event.set()
+        self._brain_timer.stop()
         for task in list(self._tasks):
-            task.wait(5000)
+            # Contrôles de santé bornés par leurs délais (5 s par cerveau) : attente suffisante.
+            task.wait(20000)
 
     @pyqtSlot(int, bool)
     def answerConfirmation(self, request_id: int, accepted: bool) -> None:
