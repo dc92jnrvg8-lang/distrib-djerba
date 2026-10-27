@@ -18,7 +18,8 @@ ApplicationWindow {
 
     // Palette adaptative : suit le jeu de couleurs de Plasma (clair ou sombre).
     SystemPalette { id: system; colorGroup: SystemPalette.Active }
-    readonly property bool dark: system.window.hslLightness < 0.5
+    // Sous GNOME, Qt ne suit pas toujours le thème : la préférence GSettings fait foi.
+    readonly property bool dark: backend.followsDesktopTheme ? backend.prefersDark : system.window.hslLightness < 0.5
     readonly property color night: dark ? "#070B18" : "#F1F5F9"
     readonly property color deep: dark ? "#0A1F3D" : "#E0F2F1"
     readonly property color surface: dark ? "#0B1426" : "#FFFFFF"

@@ -19,6 +19,7 @@ import inspect
 import os
 import pkgutil
 import re
+import sys
 import unicodedata
 from pathlib import Path
 
@@ -133,36 +134,78 @@ def builtin_tools() -> dict[str, BaseTool]:
 VENV = Path(os.environ.get("DJERBA_AI_VENV", "/usr/share/djerba-ai/venv"))
 
 
-def _venv_site_packages() -> None:
-    """Rend importables les dépendances installées dans le venv interne (PEP 668)."""
-    import sys
-    for path in sorted(VENV.glob("lib/python3*/site-packages")):
-        if str(path) not in sys.path:
-            sys.path.append(str(path))
+class IsolatedPluginTool(BaseTool):
+    """Mandataire d'une capacité générée : son code ne s'exécute jamais dans l'agent.
+
+    Chaque appel lance security/plugin_runner.py dans un processus distinct,
+    environnement minimal, sans réseau sauf autorisation (seccomp, AppArmor :
+    security/netpolicy.py), 60 s au plus.
+    """
+
+    requires_root = False
+    dangerous = True  # capacité générée : confirmation à chaque exécution
+    category = "devtools"
+    plugin = ""
+    tool = ""
+    path = ""
+
+    def execute(self, params: dict, verbose: bool = False) -> dict:
+        import json
+        import subprocess
+        from djerba_ai.security import netpolicy
+        runner = Path(__file__).resolve().parent.parent / "security" / "plugin_runner.py"
+        from djerba_ai.core.config import Config
+        argv = netpolicy.wrap([sys.executable, "-s", "-P", str(runner), "run", self.path, self.tool], Config(),
+                              "plugin", self.plugin)
+        try:
+            result = subprocess.run(argv, input=json.dumps(params), capture_output=True, text=True, timeout=60,
+                                    env=netpolicy.isolated_environment(_venv_paths()))
+        except subprocess.TimeoutExpired:
+            return {"success": False, "message": "capacité générée : délai de 60 s dépassé", "data": {}}
+        try:
+            output = json.loads(result.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            return {"success": False, "message": f"capacité générée en échec : {result.stderr.strip()[-300:]}",
+                    "data": {}}
+        return output if isinstance(output, dict) else {"success": False, "message": "réponse invalide", "data": {}}
+
+
+def _venv_paths() -> list[str]:
+    return [str(path) for path in sorted(VENV.glob("lib/python3*/site-packages"))]
+
+
+def describe_plugin(name: str, path: Path) -> list[dict]:
+    """Description des capacités d'un greffon, obtenue dans un processus isolé."""
+    import json
+    import subprocess
+    from djerba_ai.core.config import Config
+    from djerba_ai.security import netpolicy
+    runner = Path(__file__).resolve().parent.parent / "security" / "plugin_runner.py"
+    argv = netpolicy.wrap([sys.executable, "-s", "-P", str(runner), "describe", str(path)], Config(), "plugin", name)
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=30,
+                            env=netpolicy.isolated_environment(_venv_paths()))
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip()[-300:] or f"code {result.returncode}")
+    return json.loads(result.stdout.strip().splitlines()[-1])
 
 
 def load_plugins(approved: list[str]) -> tuple[dict[str, BaseTool], list[str]]:
-    """Charge les greffons approuvés de l'utilisateur (jamais root)."""
+    """Mandataires des greffons approuvés de l'utilisateur (jamais root, jamais chargés dans l'agent)."""
     tools: dict[str, BaseTool] = {}
     errors: list[str] = []
-    if approved:
-        _venv_site_packages()
     for name in approved:
         path = PLUGIN_DIR / f"{name}.py"
         if not re.fullmatch(r"[a-z0-9_]{1,48}", name) or not path.is_file():
             errors.append(f"{name} : greffon introuvable")
             continue
         try:
-            spec = importlib.util.spec_from_file_location(f"djerba_user_plugin_{name}", path)
-            module = importlib.util.module_from_spec(spec)
-            assert spec.loader is not None
-            spec.loader.exec_module(module)
-            for cls in _collect(module):
-                tool = cls()
-                tool.requires_root = False
-                tool.dangerous = True  # capacité générée : confirmation à chaque exécution
-                tool.category = "devtools"
-                tool.name = f"plugin.{tool.name}"
+            for item in describe_plugin(name, path):
+                attributes = {"name": f"plugin.{item['name']}", "description": str(item.get("description", "")),
+                              "parameters": dict(item.get("parameters") or {}),
+                              "required": tuple(item.get("required") or ()),
+                              "keywords": tuple(item.get("keywords") or ()), "plugin": name, "tool": item["name"],
+                              "path": str(path)}
+                tool = type(f"Plugin{name.title().replace('_', '')}Tool", (IsolatedPluginTool,), attributes)()
                 tools[tool.name] = tool
         except Exception as exc:  # noqa: BLE001 - un greffon défaillant ne bloque pas l'agent
             errors.append(f"{name} : {exc}")

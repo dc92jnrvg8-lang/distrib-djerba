@@ -1,0 +1,12 @@
+[Plugin]
+Loader=python3
+Module=djerba
+IAge=3
+Name=Djerba
+Name[fr]=Djerba
+Description=Ask the Djerba OS agent about the selected text
+Description[fr]=Demander à l'agent de Djerba OS d'expliquer, corriger ou tester le texte sélectionné
+Icon=djerba-ai
+Authors=Djerba OS
+Copyright=Djerba OS
+Website=https://github.com/dc92jnrvg8-lang/distrib-djerba

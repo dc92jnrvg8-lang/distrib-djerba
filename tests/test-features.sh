@@ -141,6 +141,14 @@ check "Agent IA : couche cognitive, garde anti-injection, bac à sable hybride" 
 check "Agent IA : manifeste des points d'entrée signés" sq_has "/usr/share/djerba-ai/trusted-callers.sha256"
 check "Agent IA : script KWin du bus de contexte" sq_has "/usr/share/djerba-ai/kwin/active-window.js"
 check "Agent IA : tableau de bord Grafana et configuration Prometheus" sh -c "unsquashfs -cat '${SQUASHFS}' /usr/share/djerba-ai/monitoring/grafana-dashboard.json | python3 -c 'import json,sys; assert len(json.load(sys.stdin)[\"panels\"]) >= 8'"
+check "Agent IA : couche bureau (KDE/GNOME), anneau d'action, blindage" sh -c "for m in ui/adapter ui/hud security/apparmor security/ids security/netpolicy security/plugin_runner; do grep -qE \" squashfs-root/usr/lib/python3/dist-packages/djerba_ai/\$m.py\$\" '${WORK}/rootfs.list' || exit 1; done"
+check "Agent IA : anneau d'action sur Super+Espace" sh -c "unsquashfs -cat '${SQUASHFS}' /usr/share/applications/djerba-ai-spotlight.desktop | grep -qx 'Exec=djerba-ai --hud'"
+check "Agent IA : extension GNOME Shell" sq_has "/usr/share/gnome-shell/extensions/djerba@djerba-os.org/extension.js"
+check "Agent IA : menu Djerba de Dolphin" sq_has "/usr/share/kio/servicemenus/djerba-ai.desktop"
+check "Agent IA : menu Djerba de Nautilus" sq_has "/usr/share/nautilus-python/extensions/djerba_ai_nautilus.py"
+check "Agent IA : greffon Gedit" sq_has "/usr/share/djerba-ai/integrations/gedit/djerba.plugin"
+check "Agent IA : détection d'intrusion (service)" sq_has "/usr/lib/systemd/system/djerba-ai-ids.service"
+check "Installateur : bureau GNOME proposé" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/calamares/modules/netinstall.conf | grep -q 'gnome-desktop'"
 check "Agent IA : ptrace restreint (yama)" sh -c "unsquashfs -cat '${SQUASHFS}' /usr/lib/sysctl.d/60-djerba-ai.conf | grep -q '^kernel.yama.ptrace_scope = 1'"
 check "Démarrage automatique de l'assistant" sq_has "/etc/xdg/autostart/djerba-welcome.desktop"
 check "Thème Plymouth Djerba" sq_has "/usr/share/plymouth/themes/djerba/djerba.script"
@@ -228,6 +236,9 @@ if [[ "${EUID}" -eq 0 ]] && mount -t tmpfs -o size=1M probe "${WORK}/probe" 2>/d
 try: s = socket.socket(socket.AF_INET)
 except PermissionError: sys.exit(0)
 sys.exit(1)'
+    check "Agent IA : détection d'intrusion activée" in_chroot systemctl is-enabled djerba-ai-ids.service
+    check "Agent IA : AppArmor (apparmor_parser, aa-exec)" in_chroot sh -c 'command -v apparmor_parser && command -v aa-exec'
+    check "Agent IA : profils AppArmor générés valides" in_chroot python3 -c 'from djerba_ai.security import apparmor as a; ok, d = a.check_syntax(a.render("plugin", "essai", "/home/x/.local/share/djerba/plugins")); assert ok, d'
     check "Agent IA : dossier des exécutions isolées (0711)" sh -c "[ \"\$(chroot '${WORK}/root' stat -c '%a' /var/lib/djerba-ai-runs)\" = 711 ]"
     check "Agent IA : Qt Quick 3D (orbe)" in_chroot test -d /usr/lib/x86_64-linux-gnu/qt6/qml/QtQuick3D -o -d /usr/lib/aarch64-linux-gnu/qt6/qml/QtQuick3D
     check "Python : PyQt6.QtQuick + dbus" in_chroot python3 -c 'import PyQt6.QtQuick, PyQt6.QtQml, dbus'

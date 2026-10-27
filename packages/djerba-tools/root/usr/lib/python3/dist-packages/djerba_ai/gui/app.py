@@ -89,6 +89,10 @@ class Backend(QObject):
                                   arguments=["requestId", "tool", "label", "params", "root", "risk"])
     # Tableau de bord : flux de pensées, télémétrie, validations
     traceAdded = pyqtSignal(str, str, str, str, arguments=["kind", "text", "time", "level"])
+    # Anneau d'action (HUD)
+    hudRequested = pyqtSignal()
+    hudChanged = pyqtSignal()
+    securityChanged = pyqtSignal()
     telemetryChanged = pyqtSignal()
     validationsChanged = pyqtSignal()
     suggestions = pyqtSignal("QVariantList", arguments=["items"])
@@ -124,10 +128,16 @@ class Backend(QObject):
         self._audit: list = []
         self._history: list = []
         self._gpu = gpu.detect()
+        from djerba_ai.ui.adapter import detect as detect_desktop
+        self._desktop = detect_desktop()
         self._fell_back = False
         self._telemetry: dict = {}
         self._cpu_history: list[float] = []
         self._pending: dict[int, dict] = {}
+        self._hud_actions: list[dict] = []
+        self._security: dict = {"state": "inconnu", "alerts": [], "blocked": [], "apparmor": False,
+                                "network_grants": []}
+        self._hud_context = ""
         self._validations: list[dict] = []
         self._conversation = 0
         self._busy = False
@@ -153,6 +163,8 @@ class Backend(QObject):
         self._brain_timer.start()
         self._telemetry_timer = QTimer(self, interval=3000, timeout=self.refreshTelemetry)
         self._telemetry_timer.start()
+        self._security_timer = QTimer(self, interval=15000, timeout=self.refreshSecurity)
+        self._security_timer.start()
         from djerba_ai.core import telemetry as _telemetry
         _telemetry.publish_forever("gui")
 
@@ -229,6 +241,24 @@ class Backend(QObject):
     @pyqtProperty(bool, notify=stateChanged)
     def resident(self) -> bool:
         return self._resident
+
+    @pyqtProperty(str, constant=True)
+    def desktop(self) -> str:
+        return self._desktop.name
+
+    @pyqtProperty(str, constant=True)
+    def desktopLabel(self) -> str:
+        return self._desktop.label
+
+    @pyqtProperty(bool, constant=True)
+    def prefersDark(self) -> bool:
+        """Préférence de thème du bureau (GNOME : GSettings) ; sinon, palette du système."""
+        preference = self._desktop.prefers_dark()
+        return bool(preference) if preference is not None else True
+
+    @pyqtProperty(bool, constant=True)
+    def followsDesktopTheme(self) -> bool:
+        return self._desktop.name == "gnome"
 
     @pyqtProperty("QVariantMap", constant=True)
     def gpuInfo(self) -> dict:
@@ -438,6 +468,7 @@ class Backend(QObject):
             event.set()
         self._brain_timer.stop()
         self._telemetry_timer.stop()
+        self._security_timer.stop()
         for task in list(self._tasks):
             # Contrôles de santé bornés par leurs délais (5 s par cerveau) : attente suffisante.
             task.wait(20000)
@@ -461,6 +492,36 @@ class Backend(QObject):
         entry[1][0] = True
         entry[0].set()
         return True
+
+    # ---------------------------------------------------------------- Anneau d'action
+    @pyqtProperty("QVariantList", notify=hudChanged)
+    def hudActions(self) -> list:
+        return self._hud_actions
+
+    @pyqtProperty(str, notify=hudChanged)
+    def hudContext(self) -> str:
+        return self._hud_context
+
+    @pyqtSlot()
+    def refreshHud(self) -> None:
+        """Actions contextuelles de la fenêtre active (catalogue immédiat, suggestions de l'agent ensuite)."""
+        from djerba_ai.core import contextbus
+        from djerba_ai.ui import hud
+        window = (contextbus.read() or {}).get("window") or {}
+        self._hud_actions = [action.model_dump() for action in hud.actions(window)]
+        application = window.get("application") or ""
+        self._hud_context = (f"{self._desktop.label} · {application}" if application
+                             else f"{self._desktop.label} · fenêtre active inconnue")
+        self.hudChanged.emit()
+
+        def done(result) -> None:
+            if isinstance(result, list) and result:
+                known = {item["id"] for item in self._hud_actions}
+                extra = [item for item in result if item["id"] not in known]
+                self._hud_actions = (self._hud_actions[:hud.MAX_ACTIONS - len(extra)] + extra)[:hud.MAX_ACTIONS]
+                self.hudChanged.emit()
+
+        self._background(lambda: [action.model_dump() for action in hud.suggest(self.agent.engine, window)], done)
 
     # ---------------------------------------------------------------- Tableau de bord
     @pyqtProperty("QVariantList", notify=validationsChanged)
@@ -526,6 +587,69 @@ class Backend(QObject):
         self.progress.emit(label, -1)
         self._background(work, lambda result: (self.progress.emit("", 100),
                                                self.notify.emit(str(result.get("message", "")))))
+
+    # ---------------------------------------------------------------- Sécurité
+    @pyqtProperty("QVariantMap", notify=securityChanged)
+    def security(self) -> dict:
+        return self._security
+
+    @pyqtProperty("QVariantList", notify=securityChanged)
+    def networkCandidates(self) -> list:
+        """Applications du Studio et capacités générées, avec leur accès réseau (confiance zéro)."""
+        grants = set(self._security.get("network_grants") or self.config.get("security.network_grants") or [])
+        items = [{"kind": "app", "name": app["slug"], "label": app.get("name", app["slug"])} for app in self._apps]
+        items += [{"kind": "plugin", "name": name, "label": f"Capacité {name}"}
+                  for name in self.config.get("agent.plugins_approved") or []]
+        return [dict(item, granted=f"{item['kind']}:{item['name']}" in grants) for item in items]
+
+    @pyqtSlot()
+    def refreshSecurity(self) -> None:
+        def work():
+            try:
+                return ipc.call("security.status", {}, timeout=10)
+            except ipc.RPCError as exc:
+                return {"state": f"indisponible ({exc})", "alerts": [], "blocked": [], "apparmor": False,
+                        "network_grants": self.config.get("security.network_grants") or []}
+
+        def done(result) -> None:
+            if isinstance(result, dict) and "state" in result:
+                self._security = result
+                self.securityChanged.emit()
+
+        self._background(work, done)
+
+    @pyqtSlot(str, str, bool, str, result=bool)
+    def setNetworkGrant(self, kind: str, name: str, allowed: bool, phrase: str) -> bool:
+        """Accès Internet d'un code généré : autorisation explicite (CONFIRMER + polkit), retrait libre."""
+        if allowed and phrase.strip().upper() != "CONFIRMER":
+            self.notify.emit("Autorisation réseau : tapez CONFIRMER pour valider.")
+            return False
+        key = f"{kind}:{name}"
+        grants = [item for item in (self.config.get("security.network_grants") or []) if item != key]
+        if allowed:
+            grants.append(key)
+        if not self._apply_setting("security.network_grants", sorted(grants)):
+            return False
+
+        def work():
+            from djerba_ai.security.netpolicy import request_profile
+            return {"message": request_profile(kind, name, self.config)}
+
+        self._background(work, lambda result: (self.notify.emit(
+            f"{'Internet autorisé' if allowed else 'Internet retiré'} pour {name}. {result.get('message', '')}"),
+            self.refreshSecurity()))
+        return True
+
+    @pyqtSlot(str)
+    def unblockAddress(self, ip: str) -> None:
+        def work():
+            try:
+                return ipc.call("security.unblock", {"ip": ip}, timeout=60)
+            except ipc.RPCError as exc:
+                return {"success": False, "message": str(exc)}
+
+        self._background(work, lambda result: (self.notify.emit(str(result.get("message", ""))),
+                                               self.refreshSecurity()))
 
     @pyqtSlot()
     def verifyAudit(self) -> None:
@@ -725,7 +849,7 @@ class Backend(QObject):
     @pyqtSlot(str, str)
     def applyShortcut(self, name: str, sequence: str) -> None:
         try:
-            result = shortcuts.apply(name, sequence)
+            result = self._desktop.apply_shortcut(name, sequence)
         except shortcuts.ShortcutError as exc:
             self.notify.emit(str(exc))
             return
@@ -769,10 +893,20 @@ class Backend(QObject):
     def openMain(self, page: str) -> None:
         self.showMainRequested.emit(page if page in PAGES else "")
 
+    def _ask_now(self, text: str) -> None:
+        if not self._busy:
+            self.newConversation()
+            self.send(text)
+
     def dispatch(self, argv: list[str]) -> None:
         """Demande transmise au lancement ou par une autre instance."""
         request = instance.parse(argv)
-        if request["mode"] == "spotlight":
+        if request["mode"] == "hud":
+            self.hudRequested.emit()
+        elif request["mode"] == "ask":
+            self.spotlightRequested.emit(request["text"], "ask")
+            QTimer.singleShot(200, lambda: self._ask_now(request["text"]))
+        elif request["mode"] == "spotlight":
             self.spotlightRequested.emit("", "ask")
         elif request["mode"] == "clipboard":
             self.spotlightRequested.emit(self.clipboardText(), "clipboard")
@@ -852,6 +986,7 @@ class Backend(QObject):
         def done(result) -> None:
             self._apps = result.get("data", {}).get("apps", [])
             self.appsChanged.emit()
+            self.securityChanged.emit()
 
         self._background(lambda: self.registry.get("apps_generated_list").run({}), done)
 
@@ -913,7 +1048,7 @@ class Tray(QObject):
         self.icon = QSystemTrayIcon(self)
         self.menu = QMenu()
         self.menu.addAction("Ouvrir Djerba", lambda: backend.openMain("chat"))
-        self.spotlight = self.menu.addAction("Spotlight", lambda: backend.spotlightRequested.emit("", "ask"))
+        self.spotlight = self.menu.addAction("Anneau d'action", backend.hudRequested.emit)
         self.clipboard = self.menu.addAction("Analyser le presse-papiers",
                                              lambda: backend.spotlightRequested.emit(backend.clipboardText(),
                                                                                      "clipboard"))
@@ -945,7 +1080,7 @@ class Tray(QObject):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self.backend.openMain("")
         elif reason == QSystemTrayIcon.ActivationReason.MiddleClick:
-            self.backend.spotlightRequested.emit("", "ask")
+            self.backend.hudRequested.emit()
 
     def update(self, *_args) -> None:
         state = self.backend.state
@@ -959,7 +1094,7 @@ class Tray(QObject):
             action.setText(label + {"ok": "  ●", "down": "  ○ injoignable", "unset": "  (à configurer)"}
                            .get(status, ""))
         shortcuts_map = self.backend.shortcuts
-        self.spotlight.setText(f"Spotlight\t{shortcuts_map['spotlight']}")
+        self.spotlight.setText(f"Anneau d'action\t{shortcuts_map['spotlight']}")
         self.clipboard.setText(f"Analyser le presse-papiers\t{shortcuts_map['clipboard']}")
 
 
@@ -1034,7 +1169,7 @@ def main(argv: list[str]) -> int:
     engine.addImageProvider("icon", IconProvider())
     engine.rootContext().setContextProperty("backend", backend)
     roots = []
-    for name in ("main.qml", "Spotlight.qml"):
+    for name in ("main.qml", "Spotlight.qml", "Hud.qml"):
         engine.load(QUrl.fromLocalFile(str(QML_DIR / name)))
         if len(engine.rootObjects()) == len(roots):
             print(f"djerba-ai : impossible de charger {QML_DIR / name}", file=sys.stderr)
@@ -1055,7 +1190,7 @@ def main(argv: list[str]) -> int:
             for root in engine.rootObjects():
                 root.deleteLater()
             engine.clearComponentCache()
-            for name in ("main.qml", "Spotlight.qml"):
+            for name in ("main.qml", "Spotlight.qml", "Hud.qml"):
                 engine.load(QUrl.fromLocalFile(str(QML_DIR / name)))
             watcher.addPaths([str(path) for path in QML_DIR.glob("*.qml")])
 

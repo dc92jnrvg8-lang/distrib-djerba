@@ -1,0 +1,8 @@
+{
+  "uuid": "djerba@djerba-os.org",
+  "name": "Djerba",
+  "description": "Intègre l'agent Djerba de Djerba OS à GNOME Shell : fenêtre active transmise au bus de contexte de l'agent (Mutter), bouton de la barre supérieure ouvrant l'anneau d'action (HUD).",
+  "shell-version": ["46", "47", "48", "49"],
+  "url": "https://github.com/dc92jnrvg8-lang/distrib-djerba",
+  "version": 1
+}

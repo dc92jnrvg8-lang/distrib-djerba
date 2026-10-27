@@ -35,6 +35,9 @@ categories:
   - id: security
     name: Sécurité et vie privée
     description: Antivirus, mots de passe et navigation anonyme.
+  - id: desktop
+    name: Bureaux supplémentaires
+    description: Un second environnement de bureau, choisi à l'écran de connexion ; l'agent Djerba s'y intègre aussi.
 
 apps:
   # ------------------------------------------------------------------ Jeu
@@ -280,3 +283,15 @@ apps:
     preinstalled: false
     apt:
       packages: [bleachbit]
+
+  # ------------------------------------------------------------------ Bureaux
+  - id: gnome-desktop
+    name: Bureau GNOME
+    category: desktop
+    icon: org.gnome.Shell
+    description: GNOME Shell en plus de KDE Plasma, avec l'extension Djerba (anneau d'action, fenêtre active), le menu Djerba de Nautilus et le greffon Gedit.
+    selected: false
+    preinstalled: false
+    apt:
+      packages: [gnome-shell, gnome-session, gnome-control-center, gnome-console, gnome-text-editor, nautilus,
+                 python3-nautilus, gedit, gnome-shell-extension-prefs, xdg-desktop-portal-gnome]

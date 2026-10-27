@@ -1,0 +1,10 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""djerba-ai-ids — détection d'intrusion et défense active de Djerba OS (root)."""
+
+import sys
+
+from djerba_ai.security.ids import main
+
+if __name__ == "__main__":
+    sys.exit(main())

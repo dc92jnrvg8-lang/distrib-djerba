@@ -136,6 +136,8 @@ def create_capability(name: str, instruction: str, config: Config | None = None,
             ipc.call("sys.venv_install", {"packages": result["requirements"]}, timeout=1800)
         except ipc.RPCError as exc:
             return {"success": False, "message": f"dépendances non installées dans le venv interne : {exc}"}
+    from djerba_ai.security.netpolicy import request_profile
+    request_profile("plugin", name, config)  # profil AppArmor généré, sans réseau par défaut
     enabled = bool(config.get("agent.auto_extend"))
     if enabled:
         approved = set(config.get("agent.plugins_approved")) | {name}

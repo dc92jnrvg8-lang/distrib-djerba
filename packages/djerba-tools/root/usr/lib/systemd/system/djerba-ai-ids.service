@@ -1,0 +1,31 @@
+# Djerba OS — détection d'intrusion de l'agent Djerba : suit le journal système,
+# repère force brute SSH, balayages de ports, échecs d'authentification en
+# rafale et violations de confinement du code généré ; bloque les adresses
+# fautives dans nftables (table inet djerba_ids, durée limitée) ; chaque
+# décision est inscrite au registre d'audit immuable.
+[Unit]
+Description=Djerba : détection d'intrusion et défense active
+After=systemd-journald.service network.target nftables.service
+Documentation=file:///usr/share/doc/djerba-tools/
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/djerba-ai-ids
+Restart=on-failure
+RestartSec=10
+RuntimeDirectory=djerba-ai
+RuntimeDirectoryPreserve=yes
+StateDirectory=djerba-ai
+StateDirectoryMode=0700
+LogsDirectory=djerba
+LogsDirectoryMode=0750
+ConfigurationDirectory=djerba
+ConfigurationDirectoryMode=0755
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_DAC_READ_SEARCH CAP_LINUX_IMMUTABLE CAP_CHOWN CAP_FOWNER CAP_SYSLOG
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+[Install]
+WantedBy=multi-user.target

@@ -82,11 +82,15 @@ Glass {
             }
         }
 
-        // ------------------------------------------------ Télémétrie et validations
-        ColumnLayout {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            Layout.preferredWidth: 2
+        // ------------------------------------------------ Télémétrie, sécurité et validations
+        ScrollView {
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          Layout.preferredWidth: 2
+          clip: true
+          contentWidth: availableWidth
+          ColumnLayout {
+            width: parent.width
             spacing: 10
 
             Title { text: "Télémétrie" }
@@ -136,6 +140,57 @@ Glass {
                 ActionButton { text: "Vérifier le bac à sable"; onClicked: backend.probeSandbox() }
             }
 
+            // ------------------------------------------------ Sécurité active
+            Title { text: "Sécurité"; Layout.topMargin: 6 }
+            Text {
+                Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 12; color: win.muted
+                text: "Détection d'intrusion : " + (backend.security.state || "inconnu") + " · AppArmor : "
+                      + (backend.security.apparmor ? "actif (profils générés chargés)" : "inactif (confinement par le bac à sable)")
+            }
+            Repeater {
+                model: (backend.security.alerts || []).slice(-4).reverse()
+                delegate: Text {
+                    required property var modelData
+                    Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 11
+                    color: modelData.kind === "blocage" ? win.coral : win.sand
+                    text: modelData.time.substring(11, 19) + " · " + modelData.rule + " · " + modelData.target + " — " + modelData.message
+                }
+            }
+            Repeater {
+                model: backend.security.blocked || []
+                delegate: RowLayout {
+                    required property var modelData
+                    Layout.fillWidth: true
+                    Text { Layout.fillWidth: true; text: "Bloquée : " + modelData.ip + " (encore " + Math.round(modelData.expires_s / 60) + " min)"; color: win.coral; font.pixelSize: 12 }
+                    ActionButton { text: "Débloquer"; onClicked: backend.unblockAddress(modelData.ip) }
+                }
+            }
+            Text { text: "Accès Internet du code généré (confiance zéro)"; color: win.white; font.pixelSize: 13; font.weight: Font.DemiBold }
+            Text { visible: backend.networkCandidates.length === 0; text: "Aucune application ni capacité générée."; color: win.muted; font.pixelSize: 12 }
+            Repeater {
+                model: backend.networkCandidates
+                delegate: RowLayout {
+                    id: grantRow
+                    required property var modelData
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Text { Layout.fillWidth: true; text: grantRow.modelData.label; color: win.white; font.pixelSize: 12; elide: Text.ElideRight }
+                    Pill { text: grantRow.modelData.granted ? "Internet autorisé" : "hors ligne"; tint: grantRow.modelData.granted ? win.sand : win.aqua }
+                    TextField {
+                        id: grantPhrase
+                        visible: !grantRow.modelData.granted
+                        Layout.preferredWidth: 110
+                        placeholderText: "CONFIRMER"; placeholderTextColor: win.muted; color: win.white; font.pixelSize: 11
+                        background: Rectangle { radius: 8; color: win.veil(0.07); border.color: win.veil(0.2) }
+                    }
+                    ActionButton {
+                        text: grantRow.modelData.granted ? "Retirer" : "Autoriser"
+                        enabled: grantRow.modelData.granted || grantPhrase.text.trim().toUpperCase() === "CONFIRMER"
+                        onClicked: backend.setNetworkGrant(grantRow.modelData.kind, grantRow.modelData.name, !grantRow.modelData.granted, grantPhrase.text)
+                    }
+                }
+            }
+
             Title { text: "Validations"; Layout.topMargin: 6 }
             Text { visible: backend.pendingValidations.length === 0; text: "Aucune action en attente."; color: win.muted; font.pixelSize: 13 }
             Repeater {
@@ -178,19 +233,17 @@ Glass {
                     }
                 }
             }
-            ListView {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                clip: true
+            Repeater {
                 model: backend.validationHistory
                 delegate: Text {
                     required property var modelData
-                    width: ListView.view.width
+                    Layout.fillWidth: true
                     text: modelData.time + " · " + modelData.tool + " (risque " + modelData.risk + ") : " + modelData.status
                     color: modelData.status === "autorisée" ? win.aqua : win.muted
                     font.pixelSize: 11; elide: Text.ElideRight
                 }
             }
+          }
         }
     }
 }

@@ -23,10 +23,13 @@ case "$1" in
         fi
         systemctl enable djerba-apps-firstboot.service >/dev/null 2>&1 || true
         systemctl enable djerba-ai-sysd.socket >/dev/null 2>&1 || true
+        systemctl enable djerba-ai-ids.service >/dev/null 2>&1 || true
+        install -d -m 0755 /etc/apparmor.d/djerba-generated
         systemctl --global enable djerba-ai.service >/dev/null 2>&1 || true
         if [ -d /run/systemd/system ]; then
             systemctl daemon-reload || true
             systemctl start djerba-ai-sysd.socket >/dev/null 2>&1 || true
+            systemctl restart djerba-ai-ids.service >/dev/null 2>&1 || true
         fi
         ;;
 esac

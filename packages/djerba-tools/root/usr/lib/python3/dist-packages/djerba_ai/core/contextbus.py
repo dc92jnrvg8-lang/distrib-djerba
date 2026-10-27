@@ -6,8 +6,9 @@ Le démon utilisateur échantillonne en continu (toutes les 5 s par défaut) :
 * processeur (taux d'occupation, charge), mémoire et échange, débits d'E/S
   disque et réseau (/proc) ;
 * erreurs récentes du journal (``journalctl -p err``, toutes les 30 s) ;
-* fenêtre active de KWin, poussée à chaque changement de focus par un script
-  KWin (Wayland comme X11) vers le service D-Bus ``org.djerba.ai.Context``.
+* fenêtre active, poussée à chaque changement de focus vers le service D-Bus
+  ``org.djerba.ai.Context`` par un script KWin (KDE Plasma) ou par l'extension
+  GNOME Shell de Djerba (Mutter) — ui/adapter.py choisit selon le bureau.
 
 Chaque valeur porte son propre horodatage (UTC, milliseconde) et l'instantané
 un numéro de séquence et une horloge monotone : l'agent sait de quand date
@@ -35,7 +36,6 @@ from djerba_ai.core.crypto import Box, CryptoError, write_atomic
 from djerba_ai.core.sanitize import sanitize
 
 STALE_AFTER = 120
-KWIN_SCRIPT = Path(os.environ.get("DJERBA_KWIN_SCRIPT", "/usr/share/djerba-ai/kwin/active-window.js"))
 DBUS_NAME = "org.djerba.ai.Context"
 
 
@@ -144,7 +144,7 @@ def journal_errors(limit: int = 5, since: str = "-15min") -> list[dict]:
 
 # ---------------------------------------------------------------- Fenêtre active (KWin)
 class WindowBridge:
-    """Reçoit la fenêtre active de KWin par D-Bus (script KWin chargé au démarrage)."""
+    """Reçoit la fenêtre active par D-Bus (script KWin ou extension GNOME, selon le bureau)."""
 
     def __init__(self, titles: bool = True) -> None:
         self.titles = titles
@@ -175,33 +175,13 @@ class WindowBridge:
 
             self._service = (name, Context(bus, "/Context"))
             threading.Thread(target=GLib.MainLoop().run, daemon=True, name="djerba-dbus").start()
-            self.status = self._load_script(bus)
+            # Source de la fenêtre active selon le bureau (KWin : script ; GNOME : extension Mutter),
+            # activée par des processus distincts (aucun appel synchrone depuis ce processus).
+            from djerba_ai.ui.adapter import detect
+            self.status = detect().start_window_source()
         except dbus.exceptions.DBusException as exc:
             self.status = f"D-Bus indisponible ({exc.get_dbus_name()})"
         return self
-
-    @staticmethod
-    def _load_script(_bus) -> str:
-        """Charge le script KWin par un processus dbus-send distinct : un appel D-Bus
-        synchrone depuis ce processus, pendant que KWin rappelle notre service
-        servi par la boucle GLib d'un autre fil, risquerait un interblocage."""
-        if not KWIN_SCRIPT.is_file():
-            return "script KWin absent"
-        if shutil.which("dbus-send") is None:
-            return "dbus-send absent"
-        plugin = "djerba-active-window"
-        base = ["dbus-send", "--session", "--print-reply", "--dest=org.kde.KWin", "/Scripting"]
-        try:
-            subprocess.run([*base, "org.kde.kwin.Scripting.unloadScript", f"string:{plugin}"],
-                           capture_output=True, timeout=10)
-            loaded = subprocess.run([*base, "org.kde.kwin.Scripting.loadScript", f"string:{KWIN_SCRIPT}",
-                                     f"string:{plugin}"], capture_output=True, text=True, timeout=10)
-            if loaded.returncode != 0:
-                return f"KWin injoignable ({loaded.stderr.strip()[:120]})"
-            subprocess.run([*base, "org.kde.kwin.Scripting.start"], capture_output=True, timeout=10)
-        except (OSError, subprocess.SubprocessError) as exc:
-            return f"KWin injoignable ({exc})"
-        return "actif"
 
 
 # ---------------------------------------------------------------- Bus

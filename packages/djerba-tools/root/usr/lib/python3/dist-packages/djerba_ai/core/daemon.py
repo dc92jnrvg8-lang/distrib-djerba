@@ -148,6 +148,15 @@ def main() -> int:
         watcher = JournalWatcher(memory, on_incident)
         watcher.start()
 
+    # Bureau courant (KDE Plasma ou GNOME) : raccourcis et intégrations rétablis à
+    # chaque session, y compris après un changement de bureau.
+    try:
+        from djerba_ai.ui.adapter import sync
+        report = sync(config)
+        print(f"djerba-ai : bureau {report['desktop']}" + (" (changement de bureau)" if report["switched"] else "")
+              + "".join(f" ; {item}" for item in report["integrations"]), flush=True)
+    except Exception as exc:  # noqa: BLE001 - l'intégration au bureau ne doit jamais arrêter le démon
+        print(f"djerba-ai : intégration au bureau : {exc}", flush=True)
     bus = ContextBus(float(config.get("context.interval")), bool(config.get("context.window_titles"))).start()
     exporter = None
     if config.get("telemetry.enabled"):

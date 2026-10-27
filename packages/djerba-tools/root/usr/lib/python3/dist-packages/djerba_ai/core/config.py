@@ -97,6 +97,10 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "sandbox.backend": {"type": "string", "default": "auto", "enum": ["auto", "systemd", "unshare", "gvisor"]},
     "sandbox.memory_mb": {"type": "integer", "default": 512, "minimum": 128, "maximum": 4096},
     "sandbox.cpu_percent": {"type": "integer", "default": 50, "minimum": 10, "maximum": 100},
+    # Sécurité : IDS, confiance zéro réseau
+    "security.ids": {"type": "boolean", "default": True},
+    "security.ids_block_minutes": {"type": "integer", "default": 60, "minimum": 5, "maximum": 1440},
+    "security.network_grants": {"type": "list", "default": [], "pattern": r"^(app|plugin):[a-z0-9][a-z0-9_-]{0,47}$"},
     # Bus de contexte et télémétrie
     "context.interval": {"type": "integer", "default": 5, "minimum": 2, "maximum": 60},
     "context.window_titles": {"type": "boolean", "default": True},

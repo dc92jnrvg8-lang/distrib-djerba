@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=Djerba Spotlight
-Comment=Ask Djerba from anywhere
-Comment[fr]=Demander à Djerba depuis n'importe où
-Exec=djerba-ai --spotlight
+Name=Djerba — anneau d'action
+Comment=Contextual action ring of the Djerba agent
+Comment[fr]=Anneau d'actions contextuelles de l'agent Djerba
+Exec=djerba-ai --hud
 Icon=djerba-ai
 Terminal=false
 NoDisplay=true

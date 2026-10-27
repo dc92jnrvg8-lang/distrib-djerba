@@ -1,0 +1,31 @@
+[Desktop Entry]
+Type=Service
+MimeType=all/all;
+Actions=djerbaExplain;djerbaOrganize;djerbaSecurity;djerbaSummarize;
+X-KDE-Submenu=Djerba
+X-KDE-Submenu[fr]=Djerba
+Icon=djerba-ai
+
+[Desktop Action djerbaExplain]
+Name=Explain with Djerba
+Name[fr]=Expliquer avec Djerba
+Icon=djerba-ai
+Exec=djerba-ai --ask-file "Explique ce que contiennent ou font ces éléments" %F
+
+[Desktop Action djerbaOrganize]
+Name=Organize with Djerba
+Name[fr]=Proposer un rangement
+Icon=folder-sync
+Exec=djerba-ai --ask-file "Propose un rangement de ces éléments (ne déplace rien sans mon accord)" %F
+
+[Desktop Action djerbaSecurity]
+Name=Check safety with Djerba
+Name[fr]=Vérifier la sécurité (antivirus)
+Icon=security-high
+Exec=djerba-ai --ask-file "Vérifie ces fichiers avec l'antivirus et dis-moi s'ils sont sûrs" %F
+
+[Desktop Action djerbaSummarize]
+Name=Summarize with Djerba
+Name[fr]=Résumer le document
+Icon=document-preview
+Exec=djerba-ai --ask-file "Résume ces documents (lis-les avec os_file_read)" %F

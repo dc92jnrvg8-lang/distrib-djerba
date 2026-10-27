@@ -16,7 +16,8 @@ Window {
 
     // Même palette adaptative que la fenêtre principale (composants partagés).
     SystemPalette { id: system; colorGroup: SystemPalette.Active }
-    readonly property bool dark: system.window.hslLightness < 0.5
+    // Sous GNOME, Qt ne suit pas toujours le thème : la préférence GSettings fait foi.
+    readonly property bool dark: backend.followsDesktopTheme ? backend.prefersDark : system.window.hslLightness < 0.5
     readonly property color night: dark ? "#070B18" : "#F1F5F9"
     readonly property color surface: dark ? "#0B1426" : "#FFFFFF"
     readonly property color turquoise: dark ? "#00C2CB" : "#0E9AA7"

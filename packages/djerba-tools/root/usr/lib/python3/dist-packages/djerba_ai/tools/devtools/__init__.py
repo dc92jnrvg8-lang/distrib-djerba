@@ -84,7 +84,10 @@ def run_app(slug: str, live: bool = False) -> int:
     if kind == "html":
         return subprocess.call(["xdg-open", str(app_dir / "index.html")])
     python = str(VENV_PYTHON) if VENV_PYTHON.exists() else sys.executable
-    command = [python, str(app_dir / "main.py")]
+    # Confiance zéro : pas de réseau sans autorisation explicite (seccomp ; AppArmor si chargé).
+    from djerba_ai.core.config import Config
+    from djerba_ai.security import netpolicy
+    command = netpolicy.wrap([python, str(app_dir / "main.py")], Config(), "app", slug)
     if not live:
         return subprocess.call(command, cwd=app_dir)
 

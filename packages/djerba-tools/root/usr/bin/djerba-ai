@@ -8,7 +8,11 @@ démon root n'accepte les actions sensibles que de lui.
 
 Usage :
     djerba-ai [--page chat|system|selfheal|studio|tools|settings] application graphique (mode Studio)
-    djerba-ai --spotlight             barre flottante (Meta+Espace)
+    djerba-ai --hud                   anneau d'action contextuel (Super+Espace)
+    djerba-ai --spotlight             barre flottante
+    djerba-ai --ask "demande"         ouvre la barre et pose la question
+    djerba-ai --ask-file ACTION F…    action sur des fichiers (Dolphin, Nautilus)
+    djerba-ai --ask-selection C NOM   consigne sur la sélection lue sur stdin (Kate, Gedit)
     djerba-ai --clipboard             analyse du presse-papiers (Meta+Maj+C)
     djerba-ai --tray                  démarrage résident (zone de notification)
     djerba-ai ask "demande"           discussion en terminal (confirmation o/n des actions)
@@ -34,6 +38,9 @@ CHILD = "DJERBA_AI_CHILD"
 def gui(argv: list[str]) -> int:
     # Instance déjà résidente : la demande lui est transmise (ouverture immédiate).
     from djerba_ai.gui import instance
+    if "--ask-selection" in argv or "--ask-file" in argv:
+        stdin_text = sys.stdin.read() if "--ask-selection" in argv and not sys.stdin.isatty() else ""
+        argv = instance.request_from_application(argv, stdin_text)
     if instance.forward(argv):
         return 0
     # Sans accélération 3D fiable (VM, framebuffer), rendu logiciel d'emblée (orbe 2D).

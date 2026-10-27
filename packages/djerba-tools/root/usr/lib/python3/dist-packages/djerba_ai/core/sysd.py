@@ -59,6 +59,10 @@ Méthodes :
   llm.cloud_health, llm.cloud_models
   audit.tail {lines}             fin du journal d'audit (/var/log/djerba/audit.log)
   audit.verify                   contrôle de la chaîne de hachages du journal
+  security.status                IDS (alertes, adresses bloquées), AppArmor, accès réseau
+  security.unblock {ip}          débloque une adresse bloquée par l'IDS
+  security.apparmor_load {kind, name, network}
+                                 génère et charge le profil AppArmor d'un code généré
 """
 
 from __future__ import annotations
@@ -107,7 +111,7 @@ REQUIREMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}(\[[A-Za-z0-9,_-]+\])
                          r"((==|>=|<=|~=|!=|<|>)[A-Za-z0-9.*+!-]{1,40})?$")
 APP_SCOPE = re.compile(r"/djerba-(?:app|ghost)-[^/\n]*\.(?:scope|service)")
 #: méthodes sans effet ni donnée sensible : non journalisées
-QUIET = {"sys.ping", "sys.metrics", "sys.list_patches", "config.get", "audit.tail", "audit.verify",
+QUIET = {"sys.ping", "sys.metrics", "sys.list_patches", "config.get", "audit.tail", "audit.verify", "security.status",
          "llm.cloud_health", "llm.cloud_models"}
 
 Authorizer = Callable[[int, int, str], bool]
@@ -603,6 +607,26 @@ def cloud_health() -> dict:
     return {"ok": True, "detail": f"connecté ({len(models)} modèles)"}
 
 
+# ---------------------------------------------------------------- Confinement AppArmor
+def apparmor_load(uid: int, kind: str, name: str, network: bool) -> dict:
+    """Profil du code généré par l'IA pour l'utilisateur uid : le dossier confiné est
+    calculé ici (dossier personnel de uid), jamais fourni par l'appelant ; le réseau
+    n'est permis que si l'autorisation figure dans la configuration système."""
+    import pwd
+    from djerba_ai.security import apparmor
+    try:
+        home = Path(pwd.getpwuid(uid).pw_dir)
+    except KeyError as exc:
+        raise ipc.RPCError(ipc.INVALID_PARAMS, f"utilisateur {uid} inconnu") from exc
+    data = home / ".local" / "share" / "djerba"
+    workdir = data / "generated_apps" / name if kind == "app" else data / "plugins"
+    allowed = f"{kind}:{name}" in Store().load().get("security.network_grants", [])
+    try:
+        return apparmor.install(kind, name, str(workdir), network and allowed)
+    except ValueError as exc:
+        raise ipc.RPCError(ipc.INVALID_PARAMS, str(exc)) from exc
+
+
 # ---------------------------------------------------------------- Serveur
 Verifier = Callable[[int, int], tuple[bool, str]]
 
@@ -693,6 +717,22 @@ class Dispatcher:
         if method == "audit.verify":
             self.require(pid, uid, ACTION_AUDIT)
             return audit.verify()
+        if method == "security.status":
+            self.require(pid, uid, ACTION_AUDIT)
+            from djerba_ai.security import apparmor, ids
+            return {**ids.status(), "apparmor": apparmor.enabled(),
+                    "network_grants": Store().load().get("security.network_grants", [])}
+        if method == "security.unblock":
+            self.require(pid, uid, ACTION_CONFIGURE)
+            from djerba_ai.security import ids
+            try:
+                done, detail = ids.unblock(str(params["ip"]))
+            except ValueError as exc:
+                raise ipc.RPCError(ipc.INVALID_PARAMS, "adresse invalide") from exc
+            return {"success": done, "message": f"{params['ip']} débloquée" if done else f"échec : {detail}"}
+        if method == "security.apparmor_load":
+            self.require(pid, uid, ACTION_EXTEND)
+            return apparmor_load(uid, str(params["kind"]), str(params["name"]), bool(params.get("network")))
         if method == "sys.list_patches":
             return list_patches()
         if method == "sys.exec_tool":

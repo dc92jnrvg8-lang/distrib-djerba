@@ -256,7 +256,9 @@ depuis une barre flottante ou une application complète.
 
 | Élément | Rôle |
 |---|---|
-| **Spotlight** (`Meta+Espace`) | barre flottante au-dessus des fenêtres : question, action, réponse en continu, confirmations en ligne ; le modèle est préchargé (`keep_alive`) dès l'ouverture |
+| **Anneau d'action** (`Super+Espace`) | HUD flottant (KDE comme GNOME) : actions contextuelles disposées en anneau autour d'un champ de saisie, selon l'application au premier plan (navigateur, fichiers, terminal, éditeur, jeu…), complétées par les suggestions de l'agent (validées par schéma, titre de fenêtre traité comme donnée non fiable) ; réponse en continu et confirmations sur place ; modèle préchargé dès l'ouverture |
+| **Multi-bureau** (`ui/adapter.py`) | une seule interface, deux implémentations natives : **KDE Plasma** (script KWin pour la fenêtre active, KGlobalAccel, kdeglobals) et **GNOME Shell 46+** (extension `djerba@djerba-os.org` pour Mutter, raccourcis GSettings — Super+Espace libéré du changement de disposition —, thème `color-scheme`) ; détection à chaque session, réglages et raccourcis rétablis après un changement de bureau. GNOME est proposé à l'installation (catalogue, « Bureaux supplémentaires ») |
+| **Applications** | menu « Djerba » de **Dolphin** (menu de service) et de **Nautilus** (python3-nautilus) sur les fichiers ; outils externes de **Kate** et greffon **Gedit** (Ctrl+Alt+E/K/T) sur la sélection, transmise par l'entrée standard |
 | **Presse-papiers** (`Meta+Maj+C`) | expliquer, résumer, traduire, corriger le texte copié, ou vérifier une commande |
 | **Tableau de bord** | flux de pensées de l'agent (poignée de main, garde anti-injection, capacités choisies, actions et niveau de risque, résultats, bascules de moteur, réflexion des modèles qui l'exposent), télémétrie vivante (bus de contexte, latences, mémoire de l'agent), **validations explicites** des actions à haut risque (saisie de « CONFIRMER »), contrôle de l'audit et du bac à sable |
 | **Mode Studio** (`djerba-ai`) | discussion, santé, auto-réparation, Studio (applications, historique, bac à sable, **audit en direct**), capacités, cerveau et réglages ; orbe Qt Quick 3D, **2D vectorielle** si le GPU n'a pas d'accélération 3D fiable (détection `/sys/class/drm`) |
@@ -300,6 +302,26 @@ dans `~/.local/share/djerba/plugins/` et **intégrés à chaud**. Une capacité
 générée n'est jamais root et chaque exécution reste confirmée. Les dépendances
 Python éventuelles vont dans le venv interne `/usr/share/djerba-ai/venv`
 (PEP 668 : jamais de `pip` global).
+
+**Défense active** (`djerba_ai/security/`).
+
+* **AppArmor dynamique** : chaque application du Studio et chaque capacité
+  générée reçoit un profil strict généré (`djerba-app-*`, `djerba-plugin-*` :
+  système en lecture seule, son dossier seul en écriture, secrets — `~/.ssh`,
+  trousseaux, mémoire et configuration de Djerba — refusés, ni capacité, ni
+  montage, ni ptrace), vérifié par `apparmor_parser` puis chargé par le démon
+  root ; appliqué par `aa-exec` et par le bac à sable (`AppArmorProfile=`).
+* **Confiance zéro réseau** : aucun code généré n'atteint Internet par
+  défaut — seccomp (sockets UNIX seules) toujours, AppArmor sans règle réseau
+  en plus ; l'accès se donne au tableau de bord (« CONFIRMER » + mot de passe
+  administrateur, liste `security.network_grants`) et se retire à tout moment.
+  Une capacité générée ne s'exécute **jamais** dans le processus de l'agent :
+  un mandataire la lance dans un processus isolé, environnement minimal.
+* **IDS** (`djerba-ai-ids.service`, root) : force brute SSH, balayage de
+  ports, rafales d'échecs d'authentification, violations de confinement du
+  code généré ; blocage ciblé et temporaire de l'adresse dans nftables
+  (`inet djerba_ids`), décision inscrite au registre d'audit, déblocage depuis
+  le tableau de bord.
 
 **Garde anti-injection.** Toute demande est validée (schéma `UserPrompt` :
 Unicode normalisé, caractères invisibles et de contrôle retirés, longueur
@@ -461,13 +483,27 @@ MKSQUASHFS_OPTIONS="-comp zstd -b 1M -Xcompression-level 19 -mem 4G -processors 
 ## CI/CD GitHub Actions
 
 `.github/workflows/build-and-test.yml` exécute une **matrice native** :
-`x86_64` sur `ubuntu-latest` (KVM) et `arm64` sur `ubuntu-24.04-arm` (TCG).
+`x86_64` sur `ubuntu-24.04` (KVM) et `arm64` sur `ubuntu-24.04-arm` (TCG) —
+libellés épinglés plutôt que `ubuntu-latest`, actions sur Node 24.
 
-Étapes : checkout → libération d'espace → lints → génération des assets et
-de la page Applications → cache des paquets live-build → image Docker +
-`./build.sh` → tests fonctionnels → test QEMU → artefacts (ISO, journaux,
-capture). Sur un tag `v*`, une **GitHub Release** publie les ISO, sommes
-SHA-256 et manifestes (fichiers > 2 Gio découpés en `*.iso.partNN`).
+Étapes : checkout → libération d'espace (nettoyage APT tolérant) → lints →
+génération des assets et de la page Applications → cache des paquets
+live-build → image Docker + `./build.sh` → tests de l'agent dans l'image
+Debian 13 (en root : bac à sable réel) → tests fonctionnels → test QEMU →
+session live avec réseau → publication.
+
+**Télécharger l'ISO live.** Une ISO pèse ~2,5 Gio par architecture : elle
+n'est jamais envoyée comme artefact (quota de stockage d'Actions) mais comme
+**asset de release**, non décompté de ce quota :
+
+* chaque poussée réussie met à jour la pré-release
+  **« Djerba OS — version de développement »** (tag `djerba-os-dev`, onglet
+  *Releases* du dépôt) ;
+* un tag `v*` publie la release « Djerba OS vX ».
+
+Une ISO de plus de 2 Gio est découpée : `cat djerba-os-*.iso.part* >
+djerba-os.iso` puis `sha256sum -c djerba-os-*.iso.sha256`. Seuls les journaux
+de test restent des artefacts (7 jours).
 
 ---
 
@@ -516,6 +552,8 @@ de verre. Il est décliné en SVG et PNG (48 → 256 px) pour l'icône du menu,
 | `cpupower` pour le mode jeu | power-profiles-daemon pilote déjà gouverneur et EPP ; les deux se contrediraient : `game_optimizer` passe par lui, `cpupower_governor` (paquet `linux-cpupower`) sert sans lui |
 | Suspension du compositeur | possible en session X11 (`org.kde.KWin /Compositor suspend`) ; sous Wayland, KWin *est* le serveur d'affichage : effets coupés et tearing autorisé à la place |
 | Déploiement des correctifs | jamais sans accord (aperçu + mot de passe) et dans `/usr/local/bin`, pas dans `/usr/bin` : les fichiers des paquets restent intacts et un retour arrière est toujours possible |
+| GNOME et ses intégrations | GNOME n'est pas dans l'image live (taille) : il s'installe depuis l'installateur ou `djerba-apps` ; sous Wayland, l'extension n'est chargée qu'à la session suivante. GNOME Text Editor n'a pas d'API de greffons : Gedit et Nautilus portent l'intégration |
+| AppArmor en session live | Debian ne charge pas AppArmor sur un média live : les profils générés y sont écrits mais le confinement repose sur seccomp, espaces de noms et cgroups ; il s'ajoute sur le système installé |
 | Appelants « signés » | le manifeste d'empreintes est généré à la construction du paquet et protégé par les droits root ; la vérification s'ajoute à polkit (défense en profondeur), elle ne le remplace pas. `kernel.yama.ptrace_scope=1` empêche un programme de l'utilisateur de s'attacher à l'agent en cours d'exécution |
 | Chiffrement de la mémoire | clé aléatoire par utilisateur (`memory.key`, 0600) : protège la base copiée, sauvegardée ou lue par un autre compte ; pas un logiciel malveillant exécuté sous le même compte. SQLCipher n'étant pas dans Debian, le chiffrement est fait par colonne (AES-256-GCM, python3-cryptography) |
 | gVisor | `runsc` n'est pas empaqueté par Debian : utilisé automatiquement s'il est installé (dépôt officiel gVisor), sinon le runtime systemd (ou unshare) est le plus isolé |

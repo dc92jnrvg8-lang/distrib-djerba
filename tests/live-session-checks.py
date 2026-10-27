@@ -138,6 +138,22 @@ OFFLINE_CHECKS = [
      "&& for i in $(seq 90); do journalctl --user --no-pager -o cat -u 'djerba-ghost-os-index-build-*' "
      "| grep -q 'Index de /tmp/docs' && break; sleep 1; done; "
      "journalctl --user --no-pager -o cat -u 'djerba-ghost-os-index-build-*' | grep -q 'Index de /tmp/docs'", 150),
+    ("Agent IA : bureau détecté (KDE Plasma) et intégrations installées",
+     f"{SESSION}; python3 -c 'from djerba_ai.ui.adapter import detect; assert detect().name == \"kde\"' "
+     "&& test -f ~/.config/kate/externaltools/djerba-expliquer.ini", 60),
+    ("Agent IA : anneau d'action (Super+Espace) sur l'instance résidente",
+     f"{SESSION}; test -S /run/user/1000/djerba-ai/gui.sock && timeout 10 djerba-ai --hud", 60),
+    ("Agent IA : détection d'intrusion active (nftables inet djerba_ids)",
+     "systemctl is-active --quiet djerba-ai-ids.service && sudo nft list table inet djerba_ids >/dev/null", 60),
+    ("Agent IA : capacité générée isolée, sans réseau (confiance zéro)",
+     "mkdir -p ~/.local/share/djerba/plugins && printf '%s\\n' 'import os, socket' "
+     "'from djerba_ai.tools.base import BaseTool, ok' 'class Sonde(BaseTool):' \"    name = 'sonde'\" "
+     "\"    category = 'devtools'\" \"    description = 'Sonde.'\" '    def execute(self, params, verbose=False):' "
+     "'        try:' \"            socket.create_connection(('1.1.1.1', 53), timeout=3); net = 'ouvert'\" "
+     "'        except OSError:' \"            net = 'bloque'\" \"        return ok(net, pid=os.getpid())\" "
+     "> ~/.local/share/djerba/plugins/sonde.py && python3 -c 'import os; from djerba_ai.tools import load_plugins; "
+     "t, e = load_plugins([\"sonde\"]); r = t[\"plugin.sonde\"].run({}); print(r); "
+     "assert r[\"message\"] == \"bloque\" and r[\"data\"][\"pid\"] != os.getpid(), r'", 90),
     ("Store : catalogue JSON",
      "djerba-apps list --json | python3 -c 'import json,sys; assert len(json.load(sys.stdin)[\"apps\"]) >= 10'", 60),
     ("Mode discret : bascule Windows 11 puis restauration à l'identique",

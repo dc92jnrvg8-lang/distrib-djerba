@@ -250,5 +250,8 @@ class AppGenerator(BaseTool):
         git(app_dir, "commit", "-q", "-m", f"Création : {instruction[:200]}")
         game = any(word in instruction.lower() for word in ("jeu", "game", "snake", "tetris", "pong", "casse"))
         launcher = write_launcher(slug, name, kind, instruction, game)
+        # Confinement AppArmor généré (sans réseau tant que l'utilisateur ne l'autorise pas).
+        from djerba_ai.security.netpolicy import request_profile
+        confinement = request_profile("app", slug)
         return ok(f"« {name} » est prêt ({origin}) et se trouve dans le menu des applications.",
-                  slug=slug, path=str(app_dir), kind=kind, launcher=str(launcher))
+                  slug=slug, path=str(app_dir), kind=kind, launcher=str(launcher), confinement=confinement)

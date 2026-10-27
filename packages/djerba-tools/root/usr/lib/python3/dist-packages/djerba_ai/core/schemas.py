@@ -201,6 +201,16 @@ class SandboxProbeParams(Strict):
     backend: Literal["auto", "systemd", "unshare", "gvisor"] = "auto"
 
 
+class UnblockParams(Strict):
+    ip: Annotated[StrictStr, Field(pattern=r"^[0-9a-fA-F.:]{2,45}$")]
+
+
+class ApparmorParams(Strict):
+    kind: Literal["app", "plugin"]
+    name: Annotated[StrictStr, Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,47}$")]
+    network: StrictBool = False
+
+
 RPC_PARAMS: dict[str, type[Strict]] = {
     "sys.ping": NoParams,
     "sys.metrics": NoParams,
@@ -220,6 +230,9 @@ RPC_PARAMS: dict[str, type[Strict]] = {
     "llm.cloud_models": NoParams,
     "audit.tail": AuditTailParams,
     "audit.verify": NoParams,
+    "security.status": NoParams,
+    "security.unblock": UnblockParams,
+    "security.apparmor_load": ApparmorParams,
 }
 
 
