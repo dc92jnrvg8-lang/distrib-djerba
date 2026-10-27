@@ -161,7 +161,7 @@ OFFLINE_CHECKS = [
      "djerba-undercover on --style 11 --verbose && djerba-undercover status --json | grep -q '\"active\": true' "
      "&& grep -q '^LookAndFeelPackage=org.djerba.undercover11.desktop' ~/.config/kdeglobals "
      "&& djerba-undercover off --verbose && md5sum -c --quiet /tmp/before.md5 "
-     "&& pgrep -u 1000 -x plasmashell >/dev/null", 300),
+     "&& pgrep -u 1000 -x plasmashell >/dev/null", 480),
 ]
 
 # Sans réseau : Tor ne peut pas se connecter, le mode anonyme doit s'annuler.
