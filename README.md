@@ -18,7 +18,7 @@ et en **UEFI ARM64**.
 | Bureau | Plasma 6.3 Wayland, SDDM 0.21 (Qt 6) | idem |
 | Jeu | GameMode, MangoHud, vkBasalt, Vulkan ; Steam, Lutris, Heroic… au choix | idem, sans Steam ni Wine 32 bits |
 | Vie privée | mode anonyme (Tor + coupe-circuit), mode discret façon Windows 10/11 | idem |
-| Agent IA | **Djerba** : 228 capacités système, Ollama ou API compatible OpenAI, auto-réparation, Studio | idem |
+| Agent IA | **Djerba** : 251 capacités système, cerveau local, Tailscale ou en ligne avec repli, Spotlight (Meta+Espace), auto-réparation, auto-extension, Studio | idem |
 | Sécurité | UFW, ClamAV + ClamTk, AppArmor, mises à jour automatiques | idem |
 | Installation | Calamares, choix des applications, BTRFS `@`/`@home`, zstd, sans swap disque | idem |
 
@@ -239,22 +239,57 @@ Discover), seuls les accès par adresse IP fonctionnaient.
 
 ## Agent IA Djerba
 
-**Djerba** (menu « Djerba », `djerba-ai`) est l'agent IA natif de Djerba OS : il
-connaît la configuration de la machine et l'administre avec vous.
+**Djerba** (menu « Djerba », `djerba-ai`) est l'agent IA natif et souverain de
+Djerba OS : il connaît la configuration de la machine et l'administre avec vous,
+depuis une barre flottante ou une application complète.
 
 | Élément | Rôle |
 |---|---|
-| Application `djerba-ai` | discussion en continu, cartes d'actions et de confirmation, santé du système, auto-réparation, Studio, catalogue des capacités, modèles et réglages ; orbe animée en Qt Quick 3D (2D en rendu logiciel) |
-| `djerba_ai.core` | configuration, mémoire SQLite (`~/.local/share/djerba/memory.db`), clients Ollama / API compatible OpenAI, boucle agentique, contexte système, IPC JSON-RPC, démon root, auto-réparation, démon utilisateur |
-| `djerba_ai.tools` | **228 capacités** découvertes par introspection (classe `BaseTool`) : maintenance 31, performances 27 (dont `game_optimizer`), sécurité 30, bureau 26, applications 27, matériel 20, agent 27, système 21, Studio 19 |
-| `djerba-ai-sysd` | démon root activé par la socket `/run/djerba-ai/sysd.sock` : appelant identifié par `SO_PEERCRED`, autorisation **polkit** du processus (`org.djerba.ai.exec` / `patch` / `deploy` / `setup`) ; n'exécute que les capacités intégrées marquées root |
-| `djerba-ai.service` (utilisateur) | surveillance du journal (incidents d'auto-réparation), maintenance quotidienne, mise à jour hebdomadaire du modèle |
+| **Spotlight** (`Meta+Espace`) | barre flottante au-dessus des fenêtres : question, action, réponse en continu, confirmations en ligne ; le modèle est préchargé (`keep_alive`) dès l'ouverture |
+| **Presse-papiers** (`Meta+Maj+C`) | expliquer, résumer, traduire, corriger le texte copié, ou vérifier une commande |
+| **Mode Studio** (`djerba-ai`) | discussion, santé, auto-réparation, Studio (applications, historique, bac à sable, **audit en direct**), capacités, cerveau et réglages ; orbe Qt Quick 3D, **2D vectorielle** si le GPU n'a pas d'accélération 3D fiable (détection `/sys/class/drm`) |
+| Icône résidente | pastille d'état (vert prêt, bleu au travail, orange repli local, rouge indisponible), menu (Spotlight, cerveau, Studio, réglages), notifications ; une seule instance (`$XDG_RUNTIME_DIR/djerba-ai/gui.sock`) |
+| `/etc/djerba/config.toml` | configuration centrale (root, **0600**) : `[llm]` (fournisseur, adresses, modèles, clé d'API), `[shortcuts]`, `[system]` (bac à sable 15 s / 3 essais, chien de garde, alerte disque < 10 %), `[agent]` ; vue publique sans secret `config.public.json` surveillée par l'interface (synchronisation en temps réel), historique des réglages dans `memory.db` |
+| `djerba_ai.core` | fournisseurs (`BaseLLMProvider` : `LocalOllamaProvider`, `RemoteTailscaleProvider`, `CloudAPIProvider`, repli), mémoire SQLite (`~/.local/share/djerba/memory.db`) avec **masquage des secrets** avant écriture et embeddings, boucle agentique, auto-extension, audit, IPC JSON-RPC, démon root, auto-réparation, chien de garde |
+| `djerba_ai.tools` | **251 capacités** découvertes par introspection (`BaseTool`) : maintenance 31, performances 27 (dont `game_optimizer`), sécurité 30, bureau 26, applications 27, matériel 20, agent 32, système 21, Studio 19, **os 18** (apt, Flatpak, fichiers, `chmod`/`chown`, recherche par nom et **sémantique**) |
+| `djerba-ai-sysd` | démon root activé par la socket `/run/djerba-ai/sysd.sock` : appelant identifié par `SO_PEERCRED`, autorisation **polkit** du processus (`exec`, `patch`, `deploy`, `setup`, `configure`, `cloud`, `audit`, `extend`), **seul** à lire la clé d'API et à écrire `config.toml` ; refuse tout processus d'une application isolée ; chaque action est consignée dans `/var/log/djerba/audit.log` (JSON, root:adm 0640, logrotate) ; ordonné après `network-online.target` et `tailscaled.service` |
+| `djerba-ai.service` (utilisateur) | surveillance du journal (incidents), chien de garde (disque sous le seuil, services en échec), maintenance quotidienne, mise à jour hebdomadaire du modèle local |
+
+**Cerveaux.** Trois fournisseurs, choisis dans les réglages (sélecteur avec
+pastille de connexion en temps réel) ou par l'agent (`brain_switch`) :
+
+* **Ollama local** (`127.0.0.1:11434`) — rien ne sort de la machine ;
+* **Mac Mini via Tailscale** — Ollama d'une machine puissante du tailnet
+  (nom MagicDNS ou adresse 100.x), état du pair lu par `tailscale status --json` ;
+* **API en ligne** — OpenAI, Google Gemini (point d'accès compatible OpenAI) ou
+  serveur compatible (HTTPS, ou `http://127.0.0.1` pour llama.cpp / LM Studio).
+  La requête est **relayée par le démon root** : la clé ne quitte jamais root,
+  les jetons reviennent en continu.
+
+Si le cerveau distant ne répond pas, ou pas dans les **5 secondes**, Djerba
+bascule **de façon transparente** sur le modèle local et vous prévient
+(notification Plasma, pastille orange).
+
+**Auto-extension.** Quand aucune capacité ne convient (même après
+`tools_search`), Djerba écrit un greffon Python (`BaseTool` avec `selftest()`),
+le fait vérifier par le démon root dans le bac à sable Git
+`/var/lib/djerba-ai/sandbox` (syntaxe, pyflakes, chargement et auto-test sous
+`nobody`, **15 s** au plus par exécution), corrige jusqu'à **3 tentatives** avec
+le détail des échecs, annule tout par `git reset --hard` sinon, puis l'enregistre
+dans `~/.local/share/djerba/plugins/` et l'**intègre à chaud**. Une capacité
+générée n'est jamais root et chaque exécution reste confirmée. Les dépendances
+Python éventuelles vont dans le venv interne `/usr/share/djerba-ai/venv`
+(PEP 668 : jamais de `pip` global).
+
+**Isolation.** Les applications du Studio tournent dans un scope systemd
+(`systemd-run --user --scope`, unité `djerba-app-*`), environnement nettoyé et
+ressources bornées ; le démon root rejette tout processus de ces cgroups.
 
 **Fonctionnement.** À chaque demande, l'agent reçoit l'état de la machine
 (version, matériel, session live ou installée, modes anonyme / discret / jeu,
 applications, services en échec, espace disque, réseau) et ce qu'il a retenu de
 vous. Il choisit les capacités pertinentes (recherche + historique de réussite ;
-`tools_search` lui donne accès aux 228), les appelle, lit leurs résultats et
+`tools_search` lui donne accès aux 251), les appelle, lit leurs résultats et
 répond. Toute action sensible est **confirmée** dans l'interface, puis par
 votre mot de passe administrateur (polkit) si elle exige root. Il **apprend**
 de l'usage : actions réussies, vos retours « Utile / Pas utile » et exemples de
@@ -286,12 +321,16 @@ autonome), corrigée une fois si besoin, enregistrée dans
 `~/.local/share/djerba/generated_apps/<nom>/` avec Git et `requirements.txt`,
 et ajoutée au menu de Plasma (`~/.local/share/applications/djerba-<nom>.desktop`,
 `djerba-ai run-app <nom> [--live]` avec rechargement à chaud). Hors ligne, les
-modèles Snake, calculatrice et chronomètre restent disponibles. Djerba peut
-aussi s'écrire de **nouvelles capacités** (greffons dans
-`~/.local/share/djerba/plugins/`), qui ne sont actives qu'après votre accord et
-ne peuvent jamais obtenir les droits root.
+modèles Snake, calculatrice et chronomètre restent disponibles.
 
-En terminal : `djerba-ai ask "…"`, `djerba-ai tools [recherche]`,
+**Premier lancement.** Un assistant présente Djerba, fait choisir le cerveau,
+rappelle les raccourcis et règle recherche web, auto-réparation et
+auto-extension. Les raccourcis se modifient dans les réglages : la combinaison
+pressée est écrite dans `~/.config/kglobalaccelrc` et appliquée aussitôt à
+KGlobalAccel par D-Bus.
+
+En terminal : `djerba-ai --spotlight`, `djerba-ai --clipboard`,
+`djerba-ai ask "…"`, `djerba-ai tools [recherche]`,
 `djerba-ai run OUTIL '{"param": …}'`, `djerba-ai health`, `djerba-ai doctor`.
 
 ---
@@ -379,8 +418,8 @@ MKSQUASHFS_OPTIONS="-comp zstd -b 1M -Xcompression-level 19 -mem 4G -processors 
 | `tests/test-yaml-ini.py` | avant compilation | YAML strict et schémas Calamares 3.3 (`mount.conf` : `/@`, `/@home`, zstd/ssd/noatime/discard=async) ; INI strict pour `flathub.conf`, SDDM, `.desktop`, KDE ; unités systemd ; catalogue d'applications ; cohérence de `settings.conf` |
 | `tests/run_local_lints.sh` | avant compilation | `shellcheck`, `set -euo pipefail` (ou `set -e` pour les scripts dpkg), bit exécutable, Python strict, XML polkit, `visudo -c` |
 | `tests/test-features.sh` | après le build | ~90 contrôles : EFI/Secure Boot/BIOS, GRUB, squashfs, noyau Debian, **identité Djerba OS** (os-release, À propos, icônes), Plasma Wayland, Calamares + page Applications, mode anonyme, mode discret, ClamAV, jeu, puis en **chroot overlay** : paquets `djerba-*` installés, diversion dpkg, catalogue, polkit, services, chargement QML réel de l'assistant |
-| `tests/test-djerba-ai.py` | avant compilation | 228 capacités et schémas, paramètres hostiles refusés (aucun shell), mémoire, boucle agentique face à un faux serveur Ollama, confirmation refusée, mode dégradé, démon root en JSON-RPC réel (SO_PEERCRED, autorisation), bac à sable (correctif cassé annulé, correctif valide déployé puis retiré), Studio hors ligne, chargement réel de l'interface |
-| `tests/test-live-session.sh` | après le build | démarre l'ISO et se connecte sur la console série : DNS (resolv.conf, NSS), Tor sous AppArmor et retour arrière du mode anonyme, mode jeu, mode discret (bascule puis restauration à l'identique), store, agent IA (capacité, démon root activé par socket, Studio) ; avec `--network` (CI) : résolution, HTTPS, Firefox, mode anonyme complet via Tor sans fuite IPv6 |
+| `tests/test-djerba-ai.py` | avant compilation | 45 tests : 251 capacités et schémas, paramètres hostiles refusés (aucun shell), mémoire et masquage des secrets, `config.toml` (0600, vue publique, validation), repli local (distant injoignable ou trop lent), API en ligne relayée par le démon (clé jamais exposée, jetons en continu), audit JSON, refus des applications isolées, capacités « os » (chemins vitaux refusés, recherche sémantique), auto-extension en 3 tentatives et intégration à chaud, bac à sable réel des greffons (valide, cassé, boucle infinie coupée), raccourcis `kglobalaccelrc`, détection GPU, instance unique, chargement réel de l'interface et de Spotlight |
+| `tests/test-live-session.sh` | après le build | démarre l'ISO et se connecte sur la console série : DNS (resolv.conf, NSS), Tor sous AppArmor et retour arrière du mode anonyme, mode jeu, mode discret (bascule puis restauration à l'identique), store, agent IA (capacité, démon root activé par socket, `config.toml` écrit par le démon et synchronisé, audit, bac à sable des greffons, application isolée refusée, recherche sémantique, icône résidente et Spotlight, Studio) ; avec `--network` (CI) : résolution, HTTPS, Firefox, mode anonyme complet via Tor sans fuite IPv6 |
 | `tests/test-iso-qemu.sh` | après le build | démarrage **UEFI** (OVMF / AAVMF), console série : succès sur `djerba login:`, **bannière « Djerba OS »** vérifiée, échec sur panique ou shell initramfs ; capture d'écran QMP |
 
 ---
@@ -443,6 +482,11 @@ de verre. Il est décliné en SVG et PNG (48 → 256 px) pour l'icône du menu,
 | `cpupower` pour le mode jeu | power-profiles-daemon pilote déjà gouverneur et EPP ; les deux se contrediraient : `game_optimizer` passe par lui, `cpupower_governor` (paquet `linux-cpupower`) sert sans lui |
 | Suspension du compositeur | possible en session X11 (`org.kde.KWin /Compositor suspend`) ; sous Wayland, KWin *est* le serveur d'affichage : effets coupés et tearing autorisé à la place |
 | Déploiement des correctifs | jamais sans accord (aperçu + mot de passe) et dans `/usr/local/bin`, pas dans `/usr/bin` : les fichiers des paquets restent intacts et un retour arrière est toujours possible |
+| `After=tailscaled.service` | porté par le service **système** `djerba-ai-sysd.service` (qui relaie les cerveaux distants et en ligne) : un service *utilisateur* comme `djerba-ai.service` ne peut pas s'ordonner par rapport à des services système |
+| Tailscale | absent de Debian : installable depuis le dépôt officiel de Tailscale ; sans lui, une connexion directe à l'hôte est tentée |
+| Flou d'arrière-plan | sous X11/XWayland via `_KDE_NET_WM_BLUR_BEHIND_REGION` ; sous Wayland natif, le protocole de flou de KWin n'est exposé que par KWindowSystem (C++), absent de PyQt6 : fond translucide teinté |
+| Plasmoïde | l'icône résidente (StatusNotifierItem de la zone de notification) remplit ce rôle ; aucun composant C++ à compiler, l'interface est entièrement en QML chargé à l'exécution |
+| Embeddings | modèle d'Ollama (`nomic-embed-text` par défaut) si disponible, sinon vecteurs locaux par hachage de n-grammes (512 dimensions) : la recherche reste hors ligne |
 | Unités systemd | `/usr/lib/systemd/{system,user}` (usr fusionné de Debian 13) ; le démon utilisateur est activé pour tous les comptes (`systemctl --global`) plutôt que copié dans `~/.config/systemd/user` |
 
 ---
