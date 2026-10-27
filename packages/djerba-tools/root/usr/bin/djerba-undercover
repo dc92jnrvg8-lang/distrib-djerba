@@ -94,13 +94,15 @@ start_shell() {
     if ! systemctl --user start "${SHELL_UNIT}" 2>/dev/null; then
         setsid -f plasmashell >/dev/null 2>&1
     fi
+    # Jusqu'à 120 s : sur une machine lente (émulation sans KVM, disque lent),
+    # plasmashell peut mettre plus de 30 s à reprendre sa place sur le bus.
     local waited=0
     until shell_bus_ready; do
-        (( waited < 60 )) || die "le bureau n'a pas redémarré"
+        (( waited < 240 )) || die "le bureau n'a pas redémarré en 120 s"
         sleep 0.5
         waited=$((waited + 1))
     done
-    debug "bureau prêt sur le bus de session"
+    debug "bureau prêt sur le bus de session après $((waited / 2)) s"
 }
 
 reconfigure_kwin() {
