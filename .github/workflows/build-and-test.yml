@@ -44,12 +44,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Free disk space
         uses: jlumbroso/free-disk-space@main
         with:
-          tool-cache: true
+          preinstalled-runtimes: true
           android: true
           dotnet: true
           haskell: true
@@ -103,7 +103,7 @@ jobs:
           python3 tools/catalog-to-netinstall.py --arch "${{ matrix.debarch }}"
 
       - name: Restore live-build package cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             cache/packages.bootstrap
@@ -179,22 +179,24 @@ jobs:
             echo "ISO découpée : cat ${iso}.part* > ${iso} && sha256sum -c ${iso}.sha256"
           fi
 
-      # Le quota de stockage d'artefacts GitHub ne doit pas faire échouer un
-      # build de branche dont tous les tests sont passés ; sur un tag, les ISO
-      # sont indispensables au job release : l'échec reste bloquant.
+      # Quota de stockage d'artefacts : une ISO pèse ~2,5 Gio par architecture.
+      # Elle n'est donc publiée que sur un tag (job release) ou un lancement
+      # manuel ; une poussée de branche ne garde que les journaux de test.
+      # Sur un tag, l'échec de l'envoi reste bloquant.
       - name: Upload QEMU logs
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: qemu-logs-${{ matrix.debarch }}
           path: tests/out/
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 7
 
       - name: Upload ISO
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         continue-on-error: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: djerba-os-${{ steps.version.outputs.version }}-${{ matrix.debarch }}
           path: artifacts/
@@ -210,14 +212,14 @@ jobs:
       contents: write
     steps:
       - name: Download ISOs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: djerba-os-*
           path: release
           merge-multiple: true
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: Djerba OS ${{ github.ref_name }}
           generate_release_notes: true
