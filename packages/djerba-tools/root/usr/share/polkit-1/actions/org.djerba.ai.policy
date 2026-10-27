@@ -59,4 +59,55 @@
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
   </action>
+  <action id="org.djerba.ai.configure">
+    <description>Change the Djerba AI agent configuration</description>
+    <description xml:lang="fr">Modifier la configuration de l'agent Djerba</description>
+    <message>Authentication is required to change Djerba's configuration (/etc/djerba/config.toml)</message>
+    <message xml:lang="fr">Une authentification est nécessaire pour modifier la configuration de Djerba (/etc/djerba/config.toml)</message>
+    <icon_name>djerba-ai</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.djerba.ai.cloud">
+    <description>Use the online AI service configured for Djerba</description>
+    <description xml:lang="fr">Utiliser le service d'IA en ligne configuré pour Djerba</description>
+    <message>Authentication is required to use the online AI service</message>
+    <message xml:lang="fr">Une authentification est nécessaire pour utiliser le service d'IA en ligne</message>
+    <icon_name>djerba-ai</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.djerba.ai.audit">
+    <description>Read the Djerba AI agent audit log</description>
+    <description xml:lang="fr">Lire le journal d'audit de l'agent Djerba</description>
+    <message>Authentication is required to read Djerba's audit log</message>
+    <message xml:lang="fr">Une authentification est nécessaire pour lire le journal d'audit de Djerba</message>
+    <icon_name>djerba-ai</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.djerba.ai.extend">
+    <description>Test a capability written by the Djerba AI agent in its sandbox</description>
+    <description xml:lang="fr">Tester dans le bac à sable une capacité écrite par l'agent Djerba</description>
+    <message>Authentication is required to test a new capability</message>
+    <message xml:lang="fr">Une authentification est nécessaire pour tester une nouvelle capacité</message>
+    <icon_name>djerba-ai</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
 </policyconfig>

@@ -6,12 +6,15 @@
   si quelque chose demande votre attention ;
 * mise à jour hebdomadaire du modèle de langage (ollama pull : seules les
   couches modifiées sont téléchargées) ;
+* chien de garde (system.watchdog) : espace disque sous le seuil d'alerte
+  (system.disk_alert_percent, 10 % par défaut) et services en échec ;
 * rien n'est modifié sur le système sans votre accord.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import signal
 import subprocess
@@ -20,7 +23,7 @@ import time
 
 from djerba_ai.core import health
 from djerba_ai.core.config import STATE_HOME, Config
-from djerba_ai.core.llm import LLMError, OllamaClient
+from djerba_ai.core.llm import LLMError, LocalOllamaProvider
 from djerba_ai.core.memory import Memory
 from djerba_ai.core.selfheal import JournalWatcher
 
@@ -60,7 +63,7 @@ def save_state(state: dict) -> None:
 
 def maintenance(config: Config, state: dict) -> None:
     today = time.strftime("%Y-%m-%d")
-    if time.localtime().tm_hour < int(config.get("maintenance_hour")) or state.get("maintenance") == today:
+    if time.localtime().tm_hour < int(config.get("agent.maintenance_hour")) or state.get("maintenance") == today:
         return
     state["maintenance"] = today
     save_state(state)
@@ -70,17 +73,57 @@ def maintenance(config: Config, state: dict) -> None:
         notify(f"Bilan Djerba : {result['score']}/100",
                "\n".join(f"• {item['title']}" for item in attention[:4]), page="system")
 
-    if config.get("auto_update_model") and config.get("provider") == "ollama":
+    if config.get("agent.auto_update_model"):
         week = time.strftime("%G-%V")
         if state.get("model_update") != week:
-            client = OllamaClient(config.get("ollama_endpoint"), config.get("model"))
+            client = LocalOllamaProvider(config.get("llm.local.endpoint"), config.get("llm.local.model"))
             if client.available():
                 try:
-                    client.pull(config.get("model"))
+                    client.pull(config.get("llm.local.model"))
                     state["model_update"] = week
                     save_state(state)
                 except LLMError:
                     pass
+
+
+WATCHED_MOUNTS = ("/", "/home", "/var")
+
+
+def watchdog(config: Config, state: dict) -> None:
+    """Alerte (une fois par jour et par problème) : disque presque plein, service en échec."""
+    if not config.get("system.watchdog"):
+        return
+    today = time.strftime("%Y-%m-%d")
+    alerts = state.setdefault("alerts", {})
+    threshold = int(config.get("system.disk_alert_percent"))
+    seen = set()
+    for mount in WATCHED_MOUNTS:
+        try:
+            usage = shutil.disk_usage(mount)
+            device = os.stat(mount).st_dev
+        except OSError:
+            continue
+        if device in seen:
+            continue
+        seen.add(device)
+        free = 100 * usage.free / usage.total if usage.total else 100
+        key = f"disk:{mount}"
+        if free < threshold and alerts.get(key) != today:
+            alerts[key] = today
+            notify("Espace disque faible", f"{mount} : {free:.0f} % libre ({usage.free / 1e9:.1f} Go). "
+                   "Djerba peut faire le ménage.", page="system")
+    try:
+        output = subprocess.run(["systemctl", "--failed", "--no-legend", "--plain", "--type=service"],
+                                capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        output = ""
+    for line in output.splitlines():
+        unit = line.split()[0] if line.split() else ""
+        key = f"unit:{unit}"
+        if unit and alerts.get(key) != today:
+            alerts[key] = today
+            notify("Service en échec", f"{unit} ne fonctionne pas. Ouvrez Djerba pour un diagnostic.", page="system")
+    save_state(state)
 
 
 def main() -> int:
@@ -91,7 +134,7 @@ def main() -> int:
     signal.signal(signal.SIGINT, lambda *_: stop.set())
 
     watcher = None
-    if config.get("self_heal"):
+    if config.get("agent.self_heal"):
         def on_incident(incident_id: int, incident: dict) -> None:
             name = incident["target"].rsplit("/", 1)[-1] if incident["target"] else incident["source"]
             notify("Djerba a détecté un problème", f"{name} : {incident['message'][:160]}", page="selfheal")
@@ -100,12 +143,19 @@ def main() -> int:
         watcher.start()
 
     state = load_state()
+    ticks = 0
     while not stop.wait(60):
         config.load()
         try:
             maintenance(config, state)
         except Exception as exc:  # noqa: BLE001 - la maintenance ne doit jamais arrêter le démon
             print(f"djerba-ai : maintenance : {exc}", flush=True)
+        ticks += 1
+        if ticks % 10 == 1:  # toutes les 10 minutes
+            try:
+                watchdog(config, state)
+            except Exception as exc:  # noqa: BLE001 - idem
+                print(f"djerba-ai : chien de garde : {exc}", flush=True)
     if watcher is not None:
         watcher.stop()
     return 0

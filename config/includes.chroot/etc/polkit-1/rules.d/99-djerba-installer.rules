@@ -12,7 +12,11 @@ polkit.addRule(function (action, subject) {
         "org.djerba.ai.exec",
         "org.djerba.ai.patch",
         "org.djerba.ai.deploy",
-        "org.djerba.ai.setup"
+        "org.djerba.ai.setup",
+        "org.djerba.ai.configure",
+        "org.djerba.ai.cloud",
+        "org.djerba.ai.audit",
+        "org.djerba.ai.extend"
     ];
     if (installerActions.indexOf(action.id) >= 0 &&
             subject.user === "djerba" &&

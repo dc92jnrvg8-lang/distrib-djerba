@@ -130,6 +130,14 @@ check "Agent IA : actions polkit" sq_has "/usr/share/polkit-1/actions/org.djerba
 check "Agent IA : optimiseur de jeu" sq_has "/usr/lib/python3/dist-packages/djerba_ai/tools/performance/game_optimizer.py"
 check "Agent IA : Studio (app_generator)" sq_has "/usr/lib/python3/dist-packages/djerba_ai/tools/devtools/app_generator.py"
 check "Agent IA : icône" sq_has "/usr/share/icons/hicolor/scalable/apps/djerba-ai.svg"
+check "Agent IA : capacités système « os » (apt, Flatpak, fichiers, recherche sémantique)" sq_has "/usr/lib/python3/dist-packages/djerba_ai/tools/os/search.py"
+check "Agent IA : auto-extension" sq_has "/usr/lib/python3/dist-packages/djerba_ai/core/extend.py"
+check "Agent IA : barre Spotlight (Meta+Espace)" sh -c "unsquashfs -cat '${SQUASHFS}' /usr/share/applications/djerba-ai-spotlight.desktop | grep -qx 'X-KDE-Shortcuts=Meta+Space'"
+check "Agent IA : presse-papiers (Meta+Maj+C)" sh -c "unsquashfs -cat '${SQUASHFS}' /usr/share/applications/djerba-ai-clipboard.desktop | grep -qx 'X-KDE-Shortcuts=Meta+Shift+C'"
+check "Agent IA : icône résidente (autostart)" sq_has "/etc/xdg/autostart/djerba-ai-tray.desktop"
+check "Agent IA : réglages, Spotlight et Studio (QML)" sh -c "grep -qE ' squashfs-root/usr/lib/python3/dist-packages/djerba_ai/gui/qml/Spotlight.qml$' '${WORK}/rootfs.list' && grep -qE ' squashfs-root/usr/lib/python3/dist-packages/djerba_ai/gui/qml/SettingsPage.qml$' '${WORK}/rootfs.list'"
+check "Agent IA : service système après Tailscale et le réseau" sh -c "unsquashfs -cat '${SQUASHFS}' /usr/lib/systemd/system/djerba-ai-sysd.service | grep -q '^Wants=network-online.target tailscaled.service'"
+check "Agent IA : rotation du journal d'audit" sq_has "/etc/logrotate.d/djerba-ai"
 check "Démarrage automatique de l'assistant" sq_has "/etc/xdg/autostart/djerba-welcome.desktop"
 check "Thème Plymouth Djerba" sq_has "/usr/share/plymouth/themes/djerba/djerba.script"
 check "Animation Plymouth (60 images)" sq_has "/usr/share/plymouth/themes/djerba/throbber-59.png"
@@ -200,10 +208,16 @@ if [[ "${EUID}" -eq 0 ]] && mount -t tmpfs -o size=1M probe "${WORK}/probe" 2>/d
     check "tor.service désactivé (Tor à la demande)" sh -c "! chroot '${WORK}/root' systemctl is-enabled tor.service"
     check "Service djerba-apps-firstboot activé" in_chroot systemctl is-enabled djerba-apps-firstboot.service
     check "Mises à jour ClamAV (freshclam)" in_chroot systemctl is-enabled clamav-freshclam.service
-    check "Agent IA : au moins 220 capacités" sh -c "chroot '${WORK}/root' env HOME=/tmp djerba-ai tools | tail -n 1 | grep -Eq '/ (2[2-9][0-9]|[3-9][0-9]{2}) capacités'"
+    check "Agent IA : au moins 240 capacités" sh -c "chroot '${WORK}/root' env HOME=/tmp djerba-ai tools | tail -n 1 | grep -Eq '/ (2[4-9][0-9]|[3-9][0-9]{2}) capacités'"
     check "Agent IA : socket du démon root activée" in_chroot systemctl is-enabled djerba-ai-sysd.socket
     check "Agent IA : démon utilisateur activé pour toutes les sessions" in_chroot test -L /etc/systemd/user/graphical-session.target.wants/djerba-ai.service
-    check "Agent IA : imports Python" in_chroot python3 -c 'import djerba_ai.core.agent, djerba_ai.core.sysd, djerba_ai.gui.app'
+    check "Agent IA : imports Python" in_chroot python3 -c 'import djerba_ai.core.agent, djerba_ai.core.sysd, djerba_ai.core.extend, djerba_ai.gui.app'
+    check "Agent IA : /etc/djerba/config.toml root 0600" sh -c "[ \"\$(chroot '${WORK}/root' stat -c '%U %a' /etc/djerba/config.toml)\" = 'root 600' ]"
+    check "Agent IA : configuration TOML valide ([llm] [shortcuts] [system])" in_chroot python3 -c 'import tomllib; d = tomllib.load(open("/etc/djerba/config.toml", "rb")); assert d["llm"]["provider"] == "local" and d["shortcuts"]["spotlight"] == "Meta+Space" and d["system"]["sandbox_timeout"] == 15'
+    check "Agent IA : vue publique sans secret (0644)" sh -c "[ \"\$(chroot '${WORK}/root' stat -c '%a' /etc/djerba/config.public.json)\" = 644 ] && chroot '${WORK}/root' grep -q 'llm.cloud.api_key_set' /etc/djerba/config.public.json"
+    check "Agent IA : journal d'audit root:adm 0640" sh -c "[ \"\$(chroot '${WORK}/root' stat -c '%U:%G %a' /var/log/djerba/audit.log)\" = 'root:adm 640' ]"
+    check "Agent IA : venv interne (PEP 668)" in_chroot test -x /usr/share/djerba-ai/venv/bin/python3
+    check "Agent IA : pyflakes (contrôle des capacités générées)" in_chroot python3 -m pyflakes --version
     check "Agent IA : Qt Quick 3D (orbe)" in_chroot test -d /usr/lib/x86_64-linux-gnu/qt6/qml/QtQuick3D -o -d /usr/lib/aarch64-linux-gnu/qt6/qml/QtQuick3D
     check "Python : PyQt6.QtQuick + dbus" in_chroot python3 -c 'import PyQt6.QtQuick, PyQt6.QtQml, dbus'
     check "Remote Flathub (flatpak remotes)" sh -c "chroot '${WORK}/root' flatpak remotes --system --columns=name | grep -qx flathub"

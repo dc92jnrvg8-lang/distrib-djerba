@@ -1,11 +1,21 @@
 #!/bin/sh
 # Djerba OS — djerba-tools : active le service de premier démarrage, la socket
-# du démon root de l'agent Djerba et son démon utilisateur.
+# du démon root de l'agent Djerba et son démon utilisateur ; crée la
+# configuration centrale (/etc/djerba/config.toml, 0600), le journal d'audit
+# et l'environnement Python interne de l'agent (PEP 668 : jamais de pip global).
 set -e
 
 case "$1" in
     configure)
         mkdir -p /var/lib/djerba/apps
+        python3 -c 'from djerba_ai.core.config import Store; Store().ensure()' || true
+        install -d -m 0750 -o root -g adm /var/log/djerba
+        if [ ! -e /var/log/djerba/audit.log ]; then
+            install -m 0640 -o root -g adm /dev/null /var/log/djerba/audit.log
+        fi
+        if [ ! -x /usr/share/djerba-ai/venv/bin/python3 ]; then
+            python3 -m venv --system-site-packages /usr/share/djerba-ai/venv >/dev/null 2>&1 || true
+        fi
         systemctl enable djerba-apps-firstboot.service >/dev/null 2>&1 || true
         systemctl enable djerba-ai-sysd.socket >/dev/null 2>&1 || true
         systemctl --global enable djerba-ai.service >/dev/null 2>&1 || true

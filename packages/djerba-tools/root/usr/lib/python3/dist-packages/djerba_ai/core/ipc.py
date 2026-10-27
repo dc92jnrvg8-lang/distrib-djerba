@@ -13,7 +13,7 @@ import json
 import socket
 import struct
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from djerba_ai.core.config import SYSD_SOCKET
 
@@ -66,16 +66,32 @@ def write_message(stream, message: dict) -> None:
 def call(method: str, params: dict | None = None, timeout: float = 7200,
          socket_path: Path = SYSD_SOCKET) -> Any:
     """Appelle une méthode du démon root ; lève RPCError en cas d'erreur."""
+    return call_stream(method, params, None, timeout, socket_path)
+
+
+def call_stream(method: str, params: dict | None, on_event: Callable[[str, dict], None] | None,
+                timeout: float = 7200, socket_path: Path = SYSD_SOCKET) -> Any:
+    """Comme call(), en relayant les notifications JSON-RPC (sans « id ») émises
+    par le démon avant la réponse finale (ex. jetons d'un modèle en ligne)."""
     request_id = next(_ids)
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     client.settimeout(timeout)
     try:
         client.connect(str(socket_path))
     except OSError as exc:
+        client.close()
         raise RPCError(INTERNAL_ERROR, f"service djerba-ai-sysd injoignable ({exc.strerror})") from exc
     with client, client.makefile("rwb") as stream:
         write_message(stream, {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}})
-        response = read_message(stream)
+        while True:
+            try:
+                response = read_message(stream)
+            except TimeoutError as exc:
+                raise RPCError(INTERNAL_ERROR, "délai dépassé (djerba-ai-sysd)") from exc
+            if response is None or "id" in response:
+                break
+            if on_event is not None:
+                on_event(str(response.get("method", "")), response.get("params") or {})
     if response is None:
         raise RPCError(INTERNAL_ERROR, "connexion fermée par djerba-ai-sysd")
     if "error" in response:

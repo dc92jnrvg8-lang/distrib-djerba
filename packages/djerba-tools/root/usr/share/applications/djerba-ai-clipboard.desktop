@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Djerba — presse-papiers
+Comment=Explain, summarize, translate or fix the copied text
+Comment[fr]=Expliquer, résumer, traduire ou corriger le texte copié
+Exec=djerba-ai --clipboard
+Icon=djerba-ai
+Terminal=false
+NoDisplay=true
+StartupNotify=false
+Categories=Qt;KDE;Utility;
+X-KDE-Shortcuts=Meta+Shift+C

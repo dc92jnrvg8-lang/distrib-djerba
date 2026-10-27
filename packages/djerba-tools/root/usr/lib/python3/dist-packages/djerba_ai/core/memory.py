@@ -6,7 +6,13 @@
 * historique des outils exécutés et retours de l'utilisateur : l'agent s'en
   sert pour mieux classer les outils et pour se donner des exemples de
   requêtes réussies (amélioration continue, sans réentraînement) ;
-* incidents détectés par l'auto-réparation.
+* incidents détectés par l'auto-réparation ;
+* historique des réglages ;
+* index sémantique (vecteurs d'embeddings locaux : modèle d'embedding
+  d'Ollama, ou repli par hachage de termes calculé localement).
+
+Toute chaîne écrite passe par core.sanitize : clés d'API, mots de passe et
+jetons sont masqués avant d'atteindre le disque.
 """
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from djerba_ai.core.config import MEMORY_DB
+from djerba_ai.core.sanitize import sanitize
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -37,7 +44,13 @@ CREATE TABLE IF NOT EXISTS incidents (
     id INTEGER PRIMARY KEY, fingerprint TEXT UNIQUE NOT NULL, source TEXT NOT NULL, target TEXT,
     message TEXT NOT NULL, occurrences INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'nouveau',
     patch TEXT, created REAL NOT NULL, updated REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS settings_history (
+    id INTEGER PRIMARY KEY, key TEXT NOT NULL, value TEXT, created REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS embeddings (
+    id INTEGER PRIMARY KEY, kind TEXT NOT NULL, ref TEXT NOT NULL, text TEXT NOT NULL, model TEXT NOT NULL,
+    vector BLOB NOT NULL, updated REAL NOT NULL, UNIQUE(kind, ref));
 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation);
+CREATE INDEX IF NOT EXISTS embeddings_kind ON embeddings(kind, model);
 CREATE INDEX IF NOT EXISTS tool_runs_tool ON tool_runs(tool);
 """
 
@@ -57,6 +70,8 @@ class Memory:
             self.db.close()
 
     def _execute(self, query: str, args: tuple = ()) -> sqlite3.Cursor:
+        # Filtre préventif : aucun secret n'est jamais écrit dans la base.
+        args = tuple(sanitize(arg) if isinstance(arg, str) else arg for arg in args)
         with self.lock:
             cursor = self.db.execute(query, args)
             self.db.commit()
@@ -173,3 +188,29 @@ class Memory:
     def update_incident(self, incident_id: int, status: str, patch: str | None = None) -> None:
         self._execute("UPDATE incidents SET status = ?, patch = COALESCE(?, patch), updated = ? WHERE id = ?",
                       (status, patch, time.time(), incident_id))
+
+    # ---------------------------------------------------------------- Réglages
+    def record_setting(self, key: str, value: Any) -> None:
+        self._execute("INSERT INTO settings_history(key, value, created) VALUES (?, ?, ?)",
+                      (key, json.dumps(value, ensure_ascii=False), time.time()))
+
+    def settings_history(self, limit: int = 50) -> list[dict]:
+        return self._rows("SELECT * FROM settings_history ORDER BY id DESC LIMIT ?", (limit,))
+
+    # ---------------------------------------------------------------- Index sémantique
+    def upsert_embedding(self, kind: str, ref: str, text: str, model: str, vector: bytes) -> None:
+        self._execute("INSERT INTO embeddings(kind, ref, text, model, vector, updated) VALUES (?, ?, ?, ?, ?, ?) "
+                      "ON CONFLICT(kind, ref) DO UPDATE SET text = excluded.text, model = excluded.model, "
+                      "vector = excluded.vector, updated = excluded.updated",
+                      (kind, ref, text[:4000], model, vector, time.time()))
+
+    def embeddings(self, kind: str, model: str) -> list[dict]:
+        return self._rows("SELECT ref, text, vector FROM embeddings WHERE kind = ? AND model = ?", (kind, model))
+
+    def embedding_refs(self, kind: str) -> dict[str, float]:
+        return {row["ref"]: row["updated"] for row in self._rows("SELECT ref, updated FROM embeddings WHERE kind = ?",
+                                                                 (kind,))}
+
+    def delete_embeddings(self, kind: str, refs: list[str]) -> None:
+        for ref in refs:
+            self._execute("DELETE FROM embeddings WHERE kind = ? AND ref = ?", (kind, ref))

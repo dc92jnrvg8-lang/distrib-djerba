@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from djerba_ai.tools.base import SLUG, command_tool, fail, function_tool, launch_detached, ok, run_command
-from djerba_ai.tools.devtools.app_generator import (APPS_DIR, BUILTIN, CODE_BLOCK, LAUNCHERS, MAIN_FILE, ask_model,
+from djerba_ai.tools.devtools.app_generator import (APPS_DIR, BUILTIN, LAUNCHERS, MAIN_FILE, ask_model,
                                                     git, validate, write_app)
 
 C = "devtools"
@@ -39,16 +39,52 @@ def _list(_params: dict, _verbose: bool) -> dict:
     return ok(f"{len(apps)} application(s) créée(s) avec le Studio", apps=apps)
 
 
+VENV_PYTHON = Path(os.environ.get("DJERBA_AI_VENV", "/usr/share/djerba-ai/venv")) / "bin" / "python3"
+#: variables jamais transmises à une application générée
+SCRUBBED = ("DJERBA_", "OLLAMA_", "OPENAI_", "GEMINI_", "SSH_AUTH_SOCK", "GNUPGHOME", "GPG_AGENT_INFO")
+
+
+def in_app_scope() -> bool:
+    try:
+        return "/djerba-app-" in Path("/proc/self/cgroup").read_text()
+    except OSError:
+        return False
+
+
+def isolation_command(slug: str, argv: list[str]) -> list[str]:
+    """Enveloppe systemd-run --user --scope : l'application vit dans son propre
+    cgroup « djerba-app-*.scope », que le démon root refuse toujours d'écouter."""
+    return ["systemd-run", "--user", "--scope", "--collect", "--quiet",
+            f"--unit=djerba-app-{slug}-{os.getpid()}", "--description=Application du Studio Djerba",
+            "-p", "TasksMax=512", "-p", "MemoryMax=4G", "--", *argv]
+
+
+def app_environment() -> dict[str, str]:
+    return {key: value for key, value in os.environ.items() if not key.startswith(SCRUBBED)}
+
+
 def run_app(slug: str, live: bool = False) -> int:
-    """Lance une application générée (utilisé par « djerba-ai run-app »)."""
+    """Lance une application générée (utilisé par « djerba-ai run-app »).
+
+    Elle s'exécute toujours dans un scope systemd isolé : sans accès au démon
+    root (sysd.sock refuse tout processus de ces cgroups), environnement
+    nettoyé, ressources bornées.
+    """
     found = _app(slug)
     if found is None:
         print(f"djerba-ai : application {slug} introuvable", file=sys.stderr)
         return 1
+    if not in_app_scope():
+        if shutil.which("systemd-run") is None:
+            print("djerba-ai : systemd-run est requis pour isoler l'application", file=sys.stderr)
+            return 1
+        argv = [shutil.which("djerba-ai") or "/usr/bin/djerba-ai", "run-app", slug] + (["--live"] if live else [])
+        return subprocess.call(isolation_command(slug, argv), env=app_environment())
     app_dir, kind = found
     if kind == "html":
         return subprocess.call(["xdg-open", str(app_dir / "index.html")])
-    command = [sys.executable, str(app_dir / "main.py")]
+    python = str(VENV_PYTHON) if VENV_PYTHON.exists() else sys.executable
+    command = [python, str(app_dir / "main.py")]
     if not live:
         return subprocess.call(command, cwd=app_dir)
 
@@ -161,70 +197,16 @@ def _templates(_params: dict, _verbose: bool) -> dict:
 
 
 # ---------------------------------------------------------------- Greffons
-PLUGIN_PROMPT = """Écris un greffon Python pour l'agent Djerba : {instruction}
-
-Contrat obligatoire :
-```
-from djerba_ai.tools.base import BaseTool, ok, fail, run_command
-
-class MonOutil(BaseTool):
-    name = "nom_en_snake_case"
-    category = "devtools"
-    description = "Ce que fait l'outil, en français."
-    requires_root = False
-    parameters = {{"param": {{"type": "string", "description": "…"}}}}
-    required = ("param",)
-
-    def execute(self, params: dict, verbose: bool = False) -> dict:
-        # utiliser run_command([...]) (liste d'arguments, jamais de shell)
-        return ok("message", donnees=...)  # ou fail("message")
-```
-Le greffon ne demande jamais les droits root et n'utilise que la bibliothèque standard.
-Réponds UNIQUEMENT avec le fichier Python complet, dans un seul bloc de code.
-"""
-
-CHECK_PLUGIN = """
-import importlib.util, sys
-from djerba_ai.tools.base import BaseTool
-spec = importlib.util.spec_from_file_location("candidate", sys.argv[1])
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-tools = [obj for obj in vars(module).values()
-         if isinstance(obj, type) and issubclass(obj, BaseTool) and obj is not BaseTool and obj.name]
-assert tools, "aucune classe BaseTool"
-for cls in tools:
-    tool = cls()
-    assert not tool.requires_root, "un greffon ne peut pas être root"
-    tool.schema()
-print(",".join(cls.name for cls in tools))
-"""
-
-
 def _plugin_generate(params: dict, _verbose: bool) -> dict:
-    from djerba_ai.core.config import Config
-    from djerba_ai.core.llm import LLMError, client_from_config
-    try:
-        reply = client_from_config(Config()).chat([{"role": "user", "content": PLUGIN_PROMPT.format(
-            instruction=params["instruction"])}])
-    except LLMError as exc:
-        return fail(f"moteur d'IA indisponible : {exc}")
-    match = CODE_BLOCK.search(reply["content"])
-    if not match:
-        return fail("le modèle n'a pas fourni de greffon")
-    PLUGINS.mkdir(parents=True, exist_ok=True)
-    path = PLUGINS / f"{params['name']}.py"
-    path.write_text(match.group(1), encoding="utf-8")
-    check = run_command([sys.executable, "-c", CHECK_PLUGIN, str(path)], timeout=30)
-    if check.returncode != 0:
-        path.unlink(missing_ok=True)
-        return fail("greffon invalide : " + (check.stderr.strip().splitlines() or ["erreur"])[-1])
-    return ok(f"Greffon « {params['name']} » créé (outils : {check.stdout.strip()}). Relisez-le puis activez-le "
-              f"avec plugin_enable.", path=str(path), tools=check.stdout.strip().split(","))
+    from djerba_ai.core.extend import create_capability
+    result = create_capability(params["name"], params["instruction"])
+    return (ok if result.get("success") else fail)(result.get("message", ""), **{
+        key: value for key, value in result.items() if key not in ("success", "message")})
 
 
 def _plugins(_params: dict, _verbose: bool) -> dict:
     from djerba_ai.core.config import Config
-    approved = set(Config().get("plugins_approved"))
+    approved = set(Config().get("agent.plugins_approved"))
     plugins = [{"name": path.stem, "enabled": path.stem in approved, "path": str(path)}
                for path in sorted(PLUGINS.glob("*.py"))] if PLUGINS.is_dir() else []
     return ok(f"{len(plugins)} greffon(s)", plugins=plugins)
@@ -234,12 +216,12 @@ def _plugin_toggle(enable: bool):
     def handler(params: dict, _verbose: bool) -> dict:
         from djerba_ai.core.config import Config
         config = Config()
-        approved = [name for name in config.get("plugins_approved") if name != params["name"]]
+        approved = [name for name in config.get("agent.plugins_approved") if name != params["name"]]
         if enable:
             if not (PLUGINS / f"{params['name']}.py").is_file():
                 return fail("greffon introuvable")
             approved.append(params["name"])
-        config.set("plugins_approved", approved)
+        config.set("agent.plugins_approved", approved)
         return ok(f"Greffon {params['name']} {'activé' if enable else 'désactivé'} (prochaine discussion).")
     return handler
 

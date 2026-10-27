@@ -14,6 +14,7 @@ noms, HTTPS, Firefox et mode anonyme complet à travers Tor.
 
 from __future__ import annotations
 
+import base64
 import re
 import socket
 import sys
@@ -24,6 +25,25 @@ ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\r")
 # Environnement de la session graphique de l'utilisateur live (uid 1000).
 SESSION = ("export XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 "
            "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus")
+
+# Capacité d'exemple vérifiée par le bac à sable du démon root (nobody, 15 s, Git).
+PLUGIN = base64.b64encode(b"""from djerba_ai.tools.base import BaseTool, ok
+
+
+class Inverse(BaseTool):
+    name = "texte_inverse"
+    category = "devtools"
+    description = "Inverse un texte."
+    parameters = {"texte": {"type": "string", "description": "texte"}}
+    required = ("texte",)
+
+    def execute(self, params, verbose=False):
+        return ok(params["texte"][::-1])
+
+    def selftest(self):
+        return self.run({"texte": "abc"})["message"] == "cba"
+""").decode()
+RPC = "python3 -c 'import base64, sys; from djerba_ai.core import ipc; "
 
 OFFLINE_CHECKS = [
     ("DNS : /etc/resolv.conf pointe vers le stub de systemd-resolved",
@@ -46,6 +66,40 @@ OFFLINE_CHECKS = [
     ("Agent IA : Studio hors ligne (Snake)",
      "djerba-ai run app_generator '{\"instruction\": \"Crée un jeu Snake\"}' | grep -q '\"success\": true' "
      "&& test -f ~/.local/share/applications/djerba-snake.desktop", 120),
+    ("Agent IA : configuration centrale lue par le démon (config.get)",
+     RPC + "assert ipc.call(\"config.get\", {}, timeout=30)[\"llm.provider\"] == \"local\"'", 60),
+    ("Agent IA : config.toml root 0600, vue publique 0644",
+     "test \"$(stat -c '%U %a' /etc/djerba/config.toml)\" = 'root 600' "
+     "&& test \"$(stat -c '%a' /etc/djerba/config.public.json)\" = 644", 30),
+    ("Agent IA : réglage écrit par le démon et synchronisé (vue publique)",
+     "sudo " + RPC + "ipc.call(\"config.set\", {\"key\": \"system.disk_alert_percent\", \"value\": 12})' "
+     "&& grep -q '\"system.disk_alert_percent\": 12' /etc/djerba/config.public.json "
+     "&& sudo grep -q 'disk_alert_percent = 12' /etc/djerba/config.toml "
+     "&& sudo " + RPC + "ipc.call(\"config.set\", {\"key\": \"system.disk_alert_percent\", \"value\": 10})'", 90),
+    ("Agent IA : journal d'audit JSON (/var/log/djerba/audit.log)",
+     "sudo tail -n 1 /var/log/djerba/audit.log | python3 -c 'import json, sys; e = json.load(sys.stdin); "
+     "assert e[\"method\"] == \"config.set\" and e[\"uid\"] == 0 and e[\"success\"]'", 30),
+    ("Agent IA : capacité générée vérifiée dans le bac à sable (nobody, 15 s, Git)",
+     "sudo " + RPC + f"r = ipc.call(\"sys.test_plugin\", {{\"name\": \"texte_inverse\", "
+     f"\"content\": base64.b64decode(\"{PLUGIN}\").decode()}}, timeout=120); "
+     "assert r[\"success\"] and r[\"tools\"] == [\"texte_inverse\"], r' "
+     "&& sudo git -C /var/lib/djerba-ai/sandbox log -1 --pretty=%s | grep -q texte_inverse", 180),
+    ("Agent IA : application isolée (systemd-run --scope) refusée par le démon root",
+     f"{SESSION}; systemd-run --user --scope --quiet --unit=djerba-app-test-$$ "
+     + RPC + "ipc.call(\"sys.ping\", {}, timeout=30)' 2>&1 | grep -q 'applications isolées'", 60),
+    ("Agent IA : recherche sémantique hors ligne",
+     "mkdir -p /tmp/docs && echo \"Facture d'électricité de mars : 84 euros\" > /tmp/docs/facture.txt "
+     "&& echo 'Recette du couscous au poisson' > /tmp/docs/recette.txt "
+     "&& djerba-ai run os_index_build '{\"path\": \"/tmp/docs\"}' | grep -q '\"success\": true' "
+     "&& djerba-ai run os_semantic_search '{\"query\": \"ma facture électricité\"}' "
+     "| python3 -c 'import json, sys; r = json.load(sys.stdin); "
+     "assert r[\"data\"][\"results\"][0][\"path\"].endswith(\"facture.txt\"), r'", 120),
+    ("Agent IA : chemins vitaux refusés",
+     "djerba-ai run os_path_delete '{\"path\": \"/etc\"}' | grep -q '\"success\": false'", 60),
+    ("Agent IA : icône résidente et Spotlight (instance unique)",
+     f"{SESSION}; for i in $(seq 90); do test -S /run/user/1000/djerba-ai/gui.sock && break; sleep 1; done; "
+     "test -S /run/user/1000/djerba-ai/gui.sock && timeout 10 djerba-ai --spotlight "
+     "&& timeout 10 djerba-ai --page settings", 150),
     ("Store : catalogue JSON",
      "djerba-apps list --json | python3 -c 'import json,sys; assert len(json.load(sys.stdin)[\"apps\"]) >= 10'", 60),
     ("Mode discret : bascule Windows 11 puis restauration à l'identique",

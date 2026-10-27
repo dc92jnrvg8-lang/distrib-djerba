@@ -12,7 +12,7 @@ Terminal=false
 Categories=Qt;KDE;System;Utility;
 Keywords=ia;ai;assistant;agent;djerba;ollama;chat;
 StartupWMClass=djerba-ai
-Actions=Health;Studio;
+Actions=Spotlight;Studio;Settings;Health;
 
 [Desktop Action Health]
 Name=System health
@@ -23,3 +23,13 @@ Exec=djerba-ai --page system
 Name=Studio
 Name[fr]=Studio
 Exec=djerba-ai --page studio
+
+[Desktop Action Spotlight]
+Name=Spotlight
+Name[fr]=Barre Spotlight
+Exec=djerba-ai --spotlight
+
+[Desktop Action Settings]
+Name=Brain and settings
+Name[fr]=Cerveau et réglages
+Exec=djerba-ai --page settings

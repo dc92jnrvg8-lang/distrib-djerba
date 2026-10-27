@@ -1,15 +1,27 @@
 # Djerba OS — démon root de l'agent Djerba : exécute les capacités système
-# autorisées par polkit et gère le bac à sable des correctifs.
+# autorisées par polkit (SO_PEERCRED), tient /etc/djerba/config.toml et le
+# journal d'audit, relaie les API d'IA en ligne (clé lisible par root seul) et
+# gère le bac à sable des correctifs et des capacités générées.
+#
+# Le réseau (API en ligne) et Tailscale (cerveau distant du tailnet) doivent
+# être prêts : un service *utilisateur* ne peut pas s'ordonner par rapport à
+# des services système, ces dépendances sont donc portées ici, par le service
+# système dont dépend l'agent.
 [Unit]
 Description=Djerba : service système de l'agent IA
 Requires=djerba-ai-sysd.socket
-After=djerba-ai-sysd.socket
+After=djerba-ai-sysd.socket network-online.target tailscaled.service
+Wants=network-online.target tailscaled.service
 
 [Service]
 Type=simple
 ExecStart=/usr/libexec/djerba-ai-sysd
 StateDirectory=djerba-ai
 StateDirectoryMode=0700
+ConfigurationDirectory=djerba
+ConfigurationDirectoryMode=0755
+LogsDirectory=djerba
+LogsDirectoryMode=0750
 CacheDirectory=djerba-ai
 ProtectHome=read-only
 PrivateTmp=yes

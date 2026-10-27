@@ -1,5 +1,8 @@
 # Djerba OS — démon utilisateur de l'agent Djerba : surveillance du journal
-# (auto-réparation), maintenance quotidienne, mise à jour du modèle.
+# (auto-réparation), chien de garde (disque, services), maintenance
+# quotidienne, mise à jour du modèle. Les dépendances réseau et Tailscale
+# sont portées par le service système djerba-ai-sysd.service (activé par
+# socket) : une unité utilisateur ne peut pas attendre un service système.
 [Unit]
 Description=Djerba : surveillance et maintenance
 PartOf=graphical-session.target

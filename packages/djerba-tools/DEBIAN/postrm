@@ -1,0 +1,13 @@
+#!/bin/sh
+# Djerba OS — djerba-tools : à la purge, retire la configuration de l'agent,
+# son environnement Python interne et son état (le journal d'audit est gardé).
+set -e
+
+case "$1" in
+    purge)
+        rm -rf /etc/djerba /usr/share/djerba-ai/venv /var/lib/djerba-ai
+        rmdir /usr/share/djerba-ai 2>/dev/null || true
+        ;;
+esac
+
+exit 0

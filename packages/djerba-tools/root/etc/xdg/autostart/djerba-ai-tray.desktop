@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Djerba
+Comment[fr]=Agent Djerba dans la zone de notification
+Comment=Djerba agent in the system tray
+Exec=djerba-ai --tray
+Icon=djerba-ai
+Terminal=false
+OnlyShowIn=KDE;
+X-KDE-autostart-phase=2
+X-KDE-StartupNotify=false

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Djerba Spotlight
+Comment=Ask Djerba from anywhere
+Comment[fr]=Demander à Djerba depuis n'importe où
+Exec=djerba-ai --spotlight
+Icon=djerba-ai
+Terminal=false
+NoDisplay=true
+StartupNotify=false
+Categories=Qt;KDE;Utility;
+X-KDE-Shortcuts=Meta+Space

@@ -2,7 +2,7 @@
 """Registre des outils de l'agent Djerba, construit par introspection.
 
 Chaque sous-paquet de catégorie (maintenance, performance, security, desktop,
-apps, hardware, agentic, system, devtools) est parcouru : toute sous-classe
+apps, hardware, agentic, system, devtools, os) est parcouru : toute sous-classe
 concrète de ``BaseTool`` portant un nom, définie dans un module ou déclarée
 dans sa liste ``TOOLS``, est enregistrée.
 
@@ -25,11 +25,11 @@ from pathlib import Path
 from djerba_ai.tools.base import BaseTool
 
 CATEGORIES = ("maintenance", "performance", "security", "desktop", "apps", "hardware",
-              "agentic", "system", "devtools")
+              "agentic", "system", "devtools", "os")
 CATEGORY_LABELS = {
     "maintenance": "Maintenance", "performance": "Performances", "security": "Sécurité",
     "desktop": "Bureau", "apps": "Applications", "hardware": "Matériel", "agentic": "Agent",
-    "system": "Système", "devtools": "Studio",
+    "system": "Système", "devtools": "Studio", "os": "Fichiers et paquets",
 }
 PLUGIN_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "djerba" / "plugins"
 
@@ -147,6 +147,7 @@ def load_plugins(approved: list[str]) -> tuple[dict[str, BaseTool], list[str]]:
             for cls in _collect(module):
                 tool = cls()
                 tool.requires_root = False
+                tool.dangerous = True  # capacité générée : confirmation à chaque exécution
                 tool.category = "devtools"
                 tool.name = f"plugin.{tool.name}"
                 tools[tool.name] = tool

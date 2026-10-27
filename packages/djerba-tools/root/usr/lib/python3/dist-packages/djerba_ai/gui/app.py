@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Application graphique de Djerba (PyQt6 + QML, orbe en Qt Quick 3D).
 
+Deux modes : la barre flottante « Spotlight » (Meta+Espace, presse-papiers
+sur Meta+Maj+C) et le mode complet (discussion, Studio, réglages). L'
+application reste résidente dans la zone de notification (icône d'état,
+menu contextuel, notifications) et n'existe qu'en un exemplaire.
+
 L'agent tourne dans un fil d'exécution séparé ; l'interface reçoit le flux
 (texte, appels d'outils, demandes de confirmation) par des signaux Qt. Les
 confirmations bloquent l'agent jusqu'à la réponse de l'utilisateur.
@@ -10,25 +15,38 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QSize, Qt, QThread, QTimer, QUrl, pyqtProperty, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QGuiApplication, QIcon, QPixmap
+from PyQt6.QtCore import (QFileSystemWatcher, QKeyCombination, QObject, QSize, Qt, QThread, QTimer, QUrl,
+                          pyqtProperty, pyqtSignal, pyqtSlot)
+from PyQt6.QtGui import QAction, QActionGroup, QColor, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap
+from PyQt6.QtNetwork import QLocalServer
 from PyQt6.QtQml import QQmlApplicationEngine
-from PyQt6.QtQuick import QQuickImageProvider
+from PyQt6.QtQuick import QQuickImageProvider, QQuickWindow
+from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from djerba_ai import __version__
-from djerba_ai.core import context, health, ipc
+from djerba_ai.core import context, gpu, health, ipc, shortcuts
 from djerba_ai.core.agent import Agent
-from djerba_ai.core.config import RECOMMENDED_MODELS, Config, memory_gb
-from djerba_ai.core.llm import LLMError, OllamaClient, client_from_config
+from djerba_ai.core.config import CONFIG_PUBLIC, RECOMMENDED_MODELS, SCHEMA, Config, ConfigError, memory_gb
+from djerba_ai.core.llm import (CloudAPIProvider, LLMError, LocalOllamaProvider, RemoteTailscaleProvider,
+                                client_from_config)
 from djerba_ai.core.memory import Memory
+from djerba_ai.gui import instance
 from djerba_ai.tools import CATEGORIES, CATEGORY_LABELS, registry
 
 QML_DIR = Path(os.environ.get("DJERBA_AI_QML", Path(__file__).with_name("qml")))
-PAGES = ("chat", "system", "selfheal", "studio", "tools", "models")
+PAGES = ("chat", "system", "selfheal", "studio", "tools", "settings")
+MODEL_KEYS = {"local": "llm.local.model", "tailscale": "llm.tailscale.model", "cloud": "llm.cloud.model"}
+BRAINS = (("local", "Ollama local", "Sur cet ordinateur : rien ne sort de la machine."),
+          ("tailscale", "Mac Mini (Tailscale)", "Un ordinateur puissant de votre réseau privé Tailscale."),
+          ("cloud", "API en ligne", "OpenAI ou Google Gemini : rapide, mais vos messages quittent la machine."))
+STATE_COLORS = {"ok": "#2DD4BF", "fallback": "#F59E0B", "busy": "#38BDF8", "down": "#F43F5E"}
 
 
 class IconProvider(QQuickImageProvider):
@@ -79,14 +97,29 @@ class Backend(QObject):
     settingsChanged = pyqtSignal()
     progress = pyqtSignal(str, int, arguments=["message", "percent"])
     notify = pyqtSignal(str, arguments=["message"])
+    # Mode résident, Spotlight, réglages
+    showMainRequested = pyqtSignal(str, arguments=["page"])
+    spotlightRequested = pyqtSignal(str, str, arguments=["text", "mode"])
+    brainsChanged = pyqtSignal()
+    auditChanged = pyqtSignal()
+    historyChanged = pyqtSignal()
+    stateChanged = pyqtSignal()
+    systemNotice = pyqtSignal(str, str, arguments=["title", "message"])
 
-    def __init__(self, start_page: str, parent: QObject | None = None) -> None:
+    def __init__(self, start_page: str, start_visible: bool = True, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.config = Config()
         self.memory = Memory()
-        self.registry = registry(include_plugins=True, approved=self.config.get("plugins_approved"))
+        self.registry = registry(include_plugins=True, approved=self.config.get("agent.plugins_approved"))
         self.agent = Agent(self.config, self.registry, self.memory)
         self._start_page = start_page if start_page in PAGES else "chat"
+        self._start_visible = start_visible
+        self._resident = False
+        self._brains: dict[str, dict] = {key: {"status": "checking", "detail": "vérification…"} for key, *_ in BRAINS}
+        self._audit: list = []
+        self._history: list = []
+        self._gpu = gpu.detect()
+        self._fell_back = False
         self._conversation = 0
         self._busy = False
         self._engine = {"available": False, "installed": [], "ollama_present": False}
@@ -98,9 +131,29 @@ class Backend(QObject):
         self._confirm_events: dict[int, tuple[threading.Event, list]] = {}
         self._next_request = 1
         QTimer.singleShot(0, self.refreshEngine)
+        QTimer.singleShot(100, self.refreshBrains)
         QTimer.singleShot(200, self.refreshHealth)
         QTimer.singleShot(400, self.refreshIncidents)
         QTimer.singleShot(600, self.refreshApps)
+        # Synchronisation en temps réel avec /etc/djerba (vue publique de config.toml).
+        self._watcher = QFileSystemWatcher(self)
+        self._watch_config()
+        self._watcher.fileChanged.connect(self._config_changed)
+        self._watcher.directoryChanged.connect(self._config_changed)
+        self._brain_timer = QTimer(self, interval=30000, timeout=self.refreshBrains)
+        self._brain_timer.start()
+
+    def _watch_config(self) -> None:
+        paths = [str(path) for path in (CONFIG_PUBLIC, CONFIG_PUBLIC.parent, Config.FALLBACK) if path.exists()]
+        missing = [path for path in paths if path not in self._watcher.files() + self._watcher.directories()]
+        if missing:
+            self._watcher.addPaths(missing)
+
+    def _config_changed(self, _path: str) -> None:
+        self.config.load()
+        self._watch_config()  # un remplacement atomique retire le fichier surveillé
+        self.settingsChanged.emit()
+        self.refreshBrains()
 
     # ---------------------------------------------------------------- Utilitaires
     def _background(self, function, callback=None) -> None:
@@ -150,11 +203,64 @@ class Backend(QObject):
 
     @pyqtProperty(str, notify=settingsChanged)
     def model(self) -> str:
-        return str(self.config.get("model"))
+        return str(self.config.get(MODEL_KEYS[self.provider]))
 
     @pyqtProperty(str, notify=settingsChanged)
     def provider(self) -> str:
-        return str(self.config.get("provider"))
+        return str(self.config.get("llm.provider"))
+
+    @pyqtProperty(bool, constant=True)
+    def startVisible(self) -> bool:
+        return self._start_visible
+
+    @pyqtProperty(bool, notify=stateChanged)
+    def resident(self) -> bool:
+        return self._resident
+
+    @pyqtProperty("QVariantMap", constant=True)
+    def gpuInfo(self) -> dict:
+        return self._gpu
+
+    @pyqtProperty("QVariantList", notify=brainsChanged)
+    def brains(self) -> list:
+        return [{"id": key, "label": label, "note": note, **self._brains[key]} for key, label, note in BRAINS]
+
+    @pyqtProperty(str, notify=stateChanged)
+    def state(self) -> str:
+        """État global (icône de la zone de notification, pastille) : ok, busy, fallback, down."""
+        if self._busy:
+            return "busy"
+        current = self._brains.get(self.provider, {}).get("status")
+        if current == "ok":
+            return "ok"
+        if self._fell_back or (self.provider != "local" and self._brains["local"].get("status") == "ok"
+                               and self.config.get("llm.fallback_to_local")):
+            return "fallback"
+        return "down" if current == "down" else "ok" if self._engine["available"] else "down"
+
+    @pyqtProperty(str, notify=stateChanged)
+    def stateText(self) -> str:
+        label = dict((key, label) for key, label, _note in BRAINS)[self.provider]
+        return {"busy": "Djerba réfléchit…", "ok": f"Prêt — {label}",
+                "fallback": f"{label} injoignable : repli sur le modèle local",
+                "down": "Aucun moteur d'IA joignable (mode simplifié)"}[self.state]
+
+    @pyqtProperty("QVariantMap", notify=settingsChanged)
+    def shortcuts(self) -> dict:
+        return {"spotlight": self.config.get("shortcuts.spotlight"), "clipboard": self.config.get("shortcuts.clipboard")}
+
+    @pyqtProperty("QVariantList", notify=historyChanged)
+    def settingsHistory(self) -> list:
+        return self._history
+
+    @pyqtProperty("QVariantList", notify=auditChanged)
+    def auditEntries(self) -> list:
+        return self._audit
+
+    @pyqtProperty("QVariantList", notify=incidentsChanged)
+    def sandboxHistory(self) -> list:
+        """Journal Git du bac à sable (/var/lib/djerba-ai/sandbox) : correctifs et capacités validés."""
+        return self._patches.get("history", [])
 
     @pyqtProperty("QVariantList", notify=engineChanged)
     def installedModels(self) -> list:
@@ -241,6 +347,7 @@ class Backend(QObject):
             self.conversationsChanged.emit()
         self._busy = True
         self.busyChanged.emit()
+        self.stateChanged.emit()
         self.messageAdded.emit("user", text)
         conversation = self._conversation
 
@@ -257,6 +364,12 @@ class Backend(QObject):
                 self.suggestions.emit(payload["items"])
             elif kind == "final":
                 self.messageAdded.emit("final", payload["text"])
+            elif kind == "notice":
+                # Bascule transparente sur le modèle local (fournisseur distant injoignable).
+                self._fell_back = True
+                self.notify.emit(payload["text"])
+                self.systemNotice.emit("Djerba : repli sur le modèle local", payload["text"])
+                QTimer.singleShot(0, self.stateChanged.emit)
 
         def confirm(tool: str, params: dict, description: dict) -> bool:
             event, answer = threading.Event(), [False]
@@ -277,8 +390,11 @@ class Backend(QObject):
                 self.messageAdded.emit("final", f"Une erreur interne m'a interrompu : {result.get('message')}")
             self._busy = False
             self.busyChanged.emit()
+            self.stateChanged.emit()
             self.conversationsChanged.emit()
             QTimer.singleShot(500, self.refreshHealth)
+            if self._fell_back:
+                QTimer.singleShot(1000, self.refreshBrains)
 
         self._background(work, finished)
 
@@ -330,12 +446,12 @@ class Backend(QObject):
     @pyqtSlot()
     def refreshEngine(self) -> None:
         def work():
-            client = client_from_config(self.config)
-            available = client.available()
+            local = LocalOllamaProvider(self.config.get("llm.local.endpoint"), self.config.get("llm.local.model"))
+            available = client_from_config(self.config).available()
             installed = []
-            if available:
+            if local.available(2):
                 try:
-                    installed = client.models()
+                    installed = local.models()
                 except LLMError:
                     installed = []
             return {"available": available, "installed": installed,
@@ -344,18 +460,68 @@ class Backend(QObject):
         def done(result) -> None:
             self._engine = result
             self.engineChanged.emit()
+            self.stateChanged.emit()
 
         self._background(work, done)
 
+    @pyqtSlot()
+    def refreshBrains(self) -> None:
+        """État de connexion de chaque cerveau (pastilles du sélecteur)."""
+        config = self.config
+        timeout = float(config.get("llm.remote_timeout"))
+
+        def work():
+            providers = {
+                "local": LocalOllamaProvider(config.get("llm.local.endpoint"), config.get("llm.local.model")),
+                "tailscale": RemoteTailscaleProvider(config.get("llm.tailscale.host"),
+                                                     int(config.get("llm.tailscale.port")),
+                                                     config.get("llm.tailscale.model"), timeout=timeout),
+                "cloud": CloudAPIProvider(config.get("llm.cloud.service"), config.get("llm.cloud.model"), timeout),
+            }
+            states = {}
+            for key, provider in providers.items():
+                if key == "tailscale" and not config.get("llm.tailscale.host"):
+                    states[key] = {"status": "unset", "detail": "non configuré", "latency_ms": 0}
+                    continue
+                if key == "cloud" and not config.get("llm.cloud.api_key_set"):
+                    states[key] = {"status": "unset", "detail": "clé d'API à renseigner", "latency_ms": 0}
+                    continue
+                result = provider.health(timeout)
+                states[key] = {"status": "ok" if result.get("ok") else "down",
+                               "detail": str(result.get("detail", "")), "latency_ms": result.get("latency_ms", 0)}
+            return states
+
+        def done(result) -> None:
+            if isinstance(result, dict) and "local" in result:
+                self._brains = result
+                if result.get(self.provider, {}).get("status") == "ok":
+                    self._fell_back = False
+                self.brainsChanged.emit()
+                self.stateChanged.emit()
+
+        self._background(work, done)
+
+    @pyqtSlot()
+    def warmup(self) -> None:
+        """Préchargement asynchrone du modèle (keep_alive) à l'ouverture de Spotlight."""
+        self._background(lambda: client_from_config(self.config).warmup() or {"success": True})
+
     @pyqtSlot(str)
     def setModel(self, name: str) -> None:
-        self.config.set("model", name)
-        self.settingsChanged.emit()
-        self.notify.emit(f"Djerba utilise maintenant {name}.")
+        if self._apply_setting(MODEL_KEYS[self.provider], name):
+            self.notify.emit(f"Djerba utilise maintenant {name}.")
+
+    @pyqtSlot(str)
+    def setBrain(self, provider: str) -> None:
+        if provider in MODEL_KEYS and self._apply_setting("llm.provider", provider):
+            self._fell_back = False
+            self.notify.emit(f"Cerveau : {dict((k, l) for k, l, _n in BRAINS)[provider]}.")
+            self.refreshEngine()
+            self.refreshBrains()
 
     @pyqtSlot(str)
     def pullModel(self, name: str) -> None:
-        client = OllamaClient(self.config.get("ollama_endpoint"), name)
+        client = LocalOllamaProvider(self.config.get("llm.local.endpoint"), name)
 
         def work():
             client.pull(name, lambda status, percent: self.progress.emit(f"{name} : {status}", percent))
@@ -363,7 +529,7 @@ class Backend(QObject):
 
         def done(result) -> None:
             if result.get("success"):
-                self.setModel(name)
+                self._apply_setting("llm.local.model", name)
                 self.progress.emit("", 100)
             else:
                 self.notify.emit(f"Téléchargement impossible : {result.get('message')}")
@@ -389,17 +555,108 @@ class Backend(QObject):
 
         self._background(work, done)
 
+    # ---------------------------------------------------------------- Réglages
+    def _apply_setting(self, key: str, value) -> bool:
+        try:
+            self.config.set(key, value)
+        except (ConfigError, KeyError, ValueError, TypeError) as exc:
+            self.notify.emit(f"Réglage refusé : {exc}")
+            return False
+        self.settingsChanged.emit()
+        self.refreshHistory()
+        return True
+
     @pyqtSlot(str, "QVariant")
     def setSetting(self, key: str, value) -> None:
-        try:
-            if key == "maintenance_hour":
-                value = int(value)
-            self.config.set(key, value)
-        except (KeyError, ValueError):
+        spec = SCHEMA.get(key)
+        if spec is None or spec.get("secret"):
             return
-        self.settingsChanged.emit()
-        if key in ("provider", "ollama_endpoint", "openai_endpoint", "openai_api_key", "model"):
+        if spec["type"] == "integer":
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                return
+        if self._apply_setting(key, value) and key.startswith("llm."):
             self.refreshEngine()
+            self.refreshBrains()
+
+    @pyqtSlot(str)
+    def setApiKey(self, key: str) -> None:
+        """Clé d'API en ligne : transmise au démon root, jamais relue par l'interface."""
+        if key.strip() and self._apply_setting("llm.cloud.api_key", key.strip()):
+            self.notify.emit("Clé d'API enregistrée (lisible uniquement par root).")
+            self.refreshBrains()
+
+    @pyqtSlot()
+    def finishOnboarding(self) -> None:
+        self._apply_setting("ui.onboarded", True)
+        self.refreshBrains()
+
+    @pyqtSlot(int, int, result=str)
+    def keySequence(self, key: int, modifiers: int) -> str:
+        """Séquence lisible (« Meta+Shift+C ») d'une touche saisie dans l'éditeur de raccourcis."""
+        if key in (Qt.Key.Key_Control, Qt.Key.Key_Shift, Qt.Key.Key_Alt, Qt.Key.Key_Meta, Qt.Key.Key_Super_L,
+                   Qt.Key.Key_Super_R, Qt.Key.Key_AltGr, 0, Qt.Key.Key_unknown):
+            return ""
+        combination = QKeyCombination(Qt.KeyboardModifier(modifiers & 0x1E000000), Qt.Key(key))
+        return QKeySequence(combination).toString(QKeySequence.SequenceFormat.PortableText)
+
+    @pyqtSlot(str, str)
+    def applyShortcut(self, name: str, sequence: str) -> None:
+        try:
+            result = shortcuts.apply(name, sequence)
+        except shortcuts.ShortcutError as exc:
+            self.notify.emit(str(exc))
+            return
+        self._apply_setting(f"shortcuts.{name}", result["sequence"])
+        self.notify.emit(result["message"])
+
+    @pyqtSlot()
+    def refreshHistory(self) -> None:
+        self._history = [{"key": row["key"], "value": row["value"],
+                          "time": time.strftime("%d/%m %H:%M", time.localtime(row["created"]))}
+                         for row in self.memory.settings_history(40)]
+        self.historyChanged.emit()
+
+    @pyqtSlot()
+    def refreshAudit(self) -> None:
+        def work():
+            try:
+                return {"entries": ipc.call("audit.tail", {"lines": 150}, timeout=10).get("entries", [])}
+            except ipc.RPCError as exc:
+                return {"entries": [], "error": str(exc)}
+
+        def done(result) -> None:
+            entries = result.get("entries", [])
+            entries.reverse()
+            self._audit = [{"time": str(item.get("time", "")), "event": str(item.get("event", "")),
+                            "what": str(item.get("tool") or item.get("method") or ""),
+                            "uid": item.get("uid", ""), "success": item.get("success") is not False,
+                            "message": str(item.get("message", ""))} for item in entries]
+            if result.get("error") and not entries:
+                self._audit = [{"time": "", "event": "indisponible", "what": "", "uid": "", "success": False,
+                                "message": result["error"]}]
+            self.auditChanged.emit()
+
+        self._background(work, done)
+
+    @pyqtSlot(result=str)
+    def clipboardText(self) -> str:
+        return (QGuiApplication.clipboard().text() or "")[:8000]
+
+    @pyqtSlot(str)
+    def openMain(self, page: str) -> None:
+        self.showMainRequested.emit(page if page in PAGES else "")
+
+    def dispatch(self, argv: list[str]) -> None:
+        """Demande transmise au lancement ou par une autre instance."""
+        request = instance.parse(argv)
+        if request["mode"] == "spotlight":
+            self.spotlightRequested.emit("", "ask")
+        elif request["mode"] == "clipboard":
+            self.spotlightRequested.emit(self.clipboardText(), "clipboard")
+        elif request["mode"] == "window":
+            self.showMainRequested.emit(request["page"] if request["page"] in PAGES else "")
 
     # ---------------------------------------------------------------- Système et auto-réparation
     @pyqtSlot()
@@ -504,36 +761,185 @@ class Backend(QObject):
         self._agent_tool("app_delete", {"slug": slug}, self.refreshApps)
 
 
+def state_icon(state: str) -> QIcon:
+    """Icône de la zone de notification : logo de Djerba et pastille d'état."""
+    size = 64
+    pixmap = QIcon.fromTheme("djerba-ai", QIcon.fromTheme("djerba-os")).pixmap(QSize(size, size))
+    if pixmap.isNull():
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QColor("#00C2CB"))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(6, 6, size - 12, size - 12)
+        painter.end()
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QColor("#0B1220"))
+    painter.setBrush(QColor(STATE_COLORS.get(state, STATE_COLORS["ok"])))
+    painter.drawEllipse(size - 26, size - 26, 22, 22)
+    painter.end()
+    return QIcon(pixmap)
+
+
+class Tray(QObject):
+    """Icône intelligente : état dynamique, menu contextuel, notifications."""
+
+    def __init__(self, backend: Backend, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.backend = backend
+        self.icon = QSystemTrayIcon(self)
+        self.menu = QMenu()
+        self.menu.addAction("Ouvrir Djerba", lambda: backend.openMain("chat"))
+        self.spotlight = self.menu.addAction("Spotlight", lambda: backend.spotlightRequested.emit("", "ask"))
+        self.clipboard = self.menu.addAction("Analyser le presse-papiers",
+                                             lambda: backend.spotlightRequested.emit(backend.clipboardText(),
+                                                                                     "clipboard"))
+        self.menu.addSeparator()
+        brains = self.menu.addMenu("Cerveau")
+        self.group = QActionGroup(self)
+        self.brain_actions: dict[str, QAction] = {}
+        for key, label, _note in BRAINS:
+            action = brains.addAction(label, lambda key=key: backend.setBrain(key))
+            action.setCheckable(True)
+            self.group.addAction(action)
+            self.brain_actions[key] = action
+        self.menu.addAction("Studio", lambda: backend.openMain("studio"))
+        self.menu.addAction("Réglages", lambda: backend.openMain("settings"))
+        self.menu.addAction("Santé du système", lambda: backend.openMain("system"))
+        self.menu.addSeparator()
+        self.menu.addAction("Quitter Djerba", QApplication.quit)
+        self.icon.setContextMenu(self.menu)
+        self.icon.activated.connect(self._activated)
+        for signal in (backend.stateChanged, backend.brainsChanged, backend.settingsChanged):
+            signal.connect(self.update)
+        backend.systemNotice.connect(
+            lambda title, message: self.icon.showMessage(title, message, QSystemTrayIcon.MessageIcon.Warning, 8000))
+        self.icon.messageClicked.connect(lambda: backend.openMain("settings"))
+        self.update()
+        self.icon.show()
+
+    def _activated(self, reason) -> None:
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.backend.openMain("")
+        elif reason == QSystemTrayIcon.ActivationReason.MiddleClick:
+            self.backend.spotlightRequested.emit("", "ask")
+
+    def update(self, *_args) -> None:
+        state = self.backend.state
+        self.icon.setIcon(state_icon(state))
+        self.icon.setToolTip(f"Djerba — {self.backend.stateText}")
+        current = self.backend.provider
+        for key, action in self.brain_actions.items():
+            action.setChecked(key == current)
+            status = next((brain["status"] for brain in self.backend.brains if brain["id"] == key), "")
+            label = dict((k, l) for k, l, _n in BRAINS)[key]
+            action.setText(label + {"ok": "  ●", "down": "  ○ injoignable", "unset": "  (à configurer)"}
+                           .get(status, ""))
+        shortcuts_map = self.backend.shortcuts
+        self.spotlight.setText(f"Spotlight\t{shortcuts_map['spotlight']}")
+        self.clipboard.setText(f"Analyser le presse-papiers\t{shortcuts_map['clipboard']}")
+
+
+def enable_blur(window: QQuickWindow) -> None:
+    """Flou d'arrière-plan de KWin pour une fenêtre translucide.
+
+    Sous X11 (et XWayland), la propriété _KDE_NET_WM_BLUR_BEHIND_REGION
+    demande le flou à KWin. Sous Wayland natif, ce protocole n'est exposé que
+    par KWindowSystem (C++), absent de PyQt6 : la fenêtre garde alors un fond
+    teinté translucide.
+    """
+    if QGuiApplication.platformName() != "xcb" or shutil.which("xprop") is None:
+        return
+    subprocess.run(["xprop", "-id", str(int(window.winId())), "-f", "_KDE_NET_WM_BLUR_BEHIND_REGION", "32c",
+                    "-set", "_KDE_NET_WM_BLUR_BEHIND_REGION", "0"], capture_output=True, check=False, timeout=5)
+
+
+def listen(backend: Backend, app: QApplication) -> QLocalServer | None:
+    """Instance unique : reçoit les demandes des lancements suivants."""
+    instance.SOCKET.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    server = QLocalServer(app)
+    server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
+    QLocalServer.removeServer(str(instance.SOCKET))
+    if not server.listen(str(instance.SOCKET)):
+        return None
+
+    def accept() -> None:
+        connection = server.nextPendingConnection()
+        if connection is None:
+            return
+
+        def read() -> None:
+            if not connection.canReadLine():
+                return
+            try:
+                argv = json.loads(bytes(connection.readLine()).decode()).get("argv", [])
+            except ValueError:
+                argv = []
+            connection.write(b"ok\n")
+            connection.flush()
+            connection.disconnectFromServer()
+            backend.dispatch([str(arg) for arg in argv])
+
+        connection.readyRead.connect(read)
+        if connection.bytesAvailable():
+            read()
+
+    server.newConnection.connect(accept)
+    return server
+
+
 def main(argv: list[str]) -> int:
-    page = argv[argv.index("--page") + 1] if "--page" in argv and argv.index("--page") + 1 < len(argv) else "chat"
-    QGuiApplication.setApplicationName("djerba-ai")
-    QGuiApplication.setApplicationDisplayName("Djerba")
-    QGuiApplication.setDesktopFileName("djerba-ai")
-    app = QGuiApplication(argv)
+    if instance.forward(argv[1:]):
+        return 0
+    request = instance.parse(argv)
+    QApplication.setApplicationName("djerba-ai")
+    QApplication.setApplicationDisplayName("Djerba")
+    QApplication.setDesktopFileName("djerba-ai")
+    app = QApplication(argv)
     app.setWindowIcon(QIcon.fromTheme("djerba-ai", QIcon.fromTheme("djerba-os")))
     if not QIcon.themeName() or QIcon.themeName() == "hicolor":
         QIcon.setThemeName("breeze-dark")
-    backend = Backend(page, app)
+    backend = Backend(request["page"], request["mode"] == "window", app)
     app.aboutToQuit.connect(backend.shutdown)
+    server = listen(backend, app)
+    tray = None
+    if QSystemTrayIcon.isSystemTrayAvailable() and os.environ.get("DJERBA_AI_NO_TRAY") != "1":
+        tray = Tray(backend, app)
+        backend._resident = True
+        app.setQuitOnLastWindowClosed(False)
     engine = QQmlApplicationEngine()
     engine.addImageProvider("icon", IconProvider())
     engine.rootContext().setContextProperty("backend", backend)
-    main_qml = QML_DIR / "main.qml"
-    engine.load(QUrl.fromLocalFile(str(main_qml)))
-    if not engine.rootObjects():
-        print(f"djerba-ai : impossible de charger {main_qml}", file=sys.stderr)
-        return 1
+    roots = []
+    for name in ("main.qml", "Spotlight.qml"):
+        engine.load(QUrl.fromLocalFile(str(QML_DIR / name)))
+        if len(engine.rootObjects()) == len(roots):
+            print(f"djerba-ai : impossible de charger {QML_DIR / name}", file=sys.stderr)
+            return 1
+        roots = engine.rootObjects()
+    for root in roots:
+        if isinstance(root, QQuickWindow):
+            root.visibleChanged.connect(lambda visible, window=root: visible and enable_blur(window))
+    if request["mode"] == "tray" and tray is None:
+        backend.showMainRequested.emit("")  # pas de zone de notification : fenêtre normale
+    else:
+        QTimer.singleShot(0, lambda: backend.dispatch(argv[1:]))
     if os.environ.get("DJERBA_AI_DEV") == "1":
         # Rechargement à chaud de l'interface de Djerba pendant son développement.
-        from PyQt6.QtCore import QFileSystemWatcher
         watcher = QFileSystemWatcher([str(path) for path in QML_DIR.glob("*.qml")], app)
 
         def reload(_path: str) -> None:
             for root in engine.rootObjects():
                 root.deleteLater()
             engine.clearComponentCache()
-            engine.load(QUrl.fromLocalFile(str(main_qml)))
+            for name in ("main.qml", "Spotlight.qml"):
+                engine.load(QUrl.fromLocalFile(str(QML_DIR / name)))
             watcher.addPaths([str(path) for path in QML_DIR.glob("*.qml")])
 
         watcher.fileChanged.connect(reload)
-    return app.exec()
+    code = app.exec()
+    if server is not None:
+        server.close()
+    return code

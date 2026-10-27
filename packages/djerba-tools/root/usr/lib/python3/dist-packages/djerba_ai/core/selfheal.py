@@ -129,8 +129,21 @@ Corrige la cause de l'erreur. Contraintes :
 """
 
 
+def attempts_allowed() -> int:
+    try:
+        from djerba_ai.core.config import Config
+        return int(Config().get("system.sandbox_attempts"))
+    except Exception:  # noqa: BLE001
+        return 3
+
+
 def propose_patch(memory: Memory, client, incident_id: int) -> dict:
-    """Génère un correctif avec le modèle et le fait vérifier dans le bac à sable root."""
+    """Génère un correctif avec le modèle et le fait vérifier dans le bac à sable root.
+
+    Trois tentatives au plus : après un échec (annulé par git reset --hard
+    dans le bac à sable), le modèle reçoit le détail des vérifications pour
+    corriger sa proposition ; ensuite, abandon propre.
+    """
     incident = memory.incident(incident_id)
     if incident is None:
         return {"success": False, "message": "incident introuvable"}
@@ -139,26 +152,40 @@ def propose_patch(memory: Memory, client, incident_id: int) -> dict:
         return {"success": False, "message": "aucun script Djerba identifié pour cet incident"}
     effective = Path("/usr/local/bin") / Path(target).name
     content = (effective if effective.exists() else Path(target)).read_text(errors="replace")
-    prompt = PATCH_PROMPT.format(name=Path(target).name, target=target, error=incident["message"][:3000],
-                                 content=content[:60000])
-    try:
-        reply = client.chat([{"role": "system", "content": "Tu es un ingénieur Debian rigoureux."},
-                             {"role": "user", "content": prompt}])
-    except LLMError as exc:
-        return {"success": False, "message": f"moteur d'IA indisponible : {exc}"}
-    match = CODE_BLOCK.search(reply["content"])
-    if not match:
-        return {"success": False, "message": "le modèle n'a pas fourni de script complet"}
-    proposal = match.group(1)
-    if proposal.strip() == content.strip():
-        return {"success": False, "message": "le modèle n'a proposé aucune modification"}
-    try:
-        result = ipc.call("sys.test_patch", {"target": target, "content": proposal,
-                                             "reason": incident["message"].splitlines()[0][:200]})
-    except ipc.RPCError as exc:
-        return {"success": False, "message": str(exc)}
+    messages = [{"role": "system", "content": "Tu es un ingénieur Debian rigoureux."},
+                {"role": "user", "content": PATCH_PROMPT.format(name=Path(target).name, target=target,
+                                                                error=incident["message"][:3000],
+                                                                content=content[:60000])}]
+    result: dict = {"success": False, "message": "aucune tentative"}
+    allowed = attempts_allowed()
+    for attempt in range(1, allowed + 1):
+        try:
+            reply = client.chat(messages)
+        except LLMError as exc:
+            return {"success": False, "message": f"moteur d'IA indisponible : {exc}"}
+        match = CODE_BLOCK.search(reply["content"])
+        if not match or match.group(1).strip() == content.strip():
+            feedback = "Réponse sans script complet modifié."
+            result = {"success": False, "message": feedback, "checks": []}
+        else:
+            try:
+                result = ipc.call("sys.test_patch", {"target": target, "content": match.group(1),
+                                                     "reason": incident["message"].splitlines()[0][:200]})
+            except ipc.RPCError as exc:
+                return {"success": False, "message": str(exc)}
+            if result.get("success"):
+                break
+            feedback = "\n".join(f"- {check['check']} : {'réussi' if check['success'] else 'ÉCHEC'} "
+                                  f"{check.get('detail', '')[:400]}" for check in result.get("checks", []))
+        result["attempt"] = attempt
+        messages += [{"role": "assistant", "content": reply["content"]},
+                     {"role": "user", "content": f"Tentative {attempt}/{allowed} rejetée et annulée :\n{feedback}\n"
+                                                 f"Corrige et renvoie le script complet dans un seul bloc de code."}]
+    result["attempts"] = attempt
     status = "correctif prêt" if result.get("success") else "correctif rejeté"
     memory.update_incident(incident_id, status, json.dumps(result, ensure_ascii=False)[:20000])
-    result["message"] = ("Correctif vérifié dans le bac à sable : prêt à être déployé." if result.get("success")
-                         else "Le correctif n'a pas passé les vérifications : il a été annulé (git reset --hard).")
+    result["message"] = (f"Correctif vérifié dans le bac à sable (tentative {attempt}/{allowed}) : prêt à être "
+                         f"déployé." if result.get("success") else
+                         f"Aucun correctif valable après {attempt} tentative(s) : tout a été annulé "
+                         f"(git reset --hard).")
     return result

@@ -23,7 +23,7 @@ from djerba_ai.core.config import Config
 from djerba_ai.core.executor import Executor
 from djerba_ai.core.llm import LLMError, client_from_config
 from djerba_ai.core.memory import Memory
-from djerba_ai.tools import CATEGORY_LABELS, Registry
+from djerba_ai.tools import CATEGORY_LABELS, Registry, registry
 
 MAX_STEPS = 8
 ALWAYS = ("tools_search", "health_report", "web_search", "memory_remember", "memory_recall")
@@ -41,6 +41,8 @@ Règles :
 - Recommande ce qui convient à CETTE machine (matériel, session live ou installée, modes actifs).
 - Pour créer une application ou un jeu, utilise app_generator ; pour un problème d'un outil Djerba, \
 incident_analyze et patch_propose.
+- Si aucune capacité ne convient même après tools_search, crée-la avec capability_create (code testé dans \
+le bac à sable, intégré à chaud), puis utilise-la.
 
 Configuration actuelle de la machine :
 {context}
@@ -59,6 +61,13 @@ class Agent:
         self.registry = registry
         self.memory = memory
         self.executor = Executor(registry, memory)
+
+    def reload_plugins(self) -> list[str]:
+        """Intégration à chaud des capacités générées approuvées."""
+        self.config.load()
+        self.registry = registry(include_plugins=True, approved=self.config.get("agent.plugins_approved"))
+        self.executor.registry = self.registry
+        return sorted(name for name in self.registry.tools if name.startswith("plugin."))
 
     # ---------------------------------------------------------------- Outils proposés
     def select_tools(self, request: str, extra: set[str] | None = None) -> list[str]:
@@ -86,11 +95,11 @@ class Agent:
     def needs_confirmation(self, tool) -> bool:
         if tool.dangerous:
             return True
-        return tool.requires_root and self.config.get("autonomy") != "safe"
+        return tool.requires_root and self.config.get("agent.autonomy") != "safe"
 
     def run(self, request: str, conversation: int, on_event: Event, confirm: Confirm) -> str:
         self.memory.add_message(conversation, "user", request)
-        client = client_from_config(self.config)
+        client = client_from_config(self.config, notify=lambda text: on_event("notice", {"text": text}))
         history = [{"role": row["role"], "content": row["content"]}
                    for row in self.memory.messages(conversation, limit=13)[:-1]
                    if row["role"] in ("user", "assistant")]
@@ -119,6 +128,9 @@ class Agent:
                     result = self._call_tool(call["name"], call["arguments"], request, on_event, confirm)
                     if call["name"] == "tools_search" and result.get("success"):
                         active.update(item["name"] for item in result["data"].get("tools", []))
+                    if call["name"] in ("capability_create", "plugin_generate", "plugin_approve") \
+                            and result.get("success"):
+                        active.update(self.reload_plugins())
                     messages.append({"role": "tool", "content": json.dumps(result, ensure_ascii=False)[:6000]})
             answer = "J'ai atteint la limite d'étapes pour cette demande ; reformulez-la ou découpez-la."
         except LLMError as exc:

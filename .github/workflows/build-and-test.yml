@@ -87,7 +87,7 @@ jobs:
               qml6-module-qtquick-controls qml6-module-qtquick-templates \
               qml6-module-qtquick-particles qml6-module-qtquick-shapes \
               qml6-module-qt5compat-graphicaleffects qml6-module-qtqml-workerscript \
-              libqt6svg6 qt6-qpa-plugins fonts-inter fonts-dejavu-core; do
+              libqt6svg6 qt6-qpa-plugins fonts-inter fonts-dejavu-core python3-pyflakes; do
             n=$((n + 1)); [[ "${n}" -lt 20 ]] || exit 1
             echo "apt-get install a échoué, nouvel essai dans 5 s"; sleep 5
           done

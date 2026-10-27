@@ -1,2 +1,4 @@
 /etc/xdg/autostart/djerba-welcome.desktop
 /etc/tor/djerba-anonsurf.torrc
+/etc/xdg/autostart/djerba-ai-tray.desktop
+/etc/logrotate.d/djerba-ai

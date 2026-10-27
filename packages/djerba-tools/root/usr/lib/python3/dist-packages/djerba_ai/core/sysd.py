@@ -25,6 +25,24 @@ Méthodes :
   sys.list_patches               correctifs proposés et déployés
   sys.install_ollama             installe le moteur Ollama officiel (archive vérifiée
                                  par SHA-256) et son service systemd
+  sys.test_plugin {name, content}
+                                 auto-extension : la capacité écrite par l'agent est
+                                 vérifiée dans le bac à sable (syntaxe, pyflakes,
+                                 chargement et auto-test sous « nobody », 15 s au plus)
+  sys.venv_install {packages}    dépendances Python dans le venv interne
+                                 /usr/share/djerba-ai/venv (jamais de pip global, PEP 668)
+  config.get / config.set {key, value}
+                                 /etc/djerba/config.toml (0600) et sa vue publique
+  llm.cloud_chat {messages, tools}
+                                 requête OpenAI / Gemini avec la clé d'API lue ici :
+                                 les jetons sont relayés en notifications « llm.token »
+  llm.cloud_health, llm.cloud_models
+  audit.tail {lines}             fin du journal d'audit (/var/log/djerba/audit.log)
+
+Isolation : un processus lancé dans une portée « djerba-app-* » (applications
+générées par le Studio, systemd-run --scope) est refusé quelle que soit la
+méthode, et le refus est journalisé. Toute action critique est inscrite au
+journal d'audit (JSON).
 """
 
 from __future__ import annotations
@@ -47,7 +65,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from djerba_ai import __version__
-from djerba_ai.core import ipc
+from djerba_ai.core import audit, ipc, llm
+from djerba_ai.core.config import CLOUD_ENDPOINTS, SCHEMA, ConfigError, Store, public_view
 
 STATE_DIR = Path("/var/lib/djerba-ai")
 SANDBOX = STATE_DIR / "sandbox"
@@ -60,8 +79,34 @@ ACTION_EXEC = "org.djerba.ai.exec"
 ACTION_PATCH = "org.djerba.ai.patch"
 ACTION_DEPLOY = "org.djerba.ai.deploy"
 ACTION_SETUP = "org.djerba.ai.setup"
+ACTION_CONFIGURE = "org.djerba.ai.configure"
+ACTION_CLOUD = "org.djerba.ai.cloud"
+ACTION_AUDIT = "org.djerba.ai.audit"
+ACTION_EXTEND = "org.djerba.ai.extend"
+
+VENV = Path(os.environ.get("DJERBA_AI_VENV", "/usr/share/djerba-ai/venv"))
+PLUGIN_NAME = re.compile(r"^[a-z0-9_]{3,48}$")
+REQUIREMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}(\[[A-Za-z0-9,_-]+\])?"
+                         r"((==|>=|<=|~=|!=|<|>)[A-Za-z0-9.*+!-]{1,40})?$")
+APP_SCOPE = re.compile(r"/djerba-app-[^/\n]*\.scope")
+#: méthodes sans effet ni donnée sensible : non journalisées
+QUIET = {"sys.ping", "sys.list_patches", "config.get", "audit.tail", "llm.cloud_health", "llm.cloud_models"}
 
 Authorizer = Callable[[int, int, str], bool]
+Emit = Callable[[str, dict], None]
+
+
+def sandbox_timeout() -> int:
+    """Durée maximale de toute exécution dans le bac à sable (15 s par défaut)."""
+    return int(Store().load().get("system.sandbox_timeout", 15))
+
+
+def isolated(pid: int) -> bool:
+    """Vrai si le processus appartient à une application isolée du Studio."""
+    try:
+        return bool(APP_SCOPE.search(Path(f"/proc/{pid}/cgroup").read_text()))
+    except OSError:
+        return True  # processus disparu ou illisible : refus par prudence
 
 
 def log(message: str) -> None:
@@ -123,17 +168,24 @@ def interpreter(content: str) -> str:
     raise ValueError("langage non pris en charge (bash ou python3 attendu)")
 
 
+NOBODY = ["setpriv", "--reuid=65534", "--regid=65534", "--clear-groups", "--no-new-privs", "--inh-caps=-all"]
+
+
+def run_unprivileged(argv: list[str], env: dict | None = None) -> tuple[int, str]:
+    """Exécute sous « nobody », sans privilèges, avec le délai strict du bac à sable."""
+    try:
+        result = subprocess.run([*NOBODY, *argv], capture_output=True, text=True, timeout=sandbox_timeout(), cwd="/",
+                                env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/nonexistent",
+                                     "LC_ALL": "C.UTF-8", **(env or {})})
+        return result.returncode, (result.stdout + result.stderr)[-1500:]
+    except subprocess.TimeoutExpired:
+        return 124, f"délai de {sandbox_timeout()} s dépassé : exécution interrompue"
+
+
 def smoke(language: str, path: Path) -> tuple[int, str]:
     """Exécute « --help » sous l'utilisateur nobody, sans privilèges."""
-    command = ["setpriv", "--reuid=65534", "--regid=65534", "--clear-groups", "--no-new-privs",
-               "--inh-caps=-all", language, str(path), "--help"]
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=20, cwd="/",
-                                env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/nonexistent",
-                                     "LC_ALL": "C.UTF-8"})
-        return result.returncode, (result.stdout + result.stderr)[-500:]
-    except subprocess.TimeoutExpired:
-        return 124, "délai dépassé"
+    code, output = run_unprivileged([language, str(path), "--help"])
+    return code, output[-500:]
 
 
 def check_content(language: str, path: Path, reference: Path) -> list[dict]:
@@ -143,14 +195,15 @@ def check_content(language: str, path: Path, reference: Path) -> list[dict]:
         checks.append({"check": name, "success": success, "detail": detail[-800:]})
 
     if language == "bash":
-        result = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True)
+        result = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True, timeout=sandbox_timeout())
         record("syntaxe bash", result.returncode == 0, result.stderr)
         if shutil.which("shellcheck"):
-            result = subprocess.run(["shellcheck", "-S", "error", str(path)], capture_output=True, text=True)
+            result = subprocess.run(["shellcheck", "-S", "error", str(path)], capture_output=True, text=True,
+                                    timeout=sandbox_timeout())
             record("shellcheck (erreurs)", result.returncode == 0, result.stdout)
     else:
         result = subprocess.run(["python3", "-c", "import ast,sys; ast.parse(open(sys.argv[1]).read())", str(path)],
-                                capture_output=True, text=True)
+                                capture_output=True, text=True, timeout=sandbox_timeout())
         record("syntaxe python", result.returncode == 0, result.stderr)
     if all(check["success"] for check in checks):
         expected, _ = smoke(language, reference)
@@ -251,7 +304,12 @@ def list_patches() -> dict:
         for tag in git("tag", "--sort=-creatordate", check=False).stdout.split()[:50]:
             subject = git("log", "-1", "--pretty=%s", tag, check=False).stdout.strip()
             proposals.append({"patch_id": tag, "subject": subject})
-    return {"deployed": read_deployed(), "proposals": proposals}
+    history = []
+    if (SANDBOX / ".git").is_dir():
+        for line in git("log", "-30", "--pretty=%h\t%cr\t%s", check=False).stdout.splitlines():
+            commit, when, subject = (line.split("\t", 2) + ["", ""])[:3]
+            history.append({"commit": commit, "when": when, "subject": subject})
+    return {"deployed": read_deployed(), "proposals": proposals, "history": history}
 
 
 # ---------------------------------------------------------------- Ollama
@@ -317,6 +375,136 @@ def install_ollama() -> dict:
             "version": release.get("tag_name", "")}
 
 
+# ---------------------------------------------------------------- Auto-extension
+PLUGIN_RUNNER = """
+import importlib.util, json, sys
+from djerba_ai.tools.base import BaseTool
+spec = importlib.util.spec_from_file_location("candidate", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+tools = [obj for obj in vars(module).values()
+         if isinstance(obj, type) and issubclass(obj, BaseTool) and obj.__module__ == "candidate" and obj.name]
+assert tools, "aucune classe BaseTool définie"
+names = []
+for cls in tools:
+    tool = cls()
+    assert not tool.requires_root, "une capacité générée ne peut pas être root"
+    tool.schema()
+    if hasattr(tool, "selftest"):
+        assert tool.selftest() is True, f"{cls.name} : auto-test en échec"
+    names.append(cls.name)
+print(json.dumps(names))
+"""
+
+
+def test_plugin(uid: int, name: str, content: str) -> dict:
+    """Vérifie une capacité écrite par l'agent ; annule tout en cas d'échec."""
+    if not PLUGIN_NAME.match(name):
+        raise ipc.RPCError(ipc.INVALID_PARAMS, "nom de capacité invalide")
+    if len(content) > 200 * 1024 or "\x00" in content:
+        raise ipc.RPCError(ipc.INVALID_PARAMS, "contenu invalide")
+    ensure_sandbox()
+    relative = Path("plugins") / str(uid) / f"{name}.py"
+    target = SANDBOX / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    checks: list[dict] = []
+
+    def record(check: str, success: bool, detail: str = "") -> None:
+        checks.append({"check": check, "success": success, "detail": detail[-1200:]})
+
+    try:
+        compile(content, f"{name}.py", "exec")
+        record("syntaxe python", True)
+    except SyntaxError as exc:
+        record("syntaxe python", False, f"ligne {exc.lineno} : {exc.msg}")
+    if all(check["success"] for check in checks):
+        try:
+            lint = subprocess.run(["python3", "-m", "pyflakes", str(target)], capture_output=True, text=True,
+                                  timeout=sandbox_timeout())
+            record("pyflakes", lint.returncode == 0, lint.stdout + lint.stderr)
+        except subprocess.TimeoutExpired:
+            record("pyflakes", False, "délai dépassé")
+    tools: list[str] = []
+    if all(check["success"] for check in checks):
+        workdir = Path(tempfile.mkdtemp(prefix="djerba-plugin-"))
+        workdir.chmod(0o755)
+        copy = workdir / f"{name}.py"
+        shutil.copyfile(target, copy)
+        copy.chmod(0o644)
+        package_root = str(Path(__file__).resolve().parent.parent.parent)
+        try:
+            code, output = run_unprivileged(["python3", "-c", PLUGIN_RUNNER, str(copy)],
+                                            env={"PYTHONPATH": package_root, "PYTHONDONTWRITEBYTECODE": "1"})
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+        record(f"chargement et auto-test sous nobody ({sandbox_timeout()} s max)", code == 0, output)
+        if code == 0:
+            try:
+                tools = json.loads(output.strip().splitlines()[-1])
+            except (ValueError, IndexError):
+                tools = []
+    if not all(check["success"] for check in checks):
+        git("reset", "-q", "--hard", "HEAD")
+        git("clean", "-q", "-fd", "plugins")
+        return {"success": False, "rolled_back": True, "checks": checks}
+    git("add", str(relative))
+    git("commit", "-q", "--allow-empty", "-m", f"Capacité {name} (uid {uid}) : {', '.join(tools)}")
+    return {"success": True, "checks": checks, "tools": tools, "content": content}
+
+
+def venv_install(packages: list[str]) -> dict:
+    """Installe des paquets Python dans le venv interne (jamais avec un pip global)."""
+    if not packages or len(packages) > 20 or not all(isinstance(item, str) and REQUIREMENT.match(item)
+                                                     for item in packages):
+        raise ipc.RPCError(ipc.INVALID_PARAMS, "noms de paquets Python invalides")
+    python = VENV / "bin" / "python3"
+    if not python.exists():
+        subprocess.run(["/usr/bin/python3", "-m", "venv", "--system-site-packages", str(VENV)], check=True,
+                       capture_output=True, timeout=600)
+    result = subprocess.run([str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
+                             "--require-virtualenv", *packages], capture_output=True, text=True, timeout=1800)
+    if result.returncode != 0:
+        return {"success": False, "message": (result.stderr or result.stdout).strip().splitlines()[-1][:300]}
+    return {"success": True, "message": f"Installé dans {VENV} : {', '.join(packages)}", "venv": str(VENV)}
+
+
+# ---------------------------------------------------------------- Moteurs en ligne
+def cloud_settings() -> dict:
+    values = Store().load()
+    service = values["llm.cloud.service"]
+    endpoint = values["llm.cloud.endpoint"] or CLOUD_ENDPOINTS.get(service, "")
+    if not endpoint:
+        raise ipc.RPCError(ipc.TOOL_FAILED, "aucune adresse d'API configurée")
+    if not values["llm.cloud.api_key"]:
+        raise ipc.RPCError(ipc.TOOL_FAILED, "aucune clé d'API enregistrée (Djerba → Réglages → Cerveau)")
+    return {"service": service, "endpoint": endpoint, "key": values["llm.cloud.api_key"],
+            "model": values["llm.cloud.model"], "timeout": max(int(values["llm.remote_timeout"]), 5)}
+
+
+def cloud_chat(params: dict, emit: Emit) -> dict:
+    settings = cloud_settings()
+    messages = params.get("messages") or []
+    tools = params.get("tools") or []
+    if not isinstance(messages, list) or not isinstance(tools, list):
+        raise ipc.RPCError(ipc.INVALID_PARAMS, "messages invalides")
+    try:
+        return llm.cloud_request(settings["service"], settings["endpoint"], settings["key"], settings["model"],
+                                 messages, tools, lambda text: emit("llm.token", {"text": text}),
+                                 timeout=max(settings["timeout"], 60))
+    except llm.LLMError as exc:
+        raise ipc.RPCError(ipc.TOOL_FAILED, str(exc)) from exc
+
+
+def cloud_health() -> dict:
+    try:
+        settings = cloud_settings()
+        models = llm.cloud_models(settings["endpoint"], settings["key"], timeout=settings["timeout"])
+    except (ipc.RPCError, llm.LLMError) as exc:
+        return {"ok": False, "detail": str(exc)}
+    return {"ok": True, "detail": f"connecté ({len(models)} modèles)"}
+
+
 # ---------------------------------------------------------------- Serveur
 class Dispatcher:
     def __init__(self, authorizer: Authorizer = polkit_authorize) -> None:
@@ -333,7 +521,40 @@ class Dispatcher:
         if not self.authorizer(pid, uid, action):
             raise ipc.RPCError(ipc.NOT_AUTHORIZED, "autorisation refusée")
 
-    def handle(self, method: str, params: dict, pid: int, uid: int) -> Any:
+    def dispatch(self, method: str, params: dict, pid: int, uid: int, emit: Emit | None = None) -> Any:
+        """Point d'entrée : isolation, traitement, journal d'audit."""
+        if isolated(pid):
+            audit.record("refus", uid=uid, pid=pid, method=method, success=False,
+                         message="processus d'une application isolée (djerba-app-*)")
+            raise ipc.RPCError(ipc.NOT_AUTHORIZED, "les applications isolées n'ont pas accès au démon root")
+        started = time.monotonic()
+        try:
+            result = self.handle(method, params, pid, uid, emit or (lambda *_: None))
+        except ipc.RPCError as exc:
+            if method not in QUIET or exc.code == ipc.NOT_AUTHORIZED:
+                audit.record("refus" if exc.code == ipc.NOT_AUTHORIZED else "erreur", uid=uid, pid=pid,
+                             method=method, tool=str(params.get("name", "")), params=self._audit_params(method, params),
+                             success=False, message=str(exc))
+            raise
+        if method not in QUIET:
+            success = result.get("success", True) if isinstance(result, dict) else True
+            message = result.get("message", "") if isinstance(result, dict) else ""
+            audit.record("action", uid=uid, pid=pid, method=method, tool=str(params.get("name", "")),
+                         params=self._audit_params(method, params), success=success, message=message,
+                         duration_ms=int((time.monotonic() - started) * 1000))
+        return result
+
+    @staticmethod
+    def _audit_params(method: str, params: dict) -> Any:
+        if method == "config.set" and SCHEMA.get(str(params.get("key")), {}).get("secret"):
+            return {"key": params.get("key"), "value": "[secret masqué]"}
+        if method == "llm.cloud_chat":
+            return {"messages": len(params.get("messages") or []), "tools": len(params.get("tools") or [])}
+        if method in ("sys.test_patch", "sys.test_plugin"):
+            return {key: value for key, value in params.items() if key != "content"}
+        return params.get("params", params) if method == "sys.exec_tool" else params
+
+    def handle(self, method: str, params: dict, pid: int, uid: int, emit: Emit) -> Any:
         if method == "sys.ping":
             return {"version": __version__, "uid": uid}
         if method == "sys.list_patches":
@@ -343,7 +564,6 @@ class Dispatcher:
             if tool is None or not tool.requires_root:
                 raise ipc.RPCError(ipc.METHOD_NOT_FOUND, "outil root inconnu")
             self.require(pid, uid, ACTION_EXEC)
-            log(f"uid {uid} : {tool.name} {json.dumps(params.get('params') or {}, ensure_ascii=False)[:200]}")
             return tool.run(params.get("params") or {}, verbose=bool(params.get("verbose")))
         if method == "sys.test_patch":
             self.require(pid, uid, ACTION_PATCH)
@@ -358,6 +578,39 @@ class Dispatcher:
         if method == "sys.install_ollama":
             self.require(pid, uid, ACTION_SETUP)
             return install_ollama()
+        if method == "sys.test_plugin":
+            self.require(pid, uid, ACTION_EXTEND)
+            return test_plugin(uid, str(params.get("name", "")), str(params.get("content", "")))
+        if method == "sys.venv_install":
+            self.require(pid, uid, ACTION_SETUP)
+            return venv_install(list(params.get("packages") or []))
+        if method == "config.get":
+            return public_view(Store().load())
+        if method == "config.set":
+            self.require(pid, uid, ACTION_CONFIGURE)
+            try:
+                old, new = Store().set(str(params.get("key", "")), params.get("value"))
+            except ConfigError as exc:
+                raise ipc.RPCError(ipc.INVALID_PARAMS, str(exc)) from exc
+            secret = SCHEMA[str(params["key"])].get("secret")
+            return {"success": True, "key": params["key"], "value": None if secret else new,
+                    "message": f"{params['key']} modifié"}
+        if method == "llm.cloud_chat":
+            self.require(pid, uid, ACTION_CLOUD)
+            return cloud_chat(params, emit)
+        if method == "llm.cloud_health":
+            self.require(pid, uid, ACTION_CLOUD)
+            return cloud_health()
+        if method == "llm.cloud_models":
+            self.require(pid, uid, ACTION_CLOUD)
+            settings = cloud_settings()
+            try:
+                return {"models": llm.cloud_models(settings["endpoint"], settings["key"])}
+            except llm.LLMError as exc:
+                raise ipc.RPCError(ipc.TOOL_FAILED, str(exc)) from exc
+        if method == "audit.tail":
+            self.require(pid, uid, ACTION_AUDIT)
+            return {"entries": audit.tail(min(int(params.get("lines", 200)), 2000))}
         raise ipc.RPCError(ipc.METHOD_NOT_FOUND, f"méthode inconnue : {method}")
 
 
@@ -377,7 +630,11 @@ class Handler(socketserver.StreamRequestHandler):
                 params = message.get("params") or {}
                 if not isinstance(params, dict):
                     raise ipc.RPCError(ipc.INVALID_PARAMS, "paramètres nommés attendus")
-                result = self.server.dispatcher.handle(message["method"], params, pid, uid)
+
+                def emit(method: str, payload: dict) -> None:
+                    ipc.write_message(self.wfile, {"jsonrpc": "2.0", "method": method, "params": payload})
+
+                result = self.server.dispatcher.dispatch(message["method"], params, pid, uid, emit)
                 response = {"jsonrpc": "2.0", "id": request_id, "result": result}
             except ipc.RPCError as exc:
                 response = {"jsonrpc": "2.0", "id": request_id, "error": {"code": exc.code, "message": str(exc)}}
@@ -425,6 +682,7 @@ def main(argv: list[str] | None = None) -> int:
         server = Server(None, path, Dispatcher())
         os.chmod(path, 0o666)
     STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    Store().ensure()  # crée /etc/djerba/config.toml (0600) et sa vue publique si besoin
 
     def idle_watch() -> None:
         while True:

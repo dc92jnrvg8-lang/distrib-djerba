@@ -39,7 +39,7 @@ RUN set -eux; \
         qml6-module-qtqml-workerscript \
         libqt6svg6 qt6-svg-plugins qt6-qpa-plugins fonts-inter fonts-dejavu-core librsvg2-bin \
         x11-xserver-utils \
-        shellcheck sudo git curl file ca-certificates \
+        shellcheck sudo git curl file ca-certificates python3-pyflakes \
     ; do echo "apt-get install a échoué, nouvel essai dans 5 s"; sleep 5; done; \
     test "$(dpkg-query -W -f='${Version}' live-build | cut -d: -f1)" = "1"; \
     apt-get clean; \

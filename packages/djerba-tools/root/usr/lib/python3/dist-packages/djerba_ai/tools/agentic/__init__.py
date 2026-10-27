@@ -190,7 +190,7 @@ def _fetch(url: str, data: bytes | None = None, timeout: int = 20) -> str:
 
 
 def _web_search(params: dict, _verbose: bool) -> dict:
-    if not _config().get("web_search"):
+    if not _config().get("agent.web_search"):
         return fail("la recherche web est désactivée dans les réglages de Djerba")
     try:
         page = _fetch("https://html.duckduckgo.com/html/",
@@ -213,7 +213,7 @@ def _web_search(params: dict, _verbose: bool) -> dict:
 
 
 def _web_fetch(params: dict, _verbose: bool) -> dict:
-    if not _config().get("web_search"):
+    if not _config().get("agent.web_search"):
         return fail("l'accès web est désactivé dans les réglages de Djerba")
     try:
         page = _fetch(params["url"])
@@ -226,20 +226,34 @@ def _web_fetch(params: dict, _verbose: bool) -> dict:
               truncated=len(text) > 8000)
 
 
-# ---------------------------------------------------------------- Modèles et réglages
+# ---------------------------------------------------------------- Cerveau, modèles et réglages
+PROVIDER_LABELS = {"local": "Ollama local", "tailscale": "machine distante (Tailscale)", "cloud": "API en ligne"}
+MODEL_KEYS = {"local": "llm.local.model", "tailscale": "llm.tailscale.model", "cloud": "llm.cloud.model"}
+
+
 def _engine_status(_params: dict, _verbose: bool) -> dict:
     config = _config()
-    client = _client()
-    available = client.available()
-    models = []
-    if available:
-        try:
-            models = client.models()
-        except Exception:  # noqa: BLE001
-            models = []
-    return ok(f"Moteur {config.get('provider')} {'disponible' if available else 'injoignable'} ; "
-              f"modèle choisi : {config.get('model')}", provider=config.get("provider"), available=available,
-              model=config.get("model"), installed=[m["name"] for m in models])
+    health = _client().health(5)
+    provider = config.get("llm.provider")
+    fallback = health.get("fallback") or {}
+    return ok(f"Cerveau : {PROVIDER_LABELS[provider]} — {health.get('detail')} (modèle {health.get('model')}, "
+              f"{health.get('latency_ms')} ms)" + (f" ; repli local {'prêt' if fallback.get('ok') else 'indisponible'}"
+                                                    if fallback else ""),
+              provider=provider, **health)
+
+
+def _brain_switch(params: dict, _verbose: bool) -> dict:
+    from djerba_ai.core.config import ConfigError
+    config = _config()
+    try:
+        config.set("llm.provider", params["provider"])
+        if params.get("model"):
+            config.set(MODEL_KEYS[params["provider"]], params["model"])
+    except ConfigError as exc:
+        return fail(str(exc))
+    health = _client().health(5)
+    return (ok if health.get("ok") else fail)(
+        f"Cerveau : {PROVIDER_LABELS[params['provider']]} — {health.get('detail')}", **health)
 
 
 def _model_list(_params: dict, _verbose: bool) -> dict:
@@ -248,7 +262,7 @@ def _model_list(_params: dict, _verbose: bool) -> dict:
         models = _client().models()
     except LLMError as exc:
         return fail(str(exc))
-    return ok(f"{len(models)} modèle(s) installé(s)", models=models)
+    return ok(f"{len(models)} modèle(s) disponible(s)", models=models)
 
 
 def _model_recommend(_params: dict, _verbose: bool) -> dict:
@@ -259,45 +273,65 @@ def _model_recommend(_params: dict, _verbose: bool) -> dict:
 
 
 def _model_pull(params: dict, _verbose: bool) -> dict:
-    from djerba_ai.core.llm import LLMError, OllamaClient
-    config = _config()
+    from djerba_ai.core.llm import LLMError, LocalOllamaProvider
     try:
-        OllamaClient(config.get("ollama_endpoint"), params["model"]).pull(params["model"])
+        LocalOllamaProvider(_config().get("llm.local.endpoint"), params["model"]).pull(params["model"])
     except LLMError as exc:
         return fail(str(exc))
     return ok(f"Modèle {params['model']} prêt.")
 
 
 def _model_set(params: dict, _verbose: bool) -> dict:
+    from djerba_ai.core.config import ConfigError
     config = _config()
-    config.set("model", params["model"])
-    if params.get("provider"):
-        config.set("provider", params["provider"])
-    return ok(f"Djerba utilise maintenant {params['model']}.")
-
-
-SETTINGS = {"autonomy": ("ask", "safe"), "web_search": (True, False), "self_heal": (True, False),
-            "auto_update_model": (True, False)}
+    provider = params.get("provider") or config.get("llm.provider")
+    try:
+        config.set(MODEL_KEYS[provider], params["model"])
+    except ConfigError as exc:
+        return fail(str(exc))
+    return ok(f"Modèle {params['model']} pour {PROVIDER_LABELS[provider]}.")
 
 
 def _settings_get(_params: dict, _verbose: bool) -> dict:
-    return ok("Réglages de Djerba", **_config().public())
+    return ok("Réglages de Djerba (/etc/djerba/config.toml)", **_config().public())
 
 
 def _settings_set(params: dict, _verbose: bool) -> dict:
-    key, value = params["key"], params["value"]
-    config = _config()
-    if key == "maintenance_hour":
-        if not value.isdigit() or not 0 <= int(value) <= 23:
-            return fail("heure entre 0 et 23 attendue")
-        config.set(key, int(value))
-    elif key in ("web_search", "self_heal", "auto_update_model"):
-        config.set(key, value.lower() in ("1", "true", "oui", "on", "vrai"))
-    elif key == "autonomy" and value in SETTINGS["autonomy"]:
-        config.set(key, value)
-    else:
-        return fail("réglage ou valeur invalide")
-    return ok(f"{key} = {config.get(key)}")
+    from djerba_ai.core.config import SCHEMA, ConfigError
+    if SCHEMA.get(params["key"], {}).get("secret"):
+        return fail("une clé d'API se saisit dans Réglages → Cerveau, jamais dans la conversation")
+    try:
+        value = _config().set(params["key"], params["value"])
+    except ConfigError as exc:
+        return fail(str(exc))
+    return ok(f"{params['key']} = {value}")
+
+
+def _settings_history(_params: dict, _verbose: bool) -> dict:
+    rows = _memory().settings_history(30)
+    return ok(f"{len(rows)} modification(s) récente(s)", history=[
+        {"key": row["key"], "value": row["value"], "time": row["created"]} for row in rows])
+
+
+def _audit_tail(params: dict, _verbose: bool) -> dict:
+    from djerba_ai.core import ipc
+    try:
+        entries = ipc.call("audit.tail", {"lines": params["lines"]}, timeout=30)["entries"]
+    except ipc.RPCError as exc:
+        return fail(str(exc))
+    return ok(f"{len(entries)} entrée(s) du journal d'audit", entries=entries)
+
+
+def _venv_install(params: dict, _verbose: bool) -> dict:
+    packages = [item for item in re.split(r"[\s,]+", params["packages"]) if item]
+    return _ipc("sys.venv_install", {"packages": packages})
+
+
+def _capability_create(params: dict, _verbose: bool) -> dict:
+    from djerba_ai.core.extend import create_capability
+    result = create_capability(params["name"], params["instruction"])
+    return (ok if result.get("success") else fail)(result.get("message", ""), **{
+        key: value for key, value in result.items() if key not in ("success", "message")})
 
 
 MODEL = r"^[A-Za-z0-9._:/-]{2,100}$"
@@ -364,27 +398,56 @@ TOOLS = [
                   parameters={"url": {"type": "string", "description": "adresse",
                                       "pattern": r"^https?://[^\s\x00]{3,2000}$"}},
                   required=("url",), keywords=("lire page", "site", "url")),
-    function_tool("engine_status", C, "État du moteur d'IA (Ollama ou API) et modèle utilisé.", _engine_status,
-                  keywords=("moteur", "ollama", "modèle", "ia")),
-    function_tool("model_list", C, "Modèles de langage installés.", _model_list, keywords=("modèles", "llm")),
+    function_tool("engine_status", C, "État du cerveau de Djerba (local, Tailscale ou en ligne) : santé, latence, repli.",
+                  _engine_status, keywords=("moteur", "cerveau", "ollama", "modèle", "ia", "tailscale", "latence")),
+    function_tool("brain_switch", C, "Change de cerveau : Ollama local, machine distante via Tailscale ou API en ligne.",
+                  _brain_switch,
+                  parameters={"provider": {"type": "string", "description": "local, tailscale ou cloud",
+                                           "enum": ["local", "tailscale", "cloud"]},
+                              "model": {"type": "string", "description": "modèle (facultatif)", "pattern": MODEL}},
+                  required=("provider",), dangerous=True,
+                  keywords=("changer de cerveau", "mac mini", "tailscale", "gemini", "openai", "cloud", "local")),
+    function_tool("model_list", C, "Modèles disponibles sur le cerveau actif.", _model_list,
+                  keywords=("modèles", "llm")),
     function_tool("model_recommend", C, "Modèles conseillés pour la mémoire de cette machine.", _model_recommend,
                   keywords=("quel modèle", "conseil modèle", "ram")),
-    function_tool("model_pull", C, "Télécharge ou met à jour un modèle Ollama (ex. qwen2.5:7b).", _model_pull,
+    function_tool("model_pull", C, "Télécharge ou met à jour un modèle Ollama local (ex. qwen2.5:7b).", _model_pull,
                   parameters={"model": {"type": "string", "description": "modèle", "pattern": MODEL}},
                   required=("model",), dangerous=True, keywords=("télécharger modèle", "pull")),
-    function_tool("model_set", C, "Change le modèle (et éventuellement le moteur) utilisé par Djerba.", _model_set,
+    function_tool("model_set", C, "Choisit le modèle d'un cerveau (actif par défaut).", _model_set,
                   parameters={"model": {"type": "string", "description": "modèle", "pattern": MODEL},
-                              "provider": {"type": "string", "description": "ollama ou openai",
-                                           "enum": ["ollama", "openai"]}},
+                              "provider": {"type": "string", "description": "local, tailscale ou cloud",
+                                           "enum": ["local", "tailscale", "cloud"]}},
                   required=("model",), keywords=("changer de modèle", "utiliser modèle")),
-    function_tool("settings_get", C, "Réglages de Djerba (autonomie, web, auto-réparation…).", _settings_get,
+    function_tool("settings_get", C, "Réglages de Djerba (/etc/djerba/config.toml, sans les secrets).", _settings_get,
                   keywords=("réglages", "paramètres", "configuration de djerba")),
-    function_tool("settings_set", C, "Modifie un réglage de Djerba.", _settings_set,
+    function_tool("settings_set", C, "Modifie un réglage de Djerba (clé pointée, ex. agent.web_search).", _settings_set,
                   parameters={"key": {"type": "string", "description": "réglage",
-                                      "enum": ["autonomy", "web_search", "self_heal", "auto_update_model",
-                                               "maintenance_hour"]},
-                              "value": {"type": "string", "description": "valeur", "pattern": r"^[\w-]{1,10}$"}},
-                  required=("key", "value"), keywords=("autonomie", "désactiver recherche web", "réglage")),
+                                      "pattern": r"^[a-z_]+(\.[a-z_]+){1,2}$"},
+                              "value": {"type": "string", "description": "valeur", "pattern": r"^[^\x00]{0,300}$"}},
+                  required=("key", "value"), dangerous=True,
+                  keywords=("autonomie", "désactiver recherche web", "réglage", "raccourci")),
+    function_tool("settings_history", C, "Historique des modifications de réglages.", _settings_history,
+                  keywords=("historique réglages", "qui a changé")),
+    function_tool("audit_log", C, "Dernières actions critiques du journal d'audit (/var/log/djerba/audit.log).",
+                  _audit_tail,
+                  parameters={"lines": {"type": "integer", "description": "nombre", "default": 50,
+                                        "minimum": 1, "maximum": 500}},
+                  keywords=("audit", "journal", "historique des actions", "qui a fait")),
+    function_tool("venv_install", C, "Installe des paquets Python dans le venv interne de Djerba (jamais de pip global).",
+                  _venv_install,
+                  parameters={"packages": {"type": "string", "description": "paquets séparés par des virgules",
+                                           "pattern": r"^[A-Za-z0-9._,=<>!~ \[\]-]{2,400}$"}},
+                  required=("packages",), dangerous=True, keywords=("pip", "module python", "venv", "bibliothèque")),
+    function_tool("capability_create", C,
+                  "Crée une nouvelle capacité quand aucune ne convient : code écrit, testé dans le bac à sable "
+                  "(3 essais, 15 s max) puis intégré à chaud.", _capability_create,
+                  parameters={"name": {"type": "string", "description": "nom (snake_case)",
+                                       "pattern": r"^[a-z0-9_]{3,48}$"},
+                              "instruction": {"type": "string", "description": "ce que doit faire la capacité",
+                                              "pattern": r"^[^\x00]{5,1500}$"}},
+                  required=("name", "instruction"),
+                  keywords=("nouvelle capacité", "je ne sais pas faire", "créer un outil", "étendre")),
     function_tool("ollama_install", C, "Installe le moteur d'IA local Ollama (archive officielle vérifiée).",
                   lambda _p, _v: _ipc("sys.install_ollama", {}), dangerous=True,
                   keywords=("installer ollama", "moteur ia", "ia locale")),

@@ -3,7 +3,10 @@
 """djerba-ai — l'agent IA de Djerba OS.
 
 Usage :
-    djerba-ai [--page chat|system|selfheal|studio|tools|models]   application graphique
+    djerba-ai [--page chat|system|selfheal|studio|tools|settings] application graphique (mode Studio)
+    djerba-ai --spotlight             barre flottante (Meta+Espace)
+    djerba-ai --clipboard             analyse du presse-papiers (Meta+Maj+C)
+    djerba-ai --tray                  démarrage résident (zone de notification)
     djerba-ai ask "demande"           discussion en terminal (confirmation o/n des actions)
     djerba-ai tools [recherche]       capacités disponibles
     djerba-ai run OUTIL ['{"param": …}'] [--verbose]
@@ -25,9 +28,16 @@ CHILD = "DJERBA_AI_CHILD"
 
 
 def gui(argv: list[str]) -> int:
-    # Comme l'assistant d'accueil : si le rendu accéléré plante (pilote, VM),
-    # l'interface est relancée avec le rendu logiciel (orbe 2D).
+    # Instance déjà résidente : la demande lui est transmise (ouverture immédiate).
+    from djerba_ai.gui import instance
+    if instance.forward(argv):
+        return 0
+    # Sans accélération 3D fiable (VM, framebuffer), rendu logiciel d'emblée (orbe 2D).
+    # Si le rendu accéléré plante malgré tout, l'interface est relancée en logiciel.
     if CHILD not in os.environ:
+        from djerba_ai.core import gpu
+        if not gpu.detect()["accelerated"]:
+            os.environ["QT_QUICK_BACKEND"] = "software"
         attempts = [dict(os.environ, **{CHILD: "1"})]
         if os.environ.get("QT_QUICK_BACKEND") != "software":
             attempts.append(dict(os.environ, **{CHILD: "1", "QT_QUICK_BACKEND": "software"}))
@@ -50,7 +60,7 @@ def ask(request: str) -> int:
 
     config = Config()
     memory = Memory()
-    agent = Agent(config, registry(include_plugins=True, approved=config.get("plugins_approved")), memory)
+    agent = Agent(config, registry(include_plugins=True, approved=config.get("agent.plugins_approved")), memory)
     conversation = memory.new_conversation(request[:60])
 
     def on_event(kind: str, payload: dict) -> None:
@@ -119,8 +129,13 @@ def doctor() -> int:
     from djerba_ai.tools import registry
     config = Config()
     client = client_from_config(config)
-    print(f"Moteur  : {config.get('provider')} — {'disponible' if client.available() else 'injoignable'}"
-          f" (modèle « {config.get('model')} »)")
+    health = client.health(5)
+    print(f"Cerveau : {config.get('llm.provider')} ({health.get('label')}) — {health.get('detail')}"
+          f" (modèle « {health.get('model')} », {health.get('latency_ms')} ms)")
+    if health.get("fallback") is not None:
+        print(f"Repli   : Ollama local — {'prêt' if health['fallback'].get('ok') else 'indisponible'}")
+    from djerba_ai.core import gpu
+    print(f"Rendu   : {gpu.detect()['reason']}")
     try:
         print(f"Démon root : disponible (version {ipc.call('sys.ping', {}, timeout=10)['version']})")
     except ipc.RPCError as exc:

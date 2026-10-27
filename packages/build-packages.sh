@@ -52,6 +52,8 @@ build_package() {
     mkdir -p "${stage}/DEBIAN"
     if [[ -d "${source}/root" ]]; then
         cp -a "${source}/root/." "${stage}/"
+        # Caches Python d'exécutions locales : jamais dans le paquet.
+        find "${stage}" -name __pycache__ -type d -prune -exec rm -rf {} +
     fi
     if [[ "${name}" == "djerba-branding" ]]; then
         [[ -d "${GENERATED}" ]] || { echo "Identité visuelle absente : lancez assets_generator/generate_assets.py" >&2; exit 1; }

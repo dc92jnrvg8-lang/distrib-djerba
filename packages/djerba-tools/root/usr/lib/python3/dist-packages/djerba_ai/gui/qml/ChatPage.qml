@@ -7,9 +7,9 @@ import QtQuick.Layouts
 Rectangle {
     id: page
     radius: 22
-    color: Qt.rgba(1, 1, 1, 0.06)
+    color: win.veil(0.06)
     border.width: 1
-    border.color: Qt.rgba(1, 1, 1, 0.13)
+    border.color: win.veil(0.13)
 
     function clear() { messages.clear() }
 
@@ -31,16 +31,16 @@ Rectangle {
         font.pixelSize: 13
         contentItem: Text {
             text: chatButton.text; font: chatButton.font
-            color: chatButton.primary ? "#070B18" : (chatButton.enabled ? "#F8FAFC" : "#94A3B8")
+            color: chatButton.primary ? win.night : (chatButton.enabled ? win.white : win.muted)
             horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
         }
         background: Rectangle {
             radius: 11
-            color: chatButton.primary ? (chatButton.down ? "#00A3AB" : "#00C2CB")
-                                      : Qt.rgba(1, 1, 1, chatButton.down ? 0.18 : (chatButton.hovered ? 0.13 : 0.07))
+            color: chatButton.primary ? (chatButton.down ? Qt.darker(win.turquoise, 1.2) : win.turquoise)
+                                      : win.veil(chatButton.down ? 0.18 : (chatButton.hovered ? 0.13 : 0.07))
             opacity: chatButton.enabled ? 1 : 0.45
             border.width: chatButton.primary ? 0 : 1
-            border.color: Qt.rgba(1, 1, 1, 0.18)
+            border.color: win.veil(0.18)
         }
     }
 
@@ -109,7 +109,7 @@ Rectangle {
             border.color: Qt.rgba(1, 0.48, 0.35, 0.5)
             RowLayout {
                 anchors.fill: parent; anchors.margins: 12
-                Text { Layout.fillWidth: true; text: "Moteur d'IA indisponible : Djerba propose directement les actions correspondant à vos demandes."; color: "#F8FAFC"; font.pixelSize: 13; wrapMode: Text.WordWrap }
+                Text { Layout.fillWidth: true; text: "Moteur d'IA indisponible : Djerba propose directement les actions correspondant à vos demandes."; color: win.white; font.pixelSize: 13; wrapMode: Text.WordWrap }
                 ChatButton { text: "Configurer"; onClicked: win.page = 5 }
             }
         }
@@ -128,11 +128,11 @@ Rectangle {
                 visible: messages.count === 0
                 spacing: 16
                 width: Math.min(parent.width - 40, 620)
-                Text { width: parent.width; horizontalAlignment: Text.AlignHCenter; text: "Bonjour, je suis Djerba."; color: "#F8FAFC"; font.pixelSize: 30; font.weight: Font.Light }
+                Text { width: parent.width; horizontalAlignment: Text.AlignHCenter; text: "Bonjour, je suis Djerba."; color: win.white; font.pixelSize: 30; font.weight: Font.Light }
                 Text {
                     width: parent.width; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
                     text: "Je connais votre système et je peux l'administrer pour vous : maintenance, jeu, vie privée, applications, matériel. Je vous demande toujours avant une action sensible."
-                    color: "#94A3B8"; font.pixelSize: 14
+                    color: win.muted; font.pixelSize: 14
                 }
                 Flow {
                     width: parent.width; spacing: 8
@@ -142,9 +142,9 @@ Rectangle {
                         delegate: Rectangle {
                             required property string modelData
                             radius: 14; height: 34; width: chipLabel.implicitWidth + 26
-                            color: Qt.rgba(1, 1, 1, chipHover.hovered ? 0.14 : 0.07)
+                            color: win.veil(chipHover.hovered ? 0.14 : 0.07)
                             border.color: Qt.rgba(0, 0.76, 0.8, 0.4)
-                            Text { id: chipLabel; anchors.centerIn: parent; text: modelData; color: "#F8FAFC"; font.pixelSize: 13 }
+                            Text { id: chipLabel; anchors.centerIn: parent; text: modelData; color: win.white; font.pixelSize: 13 }
                             HoverHandler { id: chipHover; cursorShape: Qt.PointingHandCursor }
                             TapHandler { onTapped: backend.send(modelData) }
                         }
@@ -176,13 +176,13 @@ Rectangle {
                     height: content.implicitHeight + 24
                     radius: 16
                     color: row.kind === "user" ? Qt.rgba(0, 0.76, 0.8, 0.22)
-                         : row.kind === "assistant" ? Qt.rgba(1, 1, 1, 0.07)
+                         : row.kind === "assistant" ? win.veil(0.07)
                          : row.kind === "confirm" ? Qt.rgba(0.96, 0.88, 0.76, 0.12)
-                         : Qt.rgba(1, 1, 1, 0.04)
+                         : win.veil(0.04)
                     border.width: row.kind === "assistant" ? 0 : 1
-                    border.color: row.kind === "confirm" ? "#F4E1C1"
-                                : row.status === "failure" ? "#FF7A59"
-                                : Qt.rgba(1, 1, 1, 0.12)
+                    border.color: row.kind === "confirm" ? win.sand
+                                : row.status === "failure" ? win.coral
+                                : win.veil(0.12)
 
                     ColumnLayout {
                         id: content
@@ -198,7 +198,7 @@ Rectangle {
                             visible: row.kind === "user" || row.kind === "assistant"
                             text: row.text + (row.status === "streaming" ? " ▍" : "")
                             textFormat: row.kind === "assistant" ? TextEdit.MarkdownText : TextEdit.PlainText
-                            color: "#F8FAFC"; font.pixelSize: 14
+                            color: win.white; font.pixelSize: 14
                             wrapMode: TextEdit.Wrap; readOnly: true; selectByMouse: true
                         }
 
@@ -208,21 +208,21 @@ Rectangle {
                             Layout.fillWidth: true
                             spacing: 10
                             BusyIndicator { running: row.status === "running"; visible: running; Layout.preferredWidth: 22; Layout.preferredHeight: 22 }
-                            Text { visible: row.status !== "running"; text: row.status === "success" ? "✓" : "✗"; color: row.status === "success" ? "#5EEAD4" : "#FF7A59"; font.pixelSize: 18 }
+                            Text { visible: row.status !== "running"; text: row.status === "success" ? "✓" : "✗"; color: row.status === "success" ? win.aqua : win.coral; font.pixelSize: 18 }
                             ColumnLayout {
                                 Layout.fillWidth: true; spacing: 2
-                                Text { text: row.text + (row.root ? "  · administrateur" : ""); color: "#F8FAFC"; font.pixelSize: 13; font.weight: Font.DemiBold; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-                                Text { visible: row.detail !== ""; text: row.detail; color: "#94A3B8"; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap; maximumLineCount: 6; elide: Text.ElideRight }
+                                Text { text: row.text + (row.root ? "  · administrateur" : ""); color: win.white; font.pixelSize: 13; font.weight: Font.DemiBold; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                                Text { visible: row.detail !== ""; text: row.detail; color: win.muted; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap; maximumLineCount: 6; elide: Text.ElideRight }
                             }
                             Text {
                                 visible: row.runId > 0
-                                text: "Utile"; color: "#5EEAD4"; font.pixelSize: 12; font.underline: upHover.hovered
+                                text: "Utile"; color: win.aqua; font.pixelSize: 12; font.underline: upHover.hovered
                                 HoverHandler { id: upHover; cursorShape: Qt.PointingHandCursor }
                                 TapHandler { onTapped: { backend.feedback(row.runId, true); messages.setProperty(row.index, "runId", 0) } }
                             }
                             Text {
                                 visible: row.runId > 0
-                                text: "Pas utile"; color: "#94A3B8"; font.pixelSize: 12; font.underline: downHover.hovered
+                                text: "Pas utile"; color: win.muted; font.pixelSize: 12; font.underline: downHover.hovered
                                 HoverHandler { id: downHover; cursorShape: Qt.PointingHandCursor }
                                 TapHandler { onTapped: { backend.feedback(row.runId, false); messages.setProperty(row.index, "runId", 0) } }
                             }
@@ -232,22 +232,22 @@ Rectangle {
                         ColumnLayout {
                             visible: row.kind === "confirm"
                             Layout.fillWidth: true
-                            Text { text: "Djerba souhaite : " + row.text; color: "#F8FAFC"; font.pixelSize: 14; font.weight: Font.DemiBold; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-                            Text { visible: row.detail !== "{}"; text: "Paramètres : " + row.detail; color: "#94A3B8"; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere }
-                            Text { visible: row.root; text: "Votre mot de passe administrateur sera demandé."; color: "#F4E1C1"; font.pixelSize: 12 }
+                            Text { text: "Djerba souhaite : " + row.text; color: win.white; font.pixelSize: 14; font.weight: Font.DemiBold; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                            Text { visible: row.detail !== "{}"; text: "Paramètres : " + row.detail; color: win.muted; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere }
+                            Text { visible: row.root; text: "Votre mot de passe administrateur sera demandé."; color: win.sand; font.pixelSize: 12 }
                             RowLayout {
                                 visible: row.status === "running"
                                 ChatButton { text: "Autoriser"; primary: true; onClicked: { messages.setProperty(row.index, "status", "accepted"); backend.answerConfirmation(row.requestId, true) } }
                                 ChatButton { text: "Refuser"; onClicked: { messages.setProperty(row.index, "status", "refused"); backend.answerConfirmation(row.requestId, false) } }
                             }
-                            Text { visible: row.status !== "running"; text: row.status === "accepted" ? "Autorisé" : "Refusé"; color: "#94A3B8"; font.pixelSize: 12 }
+                            Text { visible: row.status !== "running"; text: row.status === "accepted" ? "Autorisé" : "Refusé"; color: win.muted; font.pixelSize: 12 }
                         }
 
                         // Suggestion (mode simplifié)
                         RowLayout {
                             visible: row.kind === "suggestion"
                             Layout.fillWidth: true
-                            Text { Layout.fillWidth: true; text: row.text; color: "#F8FAFC"; font.pixelSize: 13; wrapMode: Text.WordWrap }
+                            Text { Layout.fillWidth: true; text: row.text; color: win.white; font.pixelSize: 13; wrapMode: Text.WordWrap }
                             ChatButton { text: "Exécuter"; onClicked: backend.runTool(row.tool) }
                         }
                     }
@@ -265,10 +265,10 @@ Rectangle {
                 TextArea {
                     id: input
                     placeholderText: backend.busy ? "Djerba travaille…" : "Demandez quelque chose à Djerba…  (Entrée pour envoyer, Maj+Entrée pour un saut de ligne)"
-                    color: "#F8FAFC"; font.pixelSize: 14; wrapMode: TextArea.Wrap
-                    placeholderTextColor: "#94A3B8"
+                    color: win.white; font.pixelSize: 14; wrapMode: TextArea.Wrap
+                    placeholderTextColor: win.muted
                     enabled: !backend.busy
-                    background: Rectangle { radius: 14; color: Qt.rgba(1, 1, 1, 0.08); border.color: input.activeFocus ? "#00C2CB" : Qt.rgba(1, 1, 1, 0.2) }
+                    background: Rectangle { radius: 14; color: win.veil(0.08); border.color: input.activeFocus ? win.turquoise : win.veil(0.2) }
                     Keys.onReturnPressed: function (event) {
                         if (event.modifiers & Qt.ShiftModifier) { event.accepted = false; return }
                         backend.send(input.text); input.text = ""
