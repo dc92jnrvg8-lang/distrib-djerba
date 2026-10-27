@@ -127,7 +127,8 @@ OFFLINE_CHECKS = [
     ("Agent IA : bus de contexte chiffré et horodaté",
      f"{SESSION}; for i in $(seq 30); do test -s /run/user/1000/djerba-ai/context.bin && break; sleep 1; done; "
      "! grep -q 'cpu_percent' /run/user/1000/djerba-ai/context.bin "
-     "&& djerba-ai run context_now | grep -q 'Bus de contexte'", 60),
+     "&& djerba-ai run context_now | grep -q 'Bus de contexte' "
+     "|| { journalctl --user -u djerba-ai --no-pager -n 30; false; }", 60),
     ("Agent IA : télémétrie Prometheus et santé (Uptime Kuma)",
      "curl -fsS --noproxy '*' http://127.0.0.1:9464/metrics | grep -q '^djerba_up 1' "
      "&& curl -sS --noproxy '*' http://127.0.0.1:9464/health | grep -q '\"status\"'", 60),

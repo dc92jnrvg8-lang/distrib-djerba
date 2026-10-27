@@ -181,19 +181,26 @@ class WindowBridge:
         return self
 
     @staticmethod
-    def _load_script(bus) -> str:
-        import dbus
+    def _load_script(_bus) -> str:
+        """Charge le script KWin par un processus dbus-send distinct : un appel D-Bus
+        synchrone depuis ce processus, pendant que KWin rappelle notre service
+        servi par la boucle GLib d'un autre fil, risquerait un interblocage."""
         if not KWIN_SCRIPT.is_file():
             return "script KWin absent"
+        if shutil.which("dbus-send") is None:
+            return "dbus-send absent"
+        plugin = "djerba-active-window"
+        base = ["dbus-send", "--session", "--print-reply", "--dest=org.kde.KWin", "/Scripting"]
         try:
-            scripting = dbus.Interface(bus.get_object("org.kde.KWin", "/Scripting"), "org.kde.kwin.Scripting")
-            plugin = "djerba-active-window"
-            if scripting.isScriptLoaded(plugin):
-                scripting.unloadScript(plugin)
-            scripting.loadScript(str(KWIN_SCRIPT), plugin)
-            scripting.start()
-        except dbus.exceptions.DBusException as exc:
-            return f"KWin injoignable ({exc.get_dbus_name()})"
+            subprocess.run([*base, "org.kde.kwin.Scripting.unloadScript", f"string:{plugin}"],
+                           capture_output=True, timeout=10)
+            loaded = subprocess.run([*base, "org.kde.kwin.Scripting.loadScript", f"string:{KWIN_SCRIPT}",
+                                     f"string:{plugin}"], capture_output=True, text=True, timeout=10)
+            if loaded.returncode != 0:
+                return f"KWin injoignable ({loaded.stderr.strip()[:120]})"
+            subprocess.run([*base, "org.kde.kwin.Scripting.start"], capture_output=True, timeout=10)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"KWin injoignable ({exc})"
         return "actif"
 
 
@@ -225,14 +232,25 @@ class ContextBus:
         write_atomic(self.path, self.box.encrypt_bytes(json.dumps(snapshot).encode(), aad="context"))
         return snapshot
 
+    def _start_bridge(self) -> None:
+        # Le pont KWin/D-Bus ne doit jamais empêcher l'échantillonnage : toute
+        # erreur devient un état visible (« window_status ») et la boucle continue.
+        try:
+            self.bridge.start()
+        except Exception as exc:  # noqa: BLE001
+            self.bridge.status = f"pont KWin indisponible : {exc}"
+            print(f"djerba-ai : bus de contexte : {self.bridge.status}", flush=True)
+
     def run(self) -> None:
-        self.bridge.start()
+        threading.Thread(target=self._start_bridge, daemon=True, name="djerba-kwin-bridge").start()
         self.sampler.sample()
-        while not self.stop.wait(self.interval):
+        while True:
             try:
                 self.publish()
-            except OSError:
-                continue
+            except Exception as exc:  # noqa: BLE001 - le bus ne doit jamais s'arrêter
+                print(f"djerba-ai : bus de contexte : {exc!r}", flush=True)
+            if self.stop.wait(self.interval):
+                return
 
     def start(self) -> "ContextBus":
         threading.Thread(target=self.run, daemon=True, name="djerba-contextbus").start()
