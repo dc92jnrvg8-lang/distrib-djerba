@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Djerba Game Center — réglages jeu de Djerba OS (PyQt6 + QML).
+
+Interface graphique de djerba-gamemode : mode jeu de session, profil
+d'énergie du processeur, effets et tearing de KWin, superposition MangoHud
+(préréglage, limite d'images/s), couches Proton pour Steam et lanceurs de jeux
+installés. Toutes les actions passent par djerba-gamemode (JSON), de sorte que
+l'interface et la ligne de commande restent toujours cohérentes.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+from PyQt6.QtCore import QObject, QProcess, QSize, Qt, QTimer, QUrl, pyqtProperty, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QGuiApplication, QIcon, QPixmap
+from PyQt6.QtQml import QQmlApplicationEngine
+from PyQt6.QtQuick import QQuickImageProvider
+
+APP_ID = "djerba-game-center"
+QML_FILE = Path(os.environ.get("DJERBA_GAME_CENTER_QML", "/usr/share/djerba-game-center/ui/main.qml"))
+GAMEMODE = "djerba-gamemode"
+
+LAUNCHERS = [
+    ("steam", "Steam", ["steam"], "steam", "Bibliothèque Steam et Proton"),
+    ("steam-bp", "Big Picture", ["steam", "-gamepadui"], "steam", "Interface manette, façon SteamOS"),
+    ("lutris", "Lutris", ["lutris"], "lutris", "GOG, Epic, Battle.net, émulateurs"),
+    ("heroic", "Heroic", ["flatpak", "run", "com.heroicgameslauncher.hgl"], "com.heroicgameslauncher.hgl",
+     "Epic Games, GOG, Amazon"),
+    ("bottles", "Bottles", ["flatpak", "run", "com.usebottles.bottles"], "com.usebottles.bottles",
+     "Logiciels Windows isolés"),
+    ("retroarch", "RetroArch", ["retroarch"], "retroarch", "Émulation rétro"),
+    ("goverlay", "GOverlay", ["goverlay"], "goverlay", "MangoHud et vkBasalt avancés"),
+]
+
+
+def available(command: list[str]) -> bool:
+    if command[0] == "flatpak":
+        return shutil.which("flatpak") is not None and subprocess.run(
+            ["flatpak", "info", command[2]], capture_output=True, check=False).returncode == 0
+    return shutil.which(command[0]) is not None
+
+
+class IconProvider(QQuickImageProvider):
+    """Icônes du thème via « image://icon/<nom> »."""
+
+    def __init__(self) -> None:
+        super().__init__(QQuickImageProvider.ImageType.Pixmap)
+
+    def requestPixmap(self, icon_id: str, requested_size: QSize) -> tuple[QPixmap, QSize]:
+        size = requested_size if requested_size.isValid() and not requested_size.isEmpty() else QSize(64, 64)
+        icon = QIcon.fromTheme(icon_id, QIcon.fromTheme("applications-games"))
+        pixmap = icon.pixmap(size)
+        if pixmap.isNull():
+            pixmap = QPixmap(size)
+            pixmap.fill(Qt.GlobalColor.transparent)
+        return pixmap, pixmap.size()
+
+
+class Backend(QObject):
+    stateChanged = pyqtSignal()
+    busyChanged = pyqtSignal()
+    protonProgress = pyqtSignal(str, int, arguments=["message", "percent"])
+    notify = pyqtSignal(str, arguments=["message"])
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._state: dict = {}
+        self._busy = False
+        self._proton: QProcess | None = None
+        self._buffer = ""
+        self._launchers = [
+            {"id": key, "label": label, "icon": icon, "description": description, "available": available(command)}
+            for key, label, command, icon, description in LAUNCHERS
+        ]
+        self._timer = QTimer(self)
+        self._timer.setInterval(5000)
+        self._timer.timeout.connect(self.refresh)
+        self._timer.start()
+        QTimer.singleShot(0, self.refresh)
+
+    # ---------------------------------------------------------------- État
+    @pyqtSlot()
+    def refresh(self) -> None:
+        try:
+            output = subprocess.run([GAMEMODE, "status", "--json"], capture_output=True, text=True,
+                                    timeout=15, check=False).stdout
+            state = json.loads(output.strip().splitlines()[-1]) if output.strip() else {}
+        except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+            state = {}
+        if state != self._state:
+            self._state = state
+            self.stateChanged.emit()
+
+    def _get(self, key: str, default):
+        return self._state.get(key, default)
+
+    @pyqtProperty(bool, notify=stateChanged)
+    def gameMode(self) -> bool:
+        return bool(self._get("active", False))
+
+    @pyqtProperty(str, notify=stateChanged)
+    def powerProfile(self) -> str:
+        return str(self._get("power_profile", "indisponible"))
+
+    @pyqtProperty("QVariantList", notify=stateChanged)
+    def profiles(self) -> list:
+        return list(self._get("profiles", []))
+
+    @pyqtProperty(bool, notify=stateChanged)
+    def effects(self) -> bool:
+        return bool(self._get("effects", True))
+
+    @pyqtProperty(bool, notify=stateChanged)
+    def tearing(self) -> bool:
+        return bool(self._get("tearing", False))
+
+    @pyqtProperty(bool, notify=stateChanged)
+    def mangohud(self) -> bool:
+        return bool(self._get("mangohud", False))
+
+    @pyqtProperty(str, notify=stateChanged)
+    def mangohudPreset(self) -> str:
+        return str(self._get("mangohud_settings", {}).get("preset", "défaut"))
+
+    @pyqtProperty(int, notify=stateChanged)
+    def fpsLimit(self) -> int:
+        return int(self._get("mangohud_settings", {}).get("fps_limit", 0))
+
+    @pyqtProperty(bool, notify=stateChanged)
+    def gamemoded(self) -> bool:
+        return bool(self._get("gamemoded", False))
+
+    @pyqtProperty("QVariantList", notify=stateChanged)
+    def protonVersions(self) -> list:
+        return list(self._get("proton", []))
+
+    @pyqtProperty("QVariantList", constant=True)
+    def launchers(self) -> list:
+        return self._launchers
+
+    @pyqtProperty(bool, notify=busyChanged)
+    def busy(self) -> bool:
+        return self._busy
+
+    # ---------------------------------------------------------------- Actions
+    def _gamemode(self, *arguments: str) -> None:
+        process = QProcess(self)
+        process.finished.connect(lambda code, _status, p=process: self._finished(p, code))
+        process.start(GAMEMODE, list(arguments))
+
+    def _finished(self, process: QProcess, code: int) -> None:
+        if code != 0:
+            error = bytes(process.readAllStandardError()).decode(errors="replace").strip()
+            self.notify.emit(error.replace("[mode jeu] ", "") or "L'opération a échoué.")
+        self.refresh()
+
+    @pyqtSlot()
+    def toggleGameMode(self) -> None:
+        self._gamemode("toggle")
+
+    @pyqtSlot(str)
+    def setProfile(self, name: str) -> None:
+        self._gamemode("profile", name)
+
+    @pyqtSlot(bool)
+    def setEffects(self, enabled: bool) -> None:
+        self._gamemode("effects", "on" if enabled else "off")
+
+    @pyqtSlot(bool)
+    def setTearing(self, enabled: bool) -> None:
+        self._gamemode("tearing", "on" if enabled else "off")
+
+    @pyqtSlot(bool)
+    def setMangohud(self, enabled: bool) -> None:
+        self._gamemode("mangohud", "on" if enabled else "off")
+
+    @pyqtSlot(str)
+    def setMangohudPreset(self, preset: str) -> None:
+        self._gamemode("mangohud", "preset", preset)
+
+    @pyqtSlot(int)
+    def setFpsLimit(self, limit: int) -> None:
+        self._gamemode("mangohud", "fps-limit", str(max(0, limit)))
+
+    @pyqtSlot()
+    def installProtonGe(self) -> None:
+        if self._busy:
+            return
+        self._busy = True
+        self.busyChanged.emit()
+        self._buffer = ""
+        process = QProcess(self)
+        process.readyReadStandardOutput.connect(self._proton_output)
+        process.finished.connect(self._proton_finished)
+        self._proton = process
+        self.protonProgress.emit("Connexion à GitHub…", 0)
+        process.start(GAMEMODE, ["proton", "install-ge", "--json-progress"])
+
+    def _proton_output(self) -> None:
+        if self._proton is None:
+            return
+        self._buffer += bytes(self._proton.readAllStandardOutput()).decode(errors="replace")
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            self.protonProgress.emit(event.get("message", ""), int(event.get("percent", 0) or 0))
+
+    def _proton_finished(self, code: int, _status) -> None:
+        if code != 0 and self._proton is not None:
+            error = bytes(self._proton.readAllStandardError()).decode(errors="replace").strip()
+            self.notify.emit(error.replace("[mode jeu] ", "") or "Installation de GE-Proton impossible.")
+        else:
+            self.notify.emit("GE-Proton est prêt : choisissez-le dans Steam → Propriétés → Compatibilité.")
+        self._busy = False
+        self.busyChanged.emit()
+        self.refresh()
+
+    @pyqtSlot(str)
+    def removeProton(self, name: str) -> None:
+        self._gamemode("proton", "remove", name)
+
+    @pyqtSlot(str)
+    def launch(self, launcher_id: str) -> None:
+        for key, _label, command, _icon, _description in LAUNCHERS:
+            if key == launcher_id and available(command):
+                QProcess.startDetached(command[0], command[1:])
+                return
+        QProcess.startDetached("djerba-welcome", ["--page", "apps"])
+
+
+def main() -> int:
+    QGuiApplication.setApplicationName(APP_ID)
+    QGuiApplication.setApplicationDisplayName("Djerba Game Center")
+    QGuiApplication.setDesktopFileName(APP_ID)
+    app = QGuiApplication(sys.argv)
+    app.setWindowIcon(QIcon.fromTheme("input-gaming"))
+    if not QIcon.themeName() or QIcon.themeName() == "hicolor":
+        QIcon.setThemeName("breeze-dark")
+    backend = Backend(app)
+    engine = QQmlApplicationEngine()
+    engine.addImageProvider("icon", IconProvider())
+    engine.rootContext().setContextProperty("backend", backend)
+    engine.load(QUrl.fromLocalFile(str(QML_FILE)))
+    if not engine.rootObjects():
+        print(f"djerba-game-center : impossible de charger {QML_FILE}", file=sys.stderr)
+        return 1
+    return app.exec()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

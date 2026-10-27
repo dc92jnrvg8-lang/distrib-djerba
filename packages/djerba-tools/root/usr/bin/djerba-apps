@@ -18,14 +18,23 @@ sont mis en file d'attente : le service djerba-apps-firstboot les installe
 au premier démarrage, dès que le réseau est disponible.
 
 Les opérations qui modifient le système exigent les droits root (pkexec ou
-sudo). La progression peut être émise en JSON, une ligne par évènement.
+sudo) et sont sérialisées par un verrou global (/run/djerba-apps/lock) : le
+service de premier démarrage, l'assistant et le terminal ne se gênent jamais.
+Avec --json-progress, chaque ligne de la sortie standard est un objet JSON :
+  {"event": "start"|"progress"|"log"|"finish"|"waiting"|"error"|"complete",
+   "done": n, "total": n, "percent": 0-100, "app": id, "message": "…"}
+La progression des paquets provient du canal d'état d'APT (APT::Status-Fd),
+celle de Flatpak de son affichage en pourcentage.
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
+import re
+import selectors
 import shutil
 import socket
 import subprocess
@@ -41,11 +50,19 @@ CATALOG = Path(os.environ.get("DJERBA_APPS_CATALOG", "/usr/share/djerba/apps.yam
 STATE_DIR = Path(os.environ.get("DJERBA_APPS_STATE", "/var/lib/djerba/apps"))
 PENDING = STATE_DIR / "pending.json"
 RESULT = STATE_DIR / "last-run.json"
-RUNTIME_STATUS = Path("/run/djerba-apps/status.json")
+RUNTIME_DIR = Path(os.environ.get("DJERBA_APPS_RUNTIME", "/run/djerba-apps"))
+RUNTIME_STATUS = RUNTIME_DIR / "status.json"
+LOCK_FILE = RUNTIME_DIR / "lock"
 FLATHUB = "flathub"
 APT_ENV = {"DEBIAN_FRONTEND": "noninteractive", "APT_LISTCHANGES_FRONTEND": "none"}
+# DPkg::Lock::Timeout : attendre plutôt qu'échouer si unattended-upgrades ou
+# Discover tiennent déjà le verrou de dpkg.
 APT_OPTIONS = ["-y", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold",
-               "-o", "APT::Install-Recommends=true", "-o", "Acquire::Retries=5"]
+               "-o", "APT::Install-Recommends=true", "-o", "Acquire::Retries=5",
+               "-o", "DPkg::Lock::Timeout=600"]
+KNOWN_ARCHITECTURES = {"amd64", "arm64", "i386", "armhf"}
+FLATPAK_ID = re.compile(r"^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+){2,}$")
+PERCENT = re.compile(r"(\d{1,3})\s?%")
 
 EX_OK = 0
 EX_FAILURE = 1
@@ -91,16 +108,27 @@ def load_catalog(path: Path = CATALOG) -> tuple[list[dict], list[App]]:
     apps: list[App] = []
     seen: set[str] = set()
     for entry in data.get("apps") or []:
+        if not isinstance(entry, dict):
+            raise CatalogError("entrée d'application invalide")
         app_id = entry.get("id", "")
-        if not app_id or app_id in seen:
-            raise CatalogError(f"identifiant absent ou dupliqué : {app_id!r}")
+        if not isinstance(app_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", app_id) or app_id in seen:
+            raise CatalogError(f"identifiant absent, invalide ou dupliqué : {app_id!r}")
         seen.add(app_id)
         if entry.get("category") not in category_ids:
             raise CatalogError(f"{app_id} : catégorie inconnue")
+        if not entry.get("name"):
+            raise CatalogError(f"{app_id} : nom absent")
         apt = entry.get("apt") or {}
         flatpak = entry.get("flatpak", "")
         if bool(apt) == bool(flatpak):
             raise CatalogError(f"{app_id} : exactement une source (apt ou flatpak) attendue")
+        if flatpak and not FLATPAK_ID.match(flatpak):
+            raise CatalogError(f"{app_id} : identifiant Flatpak invalide {flatpak!r}")
+        if apt and not apt.get("packages"):
+            raise CatalogError(f"{app_id} : liste de paquets APT vide")
+        architectures = set(entry.get("architectures") or []) | set(apt.get("foreign_architectures") or [])
+        if architectures - KNOWN_ARCHITECTURES:
+            raise CatalogError(f"{app_id} : architecture inconnue {sorted(architectures - KNOWN_ARCHITECTURES)}")
         apps.append(App(
             id=app_id,
             name=entry["name"],
@@ -131,14 +159,30 @@ class Reporter:
         self.total = total
         self.done = 0
 
+        self.current = ""
+        self.last_percent = -1
+
     def emit(self, event: str, **payload: Any) -> None:
         payload = {"event": event, "done": self.done, "total": self.total, **payload}
         if self.json_mode:
             print(json.dumps(payload, ensure_ascii=False), flush=True)
+        elif event == "log":
+            print(f"    {payload.get('message', '')}", flush=True)
+        elif event == "progress":
+            print(f"[djerba-apps] {payload.get('percent', 0):3d} % {payload.get('message', '')}", flush=True)
         else:
             message = payload.get("message") or payload.get("app") or ""
             print(f"[djerba-apps] {event}: {message}", flush=True)
-        self._write_runtime(payload)
+        if event != "log":
+            self._write_runtime(payload)
+
+    def progress(self, percent: float, detail: str) -> None:
+        value = max(0, min(100, int(percent)))
+        if value == self.last_percent:
+            return
+        self.last_percent = value
+        message = f"{self.current} — {value} %" + (f" ({detail})" if detail else "")
+        self.emit("progress", app=self.current, percent=value, message=message)
 
     def _write_runtime(self, payload: dict) -> None:
         try:
@@ -191,18 +235,106 @@ def wait_for_network(seconds: int) -> bool:
 
 
 # ---------------------------------------------------------------- Actions
-def run(command: list[str], env: dict | None = None) -> int:
+REPORTER: Reporter | None = None
+
+
+def run(command: list[str], env: dict | None = None, apt_status: bool = False) -> int:
+    """Exécute une commande en relayant sa sortie et sa progression.
+
+    La sortie du programme n'est jamais mêlée au flux JSON : chaque ligne
+    devient un évènement « log ». Pour APT, le canal d'état (APT::Status-Fd)
+    fournit des lignes « pmstatus:paquet:pourcentage:message » converties en
+    évènements « progress ».
+    """
     merged = dict(os.environ, **(env or {}))
-    return subprocess.run(command, env=merged, check=False).returncode
+    status_read = status_write = -1
+    if apt_status:
+        status_read, status_write = os.pipe()
+        command = [command[0], "-o", f"APT::Status-Fd={status_write}", *command[1:]]
+    process = subprocess.Popen(command, env=merged, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               stdin=subprocess.DEVNULL,
+                               pass_fds=(status_write,) if apt_status else ())
+    if apt_status:
+        os.close(status_write)
+    selector = selectors.DefaultSelector()
+    assert process.stdout is not None
+    selector.register(process.stdout, selectors.EVENT_READ, "output")
+    status_stream = None
+    if apt_status:
+        status_stream = os.fdopen(status_read, "rb")
+        selector.register(status_stream, selectors.EVENT_READ, "status")
+    buffers = {"output": b"", "status": b""}
+    while selector.get_map():
+        for key, _ in selector.select():
+            chunk = os.read(key.fd, 65536)
+            if not chunk:
+                selector.unregister(key.fileobj)
+                continue
+            buffers[key.data] += chunk
+            # Flatpak réécrit sa ligne de progression avec « \r ».
+            *lines, buffers[key.data] = re.split(rb"[\r\n]", buffers[key.data])
+            for raw in lines:
+                handle_line(key.data, raw.decode(errors="replace").strip())
+    if status_stream is not None:
+        status_stream.close()
+    return process.wait()
 
 
-def retry(command: list[str], attempts: int = 3, env: dict | None = None) -> bool:
+def handle_line(channel: str, line: str) -> None:
+    if not line or REPORTER is None:
+        return
+    if channel == "status":
+        parts = line.split(":", 3)
+        if len(parts) == 4 and parts[0] in ("pmstatus", "dlstatus"):
+            try:
+                percent = float(parts[2])
+            except ValueError:
+                return
+            if parts[0] == "dlstatus":
+                REPORTER.progress(percent * 0.4, "téléchargement")
+            else:
+                REPORTER.progress(40 + percent * 0.6, parts[3])
+        return
+    REPORTER.emit("log", app=REPORTER.current, message=line)
+    match = PERCENT.search(line)
+    if match and ("Installing" in line or "Installation" in line or "Téléchargement" in line
+                  or "Downloading" in line or "Installer" in line):
+        REPORTER.progress(float(match.group(1)), "Flathub")
+
+
+def retry(command: list[str], attempts: int = 3, env: dict | None = None, apt_status: bool = False) -> bool:
     for attempt in range(1, attempts + 1):
-        if run(command, env) == 0:
+        if run(command, env, apt_status) == 0:
             return True
         if attempt < attempts:
+            if REPORTER is not None:
+                REPORTER.emit("log", app=REPORTER.current,
+                              message=f"nouvel essai ({attempt + 1}/{attempts}) dans {5 * attempt} s")
             time.sleep(5 * attempt)
     return False
+
+
+class GlobalLock:
+    """Verrou exclusif : une seule opération djerba-apps à la fois."""
+
+    def __init__(self, reporter: Reporter) -> None:
+        self.reporter = reporter
+        self.handle = None
+
+    def __enter__(self) -> "GlobalLock":
+        RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        self.handle = LOCK_FILE.open("w")
+        try:
+            fcntl.flock(self.handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            self.reporter.emit("waiting", message="Une autre installation est en cours : attente…")
+            fcntl.flock(self.handle, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        if self.handle is not None:
+            fcntl.flock(self.handle, fcntl.LOCK_UN)
+            self.handle.close()
 
 
 class Installer:
@@ -212,7 +344,9 @@ class Installer:
 
     def _apt_update(self) -> bool:
         if not self.apt_updated:
-            self.apt_updated = retry(["apt-get", "update", "--error-on=any"], env=APT_ENV)
+            self.reporter.emit("log", app=self.reporter.current, message="Mise à jour des listes de paquets")
+            self.apt_updated = retry(["apt-get", "update", "--error-on=any", "-o", "DPkg::Lock::Timeout=600"],
+                                     env=APT_ENV)
         return self.apt_updated
 
     def install_apt(self, app: App) -> bool:
@@ -220,6 +354,10 @@ class Installer:
                                      text=True, check=False).stdout.split())
         for arch in app.foreign_architectures:
             if arch not in current:
+                # Multiarch (Steam, Wine 32 bits) : bibliothèques i386 à côté
+                # des paquets natifs ; les listes doivent être relues.
+                self.reporter.emit("log", app=self.reporter.current,
+                                   message=f"Activation de l'architecture {arch} (multiarch)")
                 if run(["dpkg", "--add-architecture", arch]) != 0:
                     return False
                 self.apt_updated = False
@@ -230,7 +368,7 @@ class Installer:
                 return False
         if not self._apt_update():
             return False
-        return retry(["apt-get", "install", *APT_OPTIONS, *app.apt_packages], env=APT_ENV)
+        return retry(["apt-get", "install", *APT_OPTIONS, *app.apt_packages], env=APT_ENV, apt_status=True)
 
     def install_flatpak(self, app: App) -> bool:
         if not shutil.which("flatpak"):
@@ -238,6 +376,8 @@ class Installer:
         return retry(["flatpak", "install", "--system", "-y", "--noninteractive", FLATHUB, app.flatpak])
 
     def install(self, app: App) -> bool:
+        self.reporter.current = app.name
+        self.reporter.last_percent = -1
         self.reporter.emit("start", app=app.id, name=app.name, action="install",
                            message=f"Installation de {app.name}")
         ok = self.install_flatpak(app) if app.flatpak else self.install_apt(app)
@@ -247,6 +387,8 @@ class Installer:
         return ok
 
     def remove(self, app: App) -> bool:
+        self.reporter.current = app.name
+        self.reporter.last_percent = -1
         self.reporter.emit("start", app=app.id, name=app.name, action="remove",
                            message=f"Suppression de {app.name}")
         if app.flatpak:
@@ -255,9 +397,10 @@ class Installer:
             installed = [package for package in app.apt_packages if apt_installed(package)]
             ok = True
             if installed:
-                ok = run(["apt-get", "purge", "-y", *installed], env=APT_ENV) == 0
+                ok = run(["apt-get", "purge", "-y", "-o", "DPkg::Lock::Timeout=600", *installed],
+                         env=APT_ENV, apt_status=True) == 0
                 if ok:
-                    run(["apt-get", "autoremove", "--purge", "-y"], env=APT_ENV)
+                    run(["apt-get", "autoremove", "--purge", "-y", "-o", "DPkg::Lock::Timeout=600"], env=APT_ENV)
         self.reporter.done += 1
         self.reporter.emit("finish", app=app.id, name=app.name, action="remove", success=ok,
                            message=f"{app.name} {'supprimé' if ok else ': échec de la suppression'}")
@@ -336,13 +479,23 @@ def command_list(args: argparse.Namespace) -> int:
 
 
 def apply_operations(installs: list[App], removals: list[App], reporter: Reporter) -> dict[str, bool]:
+    global REPORTER
+    REPORTER = reporter
     installer = Installer(reporter)
     reporter.total = len(installs) + len(removals)
     results: dict[str, bool] = {}
-    for app in removals:
-        results[app.id] = installer.remove(app)
-    for app in installs:
-        results[app.id] = installer.install(app)
+    with GlobalLock(reporter):
+        for app in removals:
+            results[app.id] = installer.remove(app)
+        for app in installs:
+            results[app.id] = installer.install(app)
+        # La file d'attente ne garde que ce qui reste à faire.
+        pending = read_pending()
+        pending["install"] = [i for i in pending["install"] if not (i in results and results[i]
+                              and i in {a.id for a in installs})]
+        pending["remove"] = [i for i in pending["remove"] if not (i in results and results[i]
+                             and i in {a.id for a in removals})]
+        write_pending(pending)
     return results
 
 

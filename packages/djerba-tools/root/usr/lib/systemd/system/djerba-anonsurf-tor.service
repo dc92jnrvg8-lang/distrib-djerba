@@ -1,5 +1,7 @@
 # Djerba OS — instance Tor du mode anonyme (démarrée par djerba-anonsurf).
-# Modelée sur tor@default.service de Debian, avec /etc/djerba/anonsurf/torrc.
+# Modelée sur tor@default.service de Debian. Le profil AppArmor system_tor
+# n'autorise la lecture que de /etc/tor/** : la configuration est donc
+# /etc/tor/djerba-anonsurf.torrc.
 [Unit]
 Description=Djerba OS : Tor pour le mode anonyme
 After=network-online.target nss-lookup.target
@@ -12,8 +14,8 @@ NotifyAccess=all
 PIDFile=/run/tor/tor.pid
 PermissionsStartOnly=yes
 ExecStartPre=/usr/bin/install -Z -m 02755 -o debian-tor -g debian-tor -d /run/tor
-ExecStartPre=/usr/bin/tor --defaults-torrc /usr/share/tor/tor-service-defaults-torrc -f /etc/djerba/anonsurf/torrc --RunAsDaemon 0 --verify-config
-ExecStart=/usr/bin/tor --defaults-torrc /usr/share/tor/tor-service-defaults-torrc -f /etc/djerba/anonsurf/torrc --RunAsDaemon 0
+ExecStartPre=/usr/bin/tor --defaults-torrc /usr/share/tor/tor-service-defaults-torrc -f /etc/tor/djerba-anonsurf.torrc --RunAsDaemon 0 --verify-config
+ExecStart=/usr/bin/tor --defaults-torrc /usr/share/tor/tor-service-defaults-torrc -f /etc/tor/djerba-anonsurf.torrc --RunAsDaemon 0
 ExecReload=/bin/kill -HUP ${MAINPID}
 KillSignal=SIGINT
 TimeoutStartSec=300

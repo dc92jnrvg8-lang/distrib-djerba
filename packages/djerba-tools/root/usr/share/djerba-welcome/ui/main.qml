@@ -786,7 +786,11 @@ ApplicationWindow {
             ColumnLayout {
                 anchors.fill: parent
                 spacing: 14
-                SectionTitle { text: qsTr("Jeu") }
+                RowLayout {
+                    Layout.fillWidth: true
+                    SectionTitle { Layout.fillWidth: true; text: qsTr("Jeu") }
+                    PrimaryButton { text: qsTr("Ouvrir le Game Center"); onClicked: backend.openTool("gamecenter") }
+                }
                 Subtitle { text: qsTr("Noyau à préemption complète, GameMode, MangoHud, vkBasalt et pilotes Vulkan sont déjà installés. Le mode jeu maximise les performances de la session.") }
 
                 OptionCard {

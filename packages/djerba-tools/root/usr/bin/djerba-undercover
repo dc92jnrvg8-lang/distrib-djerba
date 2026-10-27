@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Djerba OS — mode discret : apparence de bureau façon Windows, réversible
-# (même principe que le mode « undercover » de Kali Linux), pour travailler en
-# public sans attirer l'attention.
+# (même principe que kali-undercover de Kali Linux : l'état courant du bureau
+# est sauvegardé, le thème « Windows » appliqué, puis l'état d'origine restauré
+# à l'identique au retour), pour travailler en public sans attirer l'attention.
 #
-# Usage : djerba-undercover [on|off|toggle|status] [--style 10|11]
+# Usage : djerba-undercover [on|off|toggle|status] [--style 10|11] [--json] [--verbose|-v]
 #
 #   on       sauvegarde la configuration Plasma de l'utilisateur, puis applique
 #            le thème global « Discret » : couleurs claires, accent bleu, fond
@@ -12,8 +13,11 @@
 #            centrée (--style 11, par défaut)
 #   off      restaure exactement la configuration sauvegardée
 #   toggle   bascule (action du lanceur « Mode discret »)
-#   status   affiche l'état courant
+#   status   affiche l'état courant (--json pour l'assistant)
 #
+# Le bureau (plasmashell) réécrit sa configuration en quittant : il est donc
+# arrêté proprement avant chaque sauvegarde et chaque restauration, puis
+# relancé ; c'est ce qui garantit l'absence de configuration corrompue.
 # Commande utilisateur : elle ne modifie que ~/.config, jamais le système.
 set -euo pipefail
 
@@ -21,39 +25,98 @@ readonly STATE="${XDG_DATA_HOME:-${HOME}/.local/share}/djerba-undercover"
 readonly BACKUP="${STATE}/backup"
 readonly CONFIG="${XDG_CONFIG_HOME:-${HOME}/.config}"
 readonly FILES=(
-    kdeglobals kwinrc plasmarc plasmashellrc
+    kdeglobals kwinrc plasmarc plasmashellrc breezerc
     plasma-org.kde.plasma.desktop-appletsrc
     kcminputrc ksplashrc kscreenlockerrc gtk-3.0/settings.ini gtk-4.0/settings.ini
 )
+readonly SHELL_UNIT="plasma-plasmashell.service"
 
 STYLE="11"
+JSON="false"
+VERBOSE="false"
 
 log() { printf '[mode discret] %s\n' "$*"; }
-die() { printf '[mode discret] %s\n' "$*" >&2; exit 1; }
+debug() { if [[ "${VERBOSE}" == "true" ]]; then printf '[mode discret] [%(%T)T] %s\n' -1 "$*"; fi; }
+die() { printf '[mode discret] erreur : %s\n' "$*" >&2; exit 1; }
 
 notify() {
     if command -v notify-send >/dev/null 2>&1; then
-        notify-send --app-name="Djerba OS" --icon=djerba-os "Mode discret" "$1" || true
+        notify-send --app-name="Djerba OS" --icon=djerba-os "Mode discret" "$1" >/dev/null 2>&1 || true
     fi
 }
 
-active() {
-    [[ -f "${STATE}/active" ]]
+active() { [[ -f "${STATE}/active" ]]; }
+
+lock() {
+    mkdir -p "${STATE}"
+    exec 9>"${STATE}/.lock"
+    flock -w 60 9 || die "une autre bascule du mode discret est en cours"
+    debug "verrou acquis"
+}
+
+require_session() {
+    [[ "${EUID}" -ne 0 ]] || die "à lancer en tant qu'utilisateur (pas en root)"
+    [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" || -S "${XDG_RUNTIME_DIR:-/run/user/${UID}}/bus" ]] \
+        || die "aucune session de bureau détectée"
+    command -v plasma-apply-lookandfeel >/dev/null 2>&1 || die "Plasma est requis"
+}
+
+shell_bus_ready() {
+    dbus-send --session --print-reply --dest=org.freedesktop.DBus / \
+        org.freedesktop.DBus.NameHasOwner string:org.kde.plasmashell 2>/dev/null | grep -q "boolean true"
+}
+
+stop_shell() {
+    debug "arrêt du bureau (${SHELL_UNIT}) : sa configuration est écrite sur disque"
+    if systemctl --user is-active --quiet "${SHELL_UNIT}"; then
+        systemctl --user stop "${SHELL_UNIT}"
+    elif command -v kquitapp6 >/dev/null 2>&1; then
+        kquitapp6 plasmashell >/dev/null 2>&1 || true
+    fi
+    local waited=0
+    while pgrep -u "${UID}" -x plasmashell >/dev/null 2>&1 && (( waited < 20 )); do
+        sleep 0.5
+        waited=$((waited + 1))
+    done
+    ! pgrep -u "${UID}" -x plasmashell >/dev/null 2>&1 || die "le bureau ne s'est pas arrêté"
+}
+
+start_shell() {
+    debug "redémarrage du bureau"
+    if ! systemctl --user start "${SHELL_UNIT}" 2>/dev/null; then
+        setsid -f plasmashell >/dev/null 2>&1
+    fi
+    local waited=0
+    until shell_bus_ready; do
+        (( waited < 60 )) || die "le bureau n'a pas redémarré"
+        sleep 0.5
+        waited=$((waited + 1))
+    done
+    debug "bureau prêt sur le bus de session"
+}
+
+reconfigure_kwin() {
+    debug "rechargement de KWin"
+    dbus-send --session --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure \
+        >/dev/null 2>&1 || true
 }
 
 backup_config() {
-    rm -rf "${BACKUP}"
-    mkdir -p "${BACKUP}"
+    rm -rf "${BACKUP}.new"
+    mkdir -p "${BACKUP}.new"
     local file
     for file in "${FILES[@]}"; do
+        mkdir -p "$(dirname "${BACKUP}.new/${file}")"
         if [[ -f "${CONFIG}/${file}" ]]; then
-            mkdir -p "$(dirname "${BACKUP}/${file}")"
-            cp -a "${CONFIG}/${file}" "${BACKUP}/${file}"
+            cp -a "${CONFIG}/${file}" "${BACKUP}.new/${file}"
+            debug "sauvegardé : ${file}"
         else
-            mkdir -p "$(dirname "${BACKUP}/${file}")"
-            : > "${BACKUP}/${file}.absent"
+            : > "${BACKUP}.new/${file}.absent"
         fi
     done
+    # Remplacement atomique : une sauvegarde incomplète n'écrase jamais la précédente.
+    rm -rf "${BACKUP}"
+    mv "${BACKUP}.new" "${BACKUP}"
 }
 
 restore_config() {
@@ -63,24 +126,19 @@ restore_config() {
         if [[ -f "${BACKUP}/${file}" ]]; then
             mkdir -p "$(dirname "${CONFIG}/${file}")"
             cp -a "${BACKUP}/${file}" "${CONFIG}/${file}"
+            debug "restauré : ${file}"
         elif [[ -f "${BACKUP}/${file}.absent" ]]; then
             rm -f "${CONFIG}/${file}"
+            debug "retiré (absent à l'origine) : ${file}"
         fi
     done
 }
 
-refresh_session() {
-    # Relit la palette de couleurs, recharge KWin et relance le bureau.
+apply_colors() {
     local scheme
     scheme="$(kreadconfig6 --file kdeglobals --group General --key ColorScheme --default BreezeDark)"
+    debug "palette de couleurs : ${scheme}"
     plasma-apply-colorscheme "${scheme}" >/dev/null 2>&1 || true
-    if command -v qdbus6 >/dev/null 2>&1; then
-        qdbus6 org.kde.KWin /KWin reconfigure >/dev/null 2>&1 || true
-    else
-        dbus-send --session --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure \
-            >/dev/null 2>&1 || true
-    fi
-    systemctl --user restart plasma-plasmashell.service
 }
 
 turn_on() {
@@ -91,39 +149,77 @@ turn_on() {
         11) package="org.djerba.undercover11.desktop" ;;
         *) die "style inconnu : ${STYLE} (10 ou 11)" ;;
     esac
-    mkdir -p "${STATE}"
+    [[ -d "/usr/share/plasma/look-and-feel/${package}" ]] || die "thème ${package} introuvable"
+    stop_shell
     backup_config
-    log "application du thème discret (style ${STYLE})"
-    plasma-apply-lookandfeel --apply "${package}" --resetLayout
+    start_shell
+    log "application du thème discret (style Windows ${STYLE})"
+    if ! plasma-apply-lookandfeel --apply "${package}" --resetLayout >/dev/null; then
+        log "échec de l'application du thème : restauration"
+        stop_shell
+        restore_config
+        start_shell
+        die "le thème discret n'a pas pu être appliqué"
+    fi
+    reconfigure_kwin
     echo "${STYLE}" > "${STATE}/active"
-    notify "Activé : l'apparence du bureau est passée en mode discret. Relancez la commande pour revenir."
+    notify "Activé : le bureau a l'apparence de Windows ${STYLE}. Relancez « Mode discret » pour revenir."
+    log "actif"
 }
 
 turn_off() {
     active || { log "déjà inactif"; return 0; }
-    log "restauration de votre configuration"
+    log "restauration de votre bureau"
+    stop_shell
     restore_config
+    apply_colors
+    reconfigure_kwin
+    start_shell
     rm -f "${STATE}/active"
-    refresh_session
     notify "Désactivé : votre bureau habituel est restauré."
+    log "inactif"
+}
+
+status() {
+    local state="false" style=""
+    if active; then state="true"; style="$(cat "${STATE}/active")"; fi
+    if [[ "${JSON}" == "true" ]]; then
+        printf '{"active": %s, "style": "%s"}\n' "${state}" "${style}"
+    elif [[ "${state}" == "true" ]]; then
+        echo "Mode discret : actif (style Windows ${style})"
+    else
+        echo "Mode discret : inactif"
+    fi
 }
 
 main() {
-    local command="${1:-toggle}"
-    shift || true
+    local command=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --style) STYLE="${2:?--style attend 10 ou 11}"; shift 2 ;;
-            *) die "option inconnue : $1" ;;
+            --json) JSON="true"; shift ;;
+            -v|--verbose) VERBOSE="true"; shift ;;
+            -h|--help) command="help"; shift ;;
+            -*) die "option inconnue : $1" ;;
+            *)
+                if [[ -n "${command}" ]]; then die "argument en trop : $1"; fi
+                command="$1"
+                shift
+                ;;
         esac
     done
-    [[ "${EUID}" -ne 0 ]] || die "à lancer en tant qu'utilisateur (pas en root)"
-    case "${command}" in
-        on) turn_on ;;
-        off) turn_off ;;
-        toggle) if active; then turn_off; else turn_on; fi ;;
-        status) if active; then echo "Mode discret : actif (style $(cat "${STATE}/active"))"; else echo "Mode discret : inactif"; fi ;;
-        -h|--help) sed -n '6,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+    case "${command:-toggle}" in
+        status) status ;;
+        help) sed -n '3,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+        on|off|toggle)
+            require_session
+            lock
+            case "${command:-toggle}" in
+                on) turn_on ;;
+                off) turn_off ;;
+                toggle) if active; then turn_off; else turn_on; fi ;;
+            esac
+            ;;
         *) die "commande inconnue : ${command} (voir --help)" ;;
     esac
 }

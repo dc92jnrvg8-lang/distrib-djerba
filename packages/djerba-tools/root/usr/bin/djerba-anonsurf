@@ -2,58 +2,74 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Djerba OS — mode anonyme : tout le trafic passe par Tor (inspiré d'AnonSurf).
 #
-# Usage : djerba-anonsurf start|stop|restart|toggle|status|change|myip [--json]
+# Usage : djerba-anonsurf start|stop|restart|toggle|status|change|myip [--json] [--verbose|-v]
 #
 #   start    applique d'abord le coupe-circuit nftables (aucune fuite possible),
 #            puis démarre Tor et attend la fin de son amorçage :
 #              * TCP sortant  -> TransPort de Tor (127.0.0.1:9040)
 #              * DNS (UDP 53) -> DNSPort de Tor (127.0.0.1:5353), .onion compris
-#              * réseau local (RFC 1918) et DHCP autorisés, tout le reste bloqué
-#                (IPv6, UDP, ICMP), y compris si Tor s'arrête
+#              * réseau local (RFC 1918) et DHCP autorisés ; IPv6, UDP et ICMP
+#                vers Internet rejetés, y compris si Tor s'arrête
+#            Si Tor ne parvient pas à se connecter, tout est annulé (rien n'est
+#            sorti entre-temps) et la connexion directe est rétablie.
 #   stop     retire les règles, arrête Tor, vide le cache DNS
 #   change   nouvelle identité Tor (SIGNAL NEWNYM : nouveaux circuits)
 #   myip     adresse IP publique vue d'Internet et passage ou non par Tor
 #   status   état du mode anonyme (--json pour l'assistant)
+#   --verbose, -v   détail de chaque étape (règles, service, amorçage)
 set -euo pipefail
 
 readonly TABLE="djerba_anonsurf"
 readonly SERVICE="djerba-anonsurf-tor.service"
 readonly TOR_USER="debian-tor"
+readonly TORRC="/etc/tor/djerba-anonsurf.torrc"
 readonly TRANS_PORT=9040
 readonly DNS_PORT=5353
 readonly CONTROL_SOCKET="/run/tor/control"
 readonly COOKIE="/run/tor/control.authcookie"
 readonly STATE_DIR="/run/djerba-anonsurf"
-readonly BOOTSTRAP_TIMEOUT=120
+readonly LOCK="/run/djerba-anonsurf.lock"
+readonly BOOTSTRAP_TIMEOUT="${DJERBA_ANONSURF_TIMEOUT:-180}"
 
 JSON="false"
+VERBOSE="false"
 
 log() { printf '[mode anonyme] %s\n' "$*"; }
-die() { printf '[mode anonyme] %s\n' "$*" >&2; exit 1; }
+debug() { if [[ "${VERBOSE}" == "true" ]]; then printf '[mode anonyme] [%(%T)T] %s\n' -1 "$*"; fi; }
+die() { printf '[mode anonyme] erreur : %s\n' "$*" >&2; exit 1; }
 
 require_root() {
-    [[ "${EUID}" -eq 0 ]] || die "droits administrateur requis : pkexec djerba-anonsurf $*"
+    [[ "${EUID}" -eq 0 ]] || die "droits administrateur requis : pkexec djerba-anonsurf $1"
+}
+
+lock() {
+    # Une seule opération à la fois (double clic, assistant + terminal…).
+    exec 9>"${LOCK}"
+    if ! flock -w 30 9; then
+        die "une autre opération du mode anonyme est en cours"
+    fi
+    debug "verrou ${LOCK} acquis"
 }
 
 notify_users() {
     # Notification de bureau pour chaque session graphique active.
     local message="$1" uid user
     command -v notify-send >/dev/null 2>&1 || return 0
-    while read -r uid user; do
+    while read -r uid user _; do
         [[ -S "/run/user/${uid}/bus" ]] || continue
         runuser -u "${user}" -- env DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" \
-            notify-send --app-name="Djerba OS" --icon=tor "Mode anonyme" "${message}" 2>/dev/null || true
-    done < <(loginctl list-users --no-legend 2>/dev/null | awk '{print $1, $2}')
+            notify-send --app-name="Djerba OS" --icon=security-high "Mode anonyme" "${message}" \
+            >/dev/null 2>&1 || true
+    done < <(loginctl list-users --no-legend 2>/dev/null || true)
 }
 
 rules_active() {
     nft list table inet "${TABLE}" >/dev/null 2>&1
 }
 
-apply_rules() {
-    local tor_uid
-    tor_uid="$(id -u "${TOR_USER}")"
-    nft -f - <<EOF
+ruleset() {
+    local tor_uid="$1"
+    cat <<EOF
 table inet ${TABLE}
 delete table inet ${TABLE}
 table inet ${TABLE} {
@@ -66,7 +82,7 @@ table inet ${TABLE} {
     chain nat_output {
         type nat hook output priority dstnat; policy accept;
         meta skuid ${tor_uid} return
-        udp dport 53 redirect to :${DNS_PORT}
+        meta nfproto ipv4 udp dport 53 redirect to :${DNS_PORT}
         ip daddr 10.192.0.0/10 meta l4proto tcp redirect to :${TRANS_PORT}
         ip daddr 127.0.0.0/8 return
         ip daddr @local4 return
@@ -79,15 +95,27 @@ table inet ${TABLE} {
         meta skuid ${tor_uid} accept
         ip daddr @local4 accept
         udp sport 68 udp dport 67 accept
-        meta nfproto ipv4 icmp type { echo-request } ip daddr @local4 accept
-        counter log prefix "djerba-anonsurf drop: " level info limit rate 5/minute
+        counter log prefix "djerba-anonsurf: " level info limit rate 5/minute
+        meta l4proto tcp reject with tcp reset
+        reject with icmpx admin-prohibited
     }
 }
 EOF
 }
 
+apply_rules() {
+    local tor_uid
+    tor_uid="$(id -u "${TOR_USER}")" || die "utilisateur ${TOR_USER} absent (paquet tor)"
+    debug "application des règles nftables (Tor = uid ${tor_uid})"
+    if [[ "${VERBOSE}" == "true" ]]; then
+        ruleset "${tor_uid}" | sed 's/^/    /'
+    fi
+    ruleset "${tor_uid}" | nft -f -
+}
+
 remove_rules() {
     if rules_active; then
+        debug "retrait de la table inet ${TABLE}"
         nft delete table inet "${TABLE}"
     fi
 }
@@ -113,6 +141,8 @@ def send(line):
     reply = []
     while True:
         raw = stream.readline().decode(errors="replace").rstrip("\r\n")
+        if not raw:
+            raise SystemExit("connexion de contrôle fermée par Tor")
         reply.append(raw)
         if len(raw) >= 4 and raw[3] == " ":
             return reply
@@ -128,45 +158,88 @@ PY
 }
 
 bootstrap_progress() {
-    tor_control "GETINFO status/bootstrap-phase" 2>/dev/null \
-        | sed -n 's/.*PROGRESS=\([0-9]*\).*/\1/p' | head -n 1
+    local reply
+    reply="$(tor_control "GETINFO status/bootstrap-phase" 2>/dev/null)" || return 1
+    sed -n 's/.*PROGRESS=\([0-9]*\).*/\1/p' <<< "${reply}" | head -n 1
 }
 
 wait_bootstrap() {
-    local elapsed=0 progress
-    while [[ "${elapsed}" -lt "${BOOTSTRAP_TIMEOUT}" ]]; do
+    local start progress="" last=""
+    start="${SECONDS}"
+    while (( SECONDS - start < BOOTSTRAP_TIMEOUT )); do
+        if ! systemctl is-active --quiet "${SERVICE}"; then
+            log "Tor s'est arrêté pendant l'amorçage"
+            return 1
+        fi
         progress="$(bootstrap_progress || true)"
         if [[ "${progress}" == "100" ]]; then
             return 0
         fi
-        log "connexion au réseau Tor : ${progress:-0} %"
-        sleep 3
-        elapsed=$((elapsed + 3))
+        if [[ "${progress}" != "${last}" ]]; then
+            log "connexion au réseau Tor : ${progress:-0} %"
+            last="${progress}"
+            printf '%s\n' "${progress:-0}" > "${STATE_DIR}/bootstrap"
+        fi
+        sleep 2
     done
+    log "délai de ${BOOTSTRAP_TIMEOUT} s dépassé (dernier état : ${progress:-0} %)"
     return 1
 }
 
 flush_dns() {
-    resolvectl flush-caches 2>/dev/null || true
+    resolvectl flush-caches >/dev/null 2>&1 || true
+}
+
+explain_failure() {
+    log "dernières lignes du journal de Tor :"
+    journalctl -u "${SERVICE}" -n 12 --no-pager -o cat 2>/dev/null | sed 's/^/    /' || true
+}
+
+rollback() {
+    debug "annulation : retrait des règles et arrêt de Tor"
+    remove_rules
+    systemctl stop "${SERVICE}" >/dev/null 2>&1 || true
+    rm -rf "${STATE_DIR}"
+    flush_dns
 }
 
 start() {
     require_root start
+    lock
+    if rules_active && [[ -f "${STATE_DIR}/active" ]]; then
+        log "déjà actif"
+        return 0
+    fi
+    [[ -r "${TORRC}" ]] || die "configuration ${TORRC} introuvable"
+    command -v tor >/dev/null 2>&1 || die "Tor n'est pas installé"
     install -d -m 0755 "${STATE_DIR}"
     rm -f "${STATE_DIR}/active"
     touch "${STATE_DIR}/starting"
+
     log "activation du coupe-circuit (nftables)"
-    apply_rules
+    if ! apply_rules; then
+        rollback
+        die "règles nftables refusées par le noyau"
+    fi
     flush_dns
+
     log "démarrage de Tor"
     systemctl stop tor.service >/dev/null 2>&1 || true
-    systemctl start "${SERVICE}"
+    debug "systemctl start ${SERVICE}"
+    if ! systemctl start "${SERVICE}"; then
+        explain_failure
+        rollback
+        notify_users "Tor n'a pas pu démarrer : connexion directe rétablie."
+        die "Tor n'a pas pu démarrer ; connexion directe rétablie"
+    fi
     if ! wait_bootstrap; then
-        notify_users "Tor ne parvient pas à se connecter : le trafic reste bloqué. Désactivez le mode anonyme pour retrouver Internet."
-        die "Tor n'a pas terminé son amorçage en ${BOOTSTRAP_TIMEOUT} s ; le trafic reste bloqué (djerba-anonsurf stop pour revenir)."
+        explain_failure
+        rollback
+        notify_users "Tor ne parvient pas à se connecter : connexion directe rétablie."
+        die "Tor ne parvient pas à joindre le réseau ; mode anonyme annulé, connexion directe rétablie"
     fi
     date +%s > "${STATE_DIR}/since"
-    rm -f "${STATE_DIR}/starting"
+    rm -f "${STATE_DIR}/starting" "${STATE_DIR}/bootstrap"
     touch "${STATE_DIR}/active"
     flush_dns
     log "mode anonyme actif : tout le trafic passe par Tor"
@@ -175,11 +248,9 @@ start() {
 
 stop() {
     require_root stop
-    log "retrait des règles"
-    remove_rules
-    systemctl stop "${SERVICE}" >/dev/null 2>&1 || true
-    rm -rf "${STATE_DIR}"
-    flush_dns
+    lock
+    log "retrait des règles et arrêt de Tor"
+    rollback
     log "mode anonyme désactivé"
     notify_users "Désactivé : connexion directe rétablie."
 }
@@ -187,6 +258,7 @@ stop() {
 change_identity() {
     require_root change
     systemctl is-active --quiet "${SERVICE}" || die "le mode anonyme n'est pas actif"
+    debug "SIGNAL NEWNYM"
     tor_control "SIGNAL NEWNYM" >/dev/null
     flush_dns
     log "nouvelle identité Tor demandée (nouveaux circuits)"
@@ -195,14 +267,13 @@ change_identity() {
 
 my_ip() {
     local answer
-    if answer="$(curl -fsS --max-time 30 https://check.torproject.org/api/ip 2>/dev/null)"; then
-        if [[ "${JSON}" == "true" ]]; then
-            printf '%s\n' "${answer}"
-        else
-            python3 -c 'import json,sys; d=json.load(sys.stdin); print(f"IP publique : {d.get(\"IP\")} — via Tor : {\"oui\" if d.get(\"IsTor\") else \"non\"}")' <<< "${answer}"
-        fi
+    debug "requête https://check.torproject.org/api/ip"
+    answer="$(curl -fsS --max-time 30 https://check.torproject.org/api/ip 2>/dev/null)" \
+        || die "impossible de joindre check.torproject.org"
+    if [[ "${JSON}" == "true" ]]; then
+        printf '%s\n' "${answer}"
     else
-        die "impossible de joindre check.torproject.org"
+        python3 -c 'import json,sys; d=json.load(sys.stdin); print("IP publique : %s — via Tor : %s" % (d.get("IP"), "oui" if d.get("IsTor") else "non"))' <<< "${answer}"
     fi
 }
 
@@ -211,39 +282,47 @@ status() {
     # en root, la présence réelle des règles nftables fait foi.
     local active="false" starting="false" tor="false" progress="0" since=""
     if [[ "${EUID}" -eq 0 ]]; then
-        if rules_active; then active="true"; fi
+        if rules_active && [[ ! -f "${STATE_DIR}/starting" ]]; then active="true"; fi
     elif [[ -f "${STATE_DIR}/active" ]]; then
         active="true"
     fi
     if [[ -f "${STATE_DIR}/starting" ]]; then starting="true"; fi
-    if systemctl is-active --quiet "${SERVICE}"; then
+    if systemctl is-active --quiet "${SERVICE}" 2>/dev/null; then
         tor="true"
-        if [[ "${EUID}" -eq 0 ]]; then
-            progress="$(bootstrap_progress || echo 0)"
-        elif [[ -f "${STATE_DIR}/active" ]]; then
+        if [[ "${active}" == "true" ]]; then
             progress="100"
+        elif [[ -r "${STATE_DIR}/bootstrap" ]]; then
+            progress="$(cat "${STATE_DIR}/bootstrap")"
         fi
     fi
     if [[ -r "${STATE_DIR}/since" ]]; then since="$(cat "${STATE_DIR}/since")"; fi
     if [[ "${JSON}" == "true" ]]; then
         printf '{"active": %s, "starting": %s, "tor": %s, "bootstrap": %s, "since": "%s"}\n' \
             "${active}" "${starting}" "${tor}" "${progress:-0}" "${since}"
+    elif [[ "${active}" == "true" ]]; then
+        echo "Mode anonyme : ACTIF (tout le trafic passe par Tor)"
+    elif [[ "${starting}" == "true" ]]; then
+        echo "Mode anonyme : connexion à Tor en cours (${progress:-0} %)"
     else
-        if [[ "${active}" == "true" ]]; then
-            echo "Mode anonyme : ACTIF (Tor : ${tor}, amorçage ${progress:-?} %)"
-        else
-            echo "Mode anonyme : inactif"
-        fi
+        echo "Mode anonyme : inactif"
     fi
 }
 
 main() {
-    local command="${1:-status}"
-    shift || true
+    local command="" argument
     for argument in "$@"; do
-        [[ "${argument}" == "--json" ]] && JSON="true"
+        case "${argument}" in
+            --json) JSON="true" ;;
+            -v|--verbose) VERBOSE="true" ;;
+            -h|--help) command="help" ;;
+            -*) die "option inconnue : ${argument} (voir --help)" ;;
+            *)
+                if [[ -n "${command}" ]]; then die "argument en trop : ${argument}"; fi
+                command="${argument}"
+                ;;
+        esac
     done
-    case "${command}" in
+    case "${command:-status}" in
         start) start ;;
         stop) stop ;;
         restart) stop; start ;;
@@ -251,7 +330,7 @@ main() {
         change|newnym) change_identity ;;
         myip) my_ip ;;
         status) status ;;
-        -h|--help) sed -n '3,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+        help) sed -n '3,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
         *) die "commande inconnue : ${command} (voir --help)" ;;
     esac
 }

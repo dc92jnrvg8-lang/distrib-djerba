@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Djerba Game Center
+Comment=Gaming settings: performance, MangoHud, Proton, launchers
+Comment[fr]=Réglages jeu : performances, MangoHud, Proton, lanceurs
+Exec=djerba-game-center
+Icon=input-gaming
+Terminal=false
+Categories=Qt;KDE;Game;Settings;
+Keywords=jeu;game;gaming;performance;proton;mangohud;steam;
+Actions=Toggle;
+
+[Desktop Action Toggle]
+Name=Toggle gaming mode
+Name[fr]=Basculer le mode jeu
+Exec=djerba-gamemode toggle

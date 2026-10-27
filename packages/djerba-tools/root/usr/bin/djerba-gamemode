@@ -1,134 +1,417 @@
-#!/usr/bin/env bash
+#!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Djerba OS — mode jeu de la session (complète GameMode, qui agit par jeu).
-#
-# Usage : djerba-gamemode on|off|toggle|status [--json]
-#         djerba-gamemode mangohud on|off      superposition MangoHud (FPS,
-#                                              températures) pour les jeux
-#                                              Vulkan/OpenGL, à la reconnexion
-#
-#   on    profil d'énergie « performance » (power-profiles-daemon), effets
-#         visuels coûteux de KWin coupés (flou, contraste, animations de
-#         fenêtres) ; l'état antérieur est mémorisé
-#   off   restaure exactement l'état antérieur
-#
-# Commande utilisateur : aucun droit administrateur requis.
-set -euo pipefail
+"""djerba-gamemode — réglages jeu de la session (moteur du Djerba Game Center).
 
-readonly STATE="${XDG_STATE_HOME:-${HOME}/.local/state}/djerba-gamemode"
-readonly ENV_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/environment.d"
-readonly MANGOHUD_ENV="${ENV_DIR}/90-djerba-mangohud.conf"
-readonly EFFECTS=(blurEnabled contrastEnabled slidingpopupsEnabled kwin4_effect_scaleEnabled)
+Usage :
+    djerba-gamemode on|off|toggle            mode jeu de session
+    djerba-gamemode status [--json]          état complet
+    djerba-gamemode profile performance|balanced|power-saver
+    djerba-gamemode effects on|off           effets coûteux de KWin (flou, contraste, animations)
+    djerba-gamemode tearing on|off           tearing autorisé en plein écran (latence minimale)
+    djerba-gamemode mangohud on|off          superposition MangoHud pour tous les jeux
+    djerba-gamemode mangohud preset compact|complet
+    djerba-gamemode mangohud fps-limit N     limite d'images/s (0 = aucune)
+    djerba-gamemode proton list [--json]     couches Proton installées pour Steam
+    djerba-gamemode proton install-ge [--json-progress]
+                                             dernière version de GE-Proton (somme SHA-512 vérifiée)
+    djerba-gamemode proton remove NOM
+Options : --verbose / -v
 
-JSON="false"
+Le mode jeu de session (on) passe le profil d'énergie en « performance »
+(power-profiles-daemon, qui pilote le gouverneur et l'EPP du processeur),
+coupe les effets coûteux de KWin et autorise le tearing en plein écran ;
+l'état antérieur est mémorisé puis restauré à l'identique (off). GameMode,
+lui, agit jeu par jeu (gamemoderun %command%). Commande utilisateur : aucun
+droit administrateur requis.
+"""
 
-log() { printf '[mode jeu] %s\n' "$*"; }
-die() { printf '[mode jeu] %s\n' "$*" >&2; exit 1; }
+from __future__ import annotations
 
-notify() {
-    if command -v notify-send >/dev/null 2>&1; then
-        notify-send --app-name="Djerba OS" --icon=input-gaming "Mode jeu" "$1" || true
-    fi
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+from pathlib import Path
+
+HOME = Path.home()
+STATE = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local" / "state")) / "djerba-gamemode"
+CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config"))
+MANGOHUD_ENV = CONFIG / "environment.d" / "90-djerba-mangohud.conf"
+MANGOHUD_CONF = CONFIG / "MangoHud" / "MangoHud.conf"
+EFFECTS = ("blurEnabled", "contrastEnabled", "slidingpopupsEnabled", "kwin4_effect_scaleEnabled",
+           "wobblywindowsEnabled", "magiclampEnabled")
+STEAM_TOOLS = (HOME / ".steam" / "root" / "compatibilitytools.d",
+               HOME / ".local" / "share" / "Steam" / "compatibilitytools.d",
+               HOME / ".var" / "app" / "com.valvesoftware.Steam" / "data" / "Steam" / "compatibilitytools.d")
+GE_API = "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases/latest"
+PROFILES = ("performance", "balanced", "power-saver")
+MANGOHUD_PRESETS = {
+    "compact": "# Djerba OS — MangoHud (compact)\nlegacy_layout=false\nhorizontal\nfps\nframetime=0\n"
+               "cpu_stats\ngpu_stats\nposition=top-left\nbackground_alpha=0.3\nfont_size=20\n",
+    "complet": "# Djerba OS — MangoHud (complet)\nlegacy_layout=false\nfps\nframetime\nframe_timing\n"
+               "cpu_stats\ncpu_temp\ngpu_stats\ngpu_temp\nram\nvram\nwine\nengine_version\n"
+               "position=top-left\nbackground_alpha=0.4\nfont_size=22\n",
 }
 
-active() { [[ -f "${STATE}/active" ]]; }
+VERBOSE = False
 
-kwin_reconfigure() {
-    if command -v qdbus6 >/dev/null 2>&1; then
-        qdbus6 org.kde.KWin /KWin reconfigure >/dev/null 2>&1 || true
-    else
-        dbus-send --session --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure \
-            >/dev/null 2>&1 || true
-    fi
-}
 
-turn_on() {
-    active && { log "déjà actif"; return 0; }
-    mkdir -p "${STATE}"
-    if command -v powerprofilesctl >/dev/null 2>&1; then
-        powerprofilesctl get > "${STATE}/power-profile" 2>/dev/null || echo balanced > "${STATE}/power-profile"
-        powerprofilesctl set performance 2>/dev/null \
-            || log "profil « performance » indisponible sur ce matériel ; profil inchangé"
-    fi
-    local effect value
-    : > "${STATE}/effects"
-    for effect in "${EFFECTS[@]}"; do
-        value="$(kreadconfig6 --file kwinrc --group Plugins --key "${effect}" --default "")"
-        printf '%s=%s\n' "${effect}" "${value}" >> "${STATE}/effects"
-        kwriteconfig6 --file kwinrc --group Plugins --key "${effect}" --type bool false
-    done
-    kwin_reconfigure
-    touch "${STATE}/active"
-    notify "Activé : performances maximales et effets visuels allégés."
-}
+def log(message: str) -> None:
+    print(f"[mode jeu] {message}", flush=True)
 
-turn_off() {
-    active || { log "déjà inactif"; return 0; }
-    if command -v powerprofilesctl >/dev/null 2>&1 && [[ -s "${STATE}/power-profile" ]]; then
-        powerprofilesctl set "$(cat "${STATE}/power-profile")" 2>/dev/null || true
-    fi
-    local effect value
-    while IFS='=' read -r effect value; do
-        [[ -n "${effect}" ]] || continue
-        if [[ -z "${value}" ]]; then
-            kwriteconfig6 --file kwinrc --group Plugins --key "${effect}" --delete
-        else
-            kwriteconfig6 --file kwinrc --group Plugins --key "${effect}" "${value}"
-        fi
-    done < "${STATE}/effects"
-    kwin_reconfigure
-    rm -f "${STATE}/active"
-    notify "Désactivé : réglages habituels restaurés."
-}
 
-mangohud() {
-    case "${1:-}" in
-        on)
-            mkdir -p "${ENV_DIR}"
-            printf '# Djerba OS — superposition MangoHud pour tous les jeux.\nMANGOHUD=1\n' > "${MANGOHUD_ENV}"
-            notify "Superposition MangoHud activée à la prochaine connexion."
-            ;;
-        off)
-            rm -f "${MANGOHUD_ENV}"
-            notify "Superposition MangoHud désactivée à la prochaine connexion."
-            ;;
-        *) die "usage : djerba-gamemode mangohud on|off" ;;
-    esac
-}
+def debug(message: str) -> None:
+    if VERBOSE:
+        print(f"[mode jeu] … {message}", flush=True)
 
-status() {
-    local game="false" mango="false" profile="inconnu"
-    active && game="true"
-    [[ -f "${MANGOHUD_ENV}" ]] && mango="true"
-    if command -v powerprofilesctl >/dev/null 2>&1; then
-        profile="$(powerprofilesctl get 2>/dev/null || echo inconnu)"
-    fi
-    if [[ "${JSON}" == "true" ]]; then
-        printf '{"active": %s, "mangohud": %s, "power_profile": "%s"}\n' "${game}" "${mango}" "${profile}"
-    else
-        echo "Mode jeu : $([[ ${game} == true ]] && echo actif || echo inactif) — profil ${profile} — MangoHud ${mango}"
-    fi
-}
 
-main() {
-    local command="${1:-status}"
-    shift || true
-    if [[ "${command}" == "mangohud" ]]; then
-        mangohud "${1:-}"
+def die(message: str, code: int = 1) -> None:
+    print(f"[mode jeu] erreur : {message}", file=sys.stderr, flush=True)
+    sys.exit(code)
+
+
+def run(command: list[str]) -> subprocess.CompletedProcess:
+    """Exécute une commande ; un outil absent (hors session Plasma) n'est pas fatal."""
+    debug(" ".join(command))
+    try:
+        return subprocess.run(command, capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        debug(f"outil absent : {command[0]}")
+        return subprocess.CompletedProcess(command, 127, "", "")
+
+
+def notify(message: str) -> None:
+    if shutil.which("notify-send"):
+        run(["notify-send", "--app-name=Djerba OS", "--icon=input-gaming", "Mode jeu", message])
+
+
+# ---------------------------------------------------------------- KWin
+def kread(key: str, group: str = "Plugins") -> str:
+    return run(["kreadconfig6", "--file", "kwinrc", "--group", group, "--key", key, "--default", ""]).stdout.strip()
+
+
+def kwrite(key: str, value: str | None, group: str = "Plugins") -> None:
+    if value is None or value == "":
+        run(["kwriteconfig6", "--file", "kwinrc", "--group", group, "--key", key, "--delete"])
+    else:
+        run(["kwriteconfig6", "--file", "kwinrc", "--group", group, "--key", key, value])
+
+
+def kwin_reconfigure() -> None:
+    run(["dbus-send", "--session", "--type=method_call", "--dest=org.kde.KWin", "/KWin",
+         "org.kde.KWin.reconfigure"])
+
+
+def effects_enabled() -> bool:
+    return kread("blurEnabled") != "false"
+
+
+def set_effects(enabled: bool) -> None:
+    for effect in EFFECTS:
+        kwrite(effect, None if enabled else "false")
+    kwin_reconfigure()
+
+
+def tearing_enabled() -> bool:
+    return kread("AllowTearing", "Compositing") == "true"
+
+
+def set_tearing(enabled: bool) -> None:
+    kwrite("AllowTearing", "true" if enabled else None, "Compositing")
+    kwin_reconfigure()
+
+
+# ---------------------------------------------------------------- Énergie
+def power_profile() -> str:
+    if not shutil.which("powerprofilesctl"):
+        return "indisponible"
+    result = run(["powerprofilesctl", "get"])
+    return result.stdout.strip() or "indisponible"
+
+
+def available_profiles() -> list[str]:
+    if not shutil.which("powerprofilesctl"):
+        return []
+    output = run(["powerprofilesctl", "list"]).stdout
+    return [name for name in PROFILES if f"{name}:" in output]
+
+
+def set_profile(name: str) -> bool:
+    if name not in available_profiles():
+        log(f"profil « {name} » non pris en charge par ce matériel")
+        return False
+    return run(["powerprofilesctl", "set", name]).returncode == 0
+
+
+# ---------------------------------------------------------------- Mode jeu de session
+def game_active() -> bool:
+    return (STATE / "active").exists()
+
+
+def turn_on() -> None:
+    if game_active():
+        log("déjà actif")
         return
-    fi
-    for argument in "$@"; do
-        [[ "${argument}" == "--json" ]] && JSON="true"
-    done
-    [[ "${EUID}" -ne 0 ]] || die "à lancer en tant qu'utilisateur (pas en root)"
-    case "${command}" in
-        on) turn_on ;;
-        off) turn_off ;;
-        toggle) if active; then turn_off; else turn_on; fi ;;
-        status) status ;;
-        -h|--help) sed -n '3,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
-        *) die "commande inconnue : ${command} (voir --help)" ;;
-    esac
-}
+    STATE.mkdir(parents=True, exist_ok=True)
+    saved = {
+        "profile": power_profile(),
+        "effects": {effect: kread(effect) for effect in EFFECTS},
+        "tearing": kread("AllowTearing", "Compositing"),
+    }
+    (STATE / "saved.json").write_text(json.dumps(saved), encoding="utf-8")
+    set_profile("performance")
+    set_effects(False)
+    set_tearing(True)
+    (STATE / "active").touch()
+    log("actif : profil performance, effets coûteux coupés, tearing autorisé en plein écran")
+    notify("Activé : performances maximales et latence minimale.")
 
-main "$@"
+
+def turn_off() -> None:
+    if not game_active():
+        log("déjà inactif")
+        return
+    try:
+        saved = json.loads((STATE / "saved.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        saved = {"profile": "balanced", "effects": {}, "tearing": ""}
+    if saved.get("profile") in PROFILES:
+        set_profile(saved["profile"])
+    for effect in EFFECTS:
+        kwrite(effect, saved.get("effects", {}).get(effect) or None)
+    kwrite("AllowTearing", saved.get("tearing") or None, "Compositing")
+    kwin_reconfigure()
+    (STATE / "active").unlink(missing_ok=True)
+    log("inactif : réglages habituels restaurés")
+    notify("Désactivé : réglages habituels restaurés.")
+
+
+# ---------------------------------------------------------------- MangoHud
+def mangohud_enabled() -> bool:
+    return MANGOHUD_ENV.exists()
+
+
+def mangohud_settings() -> dict:
+    preset, fps_limit = "", 0
+    if MANGOHUD_CONF.exists():
+        for line in MANGOHUD_CONF.read_text(encoding="utf-8").splitlines():
+            if line.startswith("# Djerba OS — MangoHud ("):
+                preset = line.split("(", 1)[1].rstrip(")")
+            if line.startswith("fps_limit="):
+                try:
+                    fps_limit = int(line.split("=", 1)[1].split(",")[0])
+                except ValueError:
+                    fps_limit = 0
+    return {"preset": preset or "défaut", "fps_limit": fps_limit}
+
+
+def write_mangohud(preset: str | None = None, fps_limit: int | None = None) -> None:
+    current = mangohud_settings()
+    preset = preset or (current["preset"] if current["preset"] in MANGOHUD_PRESETS else "compact")
+    fps_limit = current["fps_limit"] if fps_limit is None else fps_limit
+    content = MANGOHUD_PRESETS[preset]
+    if fps_limit > 0:
+        content += f"fps_limit={fps_limit}\n"
+    MANGOHUD_CONF.parent.mkdir(parents=True, exist_ok=True)
+    MANGOHUD_CONF.write_text(content, encoding="utf-8")
+
+
+def command_mangohud(args: list[str]) -> None:
+    if not args:
+        die("usage : djerba-gamemode mangohud on|off|preset NOM|fps-limit N", 2)
+    if args[0] == "on":
+        MANGOHUD_ENV.parent.mkdir(parents=True, exist_ok=True)
+        MANGOHUD_ENV.write_text("# Djerba OS — superposition MangoHud pour tous les jeux.\nMANGOHUD=1\n",
+                                encoding="utf-8")
+        notify("Superposition MangoHud activée (prochaine connexion, ou « mangohud %command% » dans Steam).")
+    elif args[0] == "off":
+        MANGOHUD_ENV.unlink(missing_ok=True)
+        notify("Superposition MangoHud désactivée à la prochaine connexion.")
+    elif args[0] == "preset" and len(args) == 2 and args[1] in MANGOHUD_PRESETS:
+        write_mangohud(preset=args[1])
+        log(f"préréglage MangoHud : {args[1]}")
+    elif args[0] == "fps-limit" and len(args) == 2 and args[1].isdigit():
+        write_mangohud(fps_limit=int(args[1]))
+        log(f"limite d'images/s : {args[1] if args[1] != '0' else 'aucune'}")
+    else:
+        die("usage : djerba-gamemode mangohud on|off|preset compact|complet|fps-limit N", 2)
+
+
+# ---------------------------------------------------------------- Proton
+def steam_tools_dir() -> Path:
+    for candidate in STEAM_TOOLS:
+        if candidate.parent.exists():
+            return candidate
+    return STEAM_TOOLS[0]
+
+
+def proton_versions() -> list[dict]:
+    versions = []
+    for base in STEAM_TOOLS:
+        if base.is_dir():
+            for entry in sorted(base.iterdir()):
+                if (entry / "compatibilitytool.vdf").exists() or (entry / "proton").exists():
+                    versions.append({"name": entry.name, "path": str(entry)})
+    return versions
+
+
+def emit(json_mode: bool, event: str, message: str, percent: int | None = None) -> None:
+    if json_mode:
+        payload = {"event": event, "message": message}
+        if percent is not None:
+            payload["percent"] = percent
+        print(json.dumps(payload, ensure_ascii=False), flush=True)
+    else:
+        print(f"[proton] {message}" + (f" ({percent} %)" if percent is not None else ""), flush=True)
+
+
+def fetch_json(url: str) -> dict:
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
+                                                   "User-Agent": "djerba-gamemode"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.load(response)
+
+
+def download(url: str, target: Path, json_mode: bool, label: str) -> None:
+    request = urllib.request.Request(url, headers={"User-Agent": "djerba-gamemode"})
+    with urllib.request.urlopen(request, timeout=60) as response, target.open("wb") as handle:
+        total = int(response.headers.get("Content-Length") or 0)
+        received, last = 0, -1
+        while chunk := response.read(1 << 20):
+            handle.write(chunk)
+            received += len(chunk)
+            if total:
+                percent = received * 100 // total
+                if percent != last:
+                    emit(json_mode, "progress", f"Téléchargement de {label}", percent)
+                    last = percent
+
+
+def install_ge(json_mode: bool) -> None:
+    emit(json_mode, "start", "Recherche de la dernière version de GE-Proton")
+    release = fetch_json(GE_API)
+    assets = {asset["name"]: asset["browser_download_url"] for asset in release.get("assets", [])}
+    archive = next((name for name in assets if name.endswith(".tar.gz")), None)
+    checksum = next((name for name in assets if name.endswith(".sha512sum")), None)
+    if not archive or not checksum:
+        die("publication GE-Proton incomplète (archive ou somme de contrôle absente)")
+    name = archive[: -len(".tar.gz")]
+    target_dir = steam_tools_dir()
+    if (target_dir / name).exists():
+        emit(json_mode, "complete", f"{name} est déjà installé")
+        return
+    target_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="djerba-proton-") as temporary:
+        tarball = Path(temporary) / archive
+        download(assets[archive], tarball, json_mode, name)
+        expected = urllib.request.urlopen(
+            urllib.request.Request(assets[checksum], headers={"User-Agent": "djerba-gamemode"}),
+            timeout=30).read().decode().split()[0].lower()
+        digest = hashlib.sha512()
+        with tarball.open("rb") as handle:
+            while chunk := handle.read(1 << 20):
+                digest.update(chunk)
+        if digest.hexdigest() != expected:
+            die("somme SHA-512 incorrecte : archive rejetée")
+        emit(json_mode, "progress", f"Somme SHA-512 vérifiée ; extraction de {name}", 100)
+        with tarfile.open(tarball) as archive_file:
+            archive_file.extractall(target_dir, filter="data")
+    emit(json_mode, "complete", f"{name} installé : redémarrez Steam puis choisissez-le dans "
+                                f"Propriétés → Compatibilité")
+
+
+def remove_proton(name: str) -> None:
+    for version in proton_versions():
+        if version["name"] == name:
+            path = Path(version["path"])
+            if not any(path.parent == base for base in STEAM_TOOLS):
+                die("chemin inattendu : suppression refusée")
+            shutil.rmtree(path)
+            log(f"{name} supprimé")
+            return
+    die(f"{name} introuvable")
+
+
+# ---------------------------------------------------------------- État
+def status_payload() -> dict:
+    return {
+        "active": game_active(),
+        "power_profile": power_profile(),
+        "profiles": available_profiles(),
+        "effects": effects_enabled(),
+        "tearing": tearing_enabled(),
+        "mangohud": mangohud_enabled(),
+        "mangohud_settings": mangohud_settings(),
+        "gamemoded": shutil.which("gamemoded") is not None,
+        "proton": proton_versions(),
+    }
+
+
+def command_status(json_mode: bool) -> None:
+    payload = status_payload()
+    if json_mode:
+        print(json.dumps(payload, ensure_ascii=False))
+        return
+    print(f"Mode jeu        : {'actif' if payload['active'] else 'inactif'}")
+    print(f"Profil d'énergie: {payload['power_profile']} (disponibles : {', '.join(payload['profiles']) or '—'})")
+    print(f"Effets KWin     : {'activés' if payload['effects'] else 'coupés'}")
+    print(f"Tearing         : {'autorisé' if payload['tearing'] else 'synchronisé'}")
+    print(f"MangoHud        : {'activé' if payload['mangohud'] else 'désactivé'} "
+          f"({payload['mangohud_settings']['preset']}, limite {payload['mangohud_settings']['fps_limit'] or 'aucune'})")
+    print(f"Proton          : {', '.join(v['name'] for v in payload['proton']) or 'Proton de Valve uniquement'}")
+
+
+def main() -> int:
+    global VERBOSE
+    argv = sys.argv[1:]
+    VERBOSE = any(argument in ("-v", "--verbose") for argument in argv)
+    argv = [argument for argument in argv if argument not in ("-v", "--verbose")]
+    json_mode = "--json" in argv or "--json-progress" in argv
+    argv = [argument for argument in argv if argument not in ("--json", "--json-progress")]
+    if argv and argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    if os.geteuid() == 0:
+        die("à lancer en tant qu'utilisateur (pas en root)", 2)
+    command, rest = (argv[0], argv[1:]) if argv else ("status", [])
+    try:
+        if command == "on":
+            turn_on()
+        elif command == "off":
+            turn_off()
+        elif command == "toggle":
+            turn_off() if game_active() else turn_on()
+        elif command == "status":
+            command_status(json_mode)
+        elif command == "profile" and len(rest) == 1 and rest[0] in PROFILES:
+            if not set_profile(rest[0]):
+                return 1
+            log(f"profil d'énergie : {rest[0]}")
+        elif command in ("effects", "tearing") and len(rest) == 1 and rest[0] in ("on", "off"):
+            (set_effects if command == "effects" else set_tearing)(rest[0] == "on")
+            log(f"{command} : {rest[0]}")
+        elif command == "mangohud":
+            command_mangohud(rest)
+        elif command == "proton" and rest[:1] == ["list"]:
+            versions = proton_versions()
+            print(json.dumps(versions, ensure_ascii=False) if json_mode
+                  else "\n".join(f"{v['name']}  ({v['path']})" for v in versions) or "aucune couche Proton additionnelle")
+        elif command == "proton" and rest[:1] == ["install-ge"]:
+            install_ge(json_mode)
+        elif command == "proton" and len(rest) == 2 and rest[0] == "remove":
+            remove_proton(rest[1])
+        else:
+            die("commande inconnue (voir --help)", 2)
+    except (OSError, ValueError) as exc:
+        die(str(exc))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

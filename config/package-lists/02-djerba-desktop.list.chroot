@@ -60,6 +60,10 @@ calamares
 flatpak
 plasma-discover
 plasma-discover-backend-flatpak
+# Rapports de plantage exploitables (drkonqi : trace via gdb, psutil, coredumpd)
+gdb
+python3-psutil
+systemd-coredump
 xdg-desktop-portal
 xdg-desktop-portal-kde
 xdg-desktop-portal-gtk

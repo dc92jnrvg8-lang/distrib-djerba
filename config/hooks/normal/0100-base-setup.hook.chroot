@@ -49,6 +49,14 @@ systemctl enable systemd-resolved.service
 systemctl disable NetworkManager-wait-online.service systemd-networkd-wait-online.service 2>/dev/null || true
 systemctl mask systemd-networkd-wait-online.service
 
+# /etc/resolv.conf : stub de systemd-resolved (127.0.0.53), alimenté en
+# serveurs DNS par NetworkManager. Pendant la construction, live-build remplace
+# ce fichier par celui de l'hôte, puis restaure en fin d'étape chroot la
+# sauvegarde /etc/resolv.conf.orig (« Restoring resolv file or symlink ») : la
+# sauvegarde devient donc le lien attendu. Sans lui, l'image démarrait avec un
+# resolv.conf vide et aucun nom ne se résolvait (Firefox, curl, Discover…).
+ln -sfn ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf.orig
+
 # --- Session graphique ----------------------------------------------------------
 systemctl set-default graphical.target
 systemctl enable sddm.service

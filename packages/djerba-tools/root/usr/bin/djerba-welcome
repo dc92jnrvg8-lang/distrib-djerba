@@ -420,7 +420,7 @@ class Backend(QObject):
         self._apps_buffer = ""
         self._apps_busy = True
         self.appsBusyChanged.emit()
-        self.appsProgress.emit("Autorisation…", 0, len(ids))
+        self.appsProgress.emit("Autorisation…", 0, len(ids) * 100)
         process.start()
 
     def _apps_output(self) -> None:
@@ -433,7 +433,12 @@ class Backend(QObject):
                 event = json.loads(line)
             except ValueError:
                 continue
-            self.appsProgress.emit(event.get("message", ""), int(event.get("done", 0)), int(event.get("total", 0)))
+            if event.get("event") == "log":
+                continue
+            # Barre de progression au centième d'application : « done » apps
+            # terminées + pourcentage de l'application en cours.
+            done = int(event.get("done", 0)) * 100 + int(event.get("percent", 0) if event.get("event") == "progress" else 0)
+            self.appsProgress.emit(event.get("message", ""), done, int(event.get("total", 0)) * 100)
 
     def _apps_done(self, exit_code: int, _status) -> None:
         self._apps_busy = False
@@ -584,6 +589,8 @@ class Backend(QObject):
             "discover": ["plasma-discover"],
             "settings": ["systemsettings"],
             "themes": ["systemsettings", "kcm_lookandfeel"],
+            "gamecenter": ["djerba-game-center"],
+            "assistant": ["djerba-ai"],
         }
         command = commands.get(tool)
         if command and shutil.which(command[0]):

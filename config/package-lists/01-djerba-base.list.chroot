@@ -88,6 +88,7 @@ iw
 wireless-regdb
 bluez
 systemd-resolved
+libnss-resolve
 systemd-timesyncd
 iputils-ping
 curl
