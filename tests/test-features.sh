@@ -104,7 +104,7 @@ check "KWin Wayland" sq_has "/usr/bin/kwin_wayland"
 check "XWayland" sq_has "/usr/bin/Xwayland"
 check "SDDM" sq_has "/usr/bin/sddm"
 check "Calamares" sq_has "/usr/bin/calamares"
-for tool in djerba-welcome djerba-apps djerba-anonsurf djerba-undercover djerba-gamemode; do
+for tool in djerba-welcome djerba-apps djerba-anonsurf djerba-undercover djerba-gamemode djerba-game-center djerba-ai; do
     check "Outil ${tool} exécutable" sh -c "[ \"\$(printf '%s' '$(sq_mode "/usr/bin/${tool}")' | cut -c4)\" = x ]"
 done
 check "Interface QML de l'assistant" sq_has "/usr/share/djerba-welcome/ui/main.qml"
@@ -124,6 +124,7 @@ check "Calamares : module djerbaapps" sq_has "/usr/lib/calamares/modules/djerbaa
 check "Djerba Game Center" sq_has "/usr/share/djerba-game-center/ui/main.qml"
 check "Agent IA : application djerba-ai" sq_has "/usr/share/applications/djerba-ai.desktop"
 check "Agent IA : démon root (socket systemd)" sq_has "/usr/lib/systemd/system/djerba-ai-sysd.socket"
+check "Agent IA : démon root exécutable" sh -c "[ \"\$(printf '%s' '$(sq_mode /usr/libexec/djerba-ai-sysd)' | cut -c4)\" = x ]"
 check "Agent IA : démon utilisateur" sq_has "/usr/lib/systemd/user/djerba-ai.service"
 check "Agent IA : actions polkit" sq_has "/usr/share/polkit-1/actions/org.djerba.ai.policy"
 check "Agent IA : optimiseur de jeu" sq_has "/usr/lib/python3/dist-packages/djerba_ai/tools/performance/game_optimizer.py"

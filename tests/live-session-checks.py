@@ -39,9 +39,12 @@ OFFLINE_CHECKS = [
      "! sudo nft list table inet djerba_anonsurf >/dev/null 2>&1", 240),
     ("Tor démarre sous AppArmor avec la configuration Djerba",
      "sudo journalctl -b -u djerba-anonsurf-tor --no-pager | grep -q 'Bootstrapped'", 30),
-    ("Aucun refus AppArmor pour Tor",
-     "d=$(sudo journalctl -b -k --no-pager | grep 'apparmor=\"DENIED\".*system_tor' || true); "
-     "printf '%s\\n' \"$d\" | tail -n 5; test -z \"$d\"", 30),
+    # Debian ne charge pas les profils AppArmor sur un média live (apparmor.service :
+    # ConditionPathExists=!/run/live/overlay/work) ; ils le sont une fois installé.
+    # Seul « label not found » (profil non chargé) est donc admis ici.
+    ("Aucun refus AppArmor pour Tor (hors profil non chargé du live)",
+     "d=$(sudo journalctl -b -k --no-pager | grep 'apparmor=\"DENIED\".*system_tor' "
+     "| grep -v 'info=\"label not found\"' || true); printf '%s\\n' \"$d\" | tail -n 5; test -z \"$d\"", 30),
     ("Mode jeu : état JSON", "djerba-gamemode status --json | python3 -m json.tool >/dev/null", 60),
     ("Mode jeu : bascule et restauration",
      f"{SESSION}; djerba-gamemode on && djerba-gamemode status --json | grep -q '\"active\": true' "
@@ -59,7 +62,7 @@ OFFLINE_CHECKS = [
     ("Mode discret : bascule Windows 11 puis restauration à l'identique",
      f"{SESSION}; md5sum ~/.config/kdeglobals > /tmp/before.md5; "
      "djerba-undercover on --style 11 --verbose && djerba-undercover status --json | grep -q '\"active\": true' "
-     "&& grep -q '^ColorScheme=BreezeLight' ~/.config/kdeglobals "
+     "&& grep -q '^LookAndFeelPackage=org.djerba.undercover11.desktop' ~/.config/kdeglobals "
      "&& djerba-undercover off --verbose && md5sum -c --quiet /tmp/before.md5 "
      "&& pgrep -u 1000 -x plasmashell >/dev/null", 300),
 ]
@@ -145,6 +148,9 @@ def main() -> int:
     console.send("for i in $(seq 1 120); do pgrep -u 1000 -x plasmashell >/dev/null && break; sleep 5; done; "
                  "echo __READY_$((40+2))__")
     console.read_until(r"__READY_42__", 700)
+    # Laisser la session se stabiliser (services de démarrage de Plasma).
+    console.send("sleep 45; echo __SETTLED_$((1+1))__")
+    console.read_until(r"__SETTLED_2__", 120)
 
     checks = OFFLINE_CHECKS + (NETWORK_CHECKS if network else [])
     failures = 0

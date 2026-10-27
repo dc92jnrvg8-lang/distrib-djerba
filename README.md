@@ -224,8 +224,10 @@ Discover), seuls les accès par adresse IP fonctionnaient.
 
 ### Sécurité
 
-* **UFW** actif (entrées refusées), `sysctl` durci, **AppArmor**, root
-  verrouillé, core dumps désactivés.
+* **UFW** actif (entrées refusées), `sysctl` durci, **AppArmor** (profils
+  chargés sur le système installé ; comme toute image Debian live, la session
+  live ne les charge pas : `apparmor.service` s'y désactive), root verrouillé,
+  core dumps désactivés.
 * **ClamAV** préinstallé avec **ClamTk** (interface graphique) et mises à jour
   automatiques des signatures (`clamav-freshclam`).
 * Mises à jour de sécurité Debian automatiques (`unattended-upgrades`).

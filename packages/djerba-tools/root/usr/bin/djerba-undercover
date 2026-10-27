@@ -73,12 +73,20 @@ stop_shell() {
     elif command -v kquitapp6 >/dev/null 2>&1; then
         kquitapp6 plasmashell >/dev/null 2>&1 || true
     fi
+    # plasmashell enregistre sa configuration en traitant SIGTERM (le signal
+    # qu'envoie systemctl stop) ; sur une machine lente, cela peut prendre
+    # plusieurs dizaines de secondes.
     local waited=0
-    while pgrep -u "${UID}" -x plasmashell >/dev/null 2>&1 && (( waited < 20 )); do
+    while pgrep -u "${UID}" -x plasmashell >/dev/null 2>&1 && (( waited < 120 )); do
+        if (( waited == 40 )); then
+            debug "toujours actif après 20 s : envoi de SIGTERM"
+            pkill -TERM -u "${UID}" -x plasmashell 2>/dev/null || true
+        fi
         sleep 0.5
         waited=$((waited + 1))
     done
     ! pgrep -u "${UID}" -x plasmashell >/dev/null 2>&1 || die "le bureau ne s'est pas arrêté"
+    debug "bureau arrêté après $((waited / 2)) s"
 }
 
 start_shell() {
@@ -134,11 +142,15 @@ restore_config() {
     done
 }
 
-apply_colors() {
-    local scheme
-    scheme="$(kreadconfig6 --file kdeglobals --group General --key ColorScheme --default BreezeDark)"
-    debug "palette de couleurs : ${scheme}"
-    plasma-apply-colorscheme "${scheme}" >/dev/null 2>&1 || true
+notify_settings_changed() {
+    # Les applications KDE relisent kdeglobals restauré, sans réécriture :
+    # KGlobalSettings::ChangeType 0 palette, 2 style, 3 réglages, 4 icônes.
+    local change
+    for change in 0 2 3 4; do
+        dbus-send --session --type=signal /KGlobalSettings org.kde.KGlobalSettings.notifyChange \
+            "int32:${change}" int32:0 >/dev/null 2>&1 || true
+    done
+    debug "applications KDE notifiées (palette, style, réglages, icônes)"
 }
 
 turn_on() {
@@ -172,7 +184,7 @@ turn_off() {
     log "restauration de votre bureau"
     stop_shell
     restore_config
-    apply_colors
+    notify_settings_changed
     reconfigure_kwin
     start_shell
     rm -f "${STATE}/active"
