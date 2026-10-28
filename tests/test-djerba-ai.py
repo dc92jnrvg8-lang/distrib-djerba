@@ -605,12 +605,14 @@ class MemoryCryptoTests(unittest.TestCase):
         memory.add_message(conversation, "user", "recette du couscous djerbien")
         memory.learn("préférence", "répondre en tutoyant")
         memory.close()
-        raw = b"".join(item.read_bytes() for item in path.parent.iterdir())
+        # Toute la base, journal WAL et sauvegardes automatiques compris : aucune trace en clair.
+        raw = b"".join(item.read_bytes() for item in path.parent.rglob("*") if item.is_file())
         for clear in (b"Elden", b"couscous", b"tutoyant"):
             self.assertNotIn(clear, raw)
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         reopened = Memory(path)
         self.assertEqual(reopened.lessons()[0]["content"], "répondre en tutoyant")
+        self.assertRegex(reopened.conversation(conversation)["key"], r"^[0-9a-f]{32}$")  # migré jusqu'à la v3
         reopened.close()
 
     def test_bound_ciphertext_and_lessons_from_feedback(self) -> None:
@@ -2282,6 +2284,49 @@ class TransactionTests(unittest.TestCase):
             parse_rpc({"jsonrpc": "2.0", "id": 1, "method": "tx.undo_since", "params": {"since": "hier"}})
 
 
+class TransactionSessionTests(unittest.TestCase):
+    journal = TransactionTests.journal
+
+    def test_undo_session_only_undoes_the_callers_conversation(self) -> None:
+        from djerba_ai.core import transactions
+        from djerba_ai.tools.base import function_tool
+        journal = self.journal()
+        live = self.live
+
+        def writer(name: str):
+            def write(params, _verbose):
+                (live / "etc" / name).write_text(str(params.get("n", 0)))
+                return {"success": True, "message": "écrit", "data": {}}
+            return function_tool(f"essai_{name}", "system", "écrit", write, requires_root=True,
+                                 parameters={"n": {"type": "integer", "description": "n", "minimum": 0}})
+        tools = {cls.name: cls() for cls in (writer("a"), writer("b"), writer("c"))}
+
+        class Registry:
+            def get(self, name):
+                return tools.get(name)
+        dispatcher = sysd.Dispatcher(authorizer=lambda *_: True, verifier=TRUSTED, journal=journal)
+        dispatcher._registry = Registry()
+        key, other = "a" * 32, "b" * 32
+
+        def run(tool: str, session: str, uid: int) -> str:
+            _request, model = parse_rpc({"jsonrpc": "2.0", "id": 1, "method": "sys.exec_tool", "params": {
+                "name": tool, "params": {"n": 1}, "origin": {"engine": "jarvis:jarvis-1", "session": session}}})
+            return dispatcher.dispatch("sys.exec_tool", model.model_dump(), 1, uid)["transaction"]["id"]
+        mine = run("essai_a", key, 1000)
+        theirs = run("essai_b", key, 1001)  # même clé, autre utilisateur : jamais annulée pour moi
+        elsewhere = run("essai_c", other, 1000)
+        _request, model = parse_rpc({"jsonrpc": "2.0", "id": 1, "method": "tx.undo_session",
+                                     "params": {"session": key}})
+        result = dispatcher.dispatch("tx.undo_session", model.model_dump(), 1, 1000)
+        self.assertTrue(result["success"], result)
+        self.assertEqual(result["undone"], [mine])
+        self.assertEqual((live / "etc/a").read_text(), "a")
+        self.assertEqual(journal.show(theirs)["state"], transactions.APPLIED)
+        self.assertEqual(journal.show(elsewhere)["state"], transactions.APPLIED)
+        with self.assertRaises(ipc.RPCError):
+            parse_rpc({"jsonrpc": "2.0", "id": 1, "method": "tx.undo_session", "params": {"session": "../x"}})
+
+
 class FakeBootGuard:
     @staticmethod
     def make(esp: Path):
@@ -2632,6 +2677,12 @@ class FakeJarvis(ScriptedEngine):
             return
         if self.path == "/v1/health":
             self._json(200, {"name": "Jarvis", "status": "ok"})
+        elif self.path == "/v1/history":
+            self._json(200, {"conversations": [
+                {"id": "c-42", "title": "Réseau du salon", "created": 1761600000, "messages": [
+                    {"role": "user", "content": "Le Wi-Fi du salon coupe le soir.", "created": 1761600000},
+                    {"role": "system", "content": "ignoré"},
+                    {"role": "assistant", "content": "Changez le canal 6 pour le canal 11.", "created": 1761600005}]}]})
         else:
             self._json(200, {"data": [{"id": "jarvis-1"}]})
 
@@ -2701,8 +2752,8 @@ def scripted(handler_base, **attributes) -> tuple[type, str]:
     return handler, serve(handler)
 
 
-class EngineLayerTests(unittest.TestCase):
-    """Phase 3 : n'importe quel moteur devient un agent complet de l'OS, avec les mêmes capacités."""
+class EngineFixture(unittest.TestCase):
+    """Registre des moteurs temporaire et démon root de test (phases 3 et 4)."""
 
     def setUp(self) -> None:
         from djerba_ai.core import engines
@@ -2718,10 +2769,10 @@ class EngineLayerTests(unittest.TestCase):
         self.engines.ENGINES_FILE, self.engines.PUBLIC_FILE, self.engines.USER_FALLBACK = self.saved
         reset_system_config()
 
-    def daemon(self, policy_mode: str = "autonome"):
+    def daemon(self, policy_mode: str = "autonome", backend=None):
         from djerba_ai.core import policy, snapshots, transactions
         journal = transactions.Journal(db=self.base / "tx.db",
-                                       backend=snapshots.FilesBackend(self.base / "tx", self.base / "live"),
+                                       backend=backend or snapshots.FilesBackend(self.base / "tx", self.base / "live"),
                                        probe=lambda targets=(): {}, packages=lambda: {})
         engines = self.engines
         original_store = engines.EngineStore
@@ -2745,6 +2796,10 @@ class EngineLayerTests(unittest.TestCase):
             path.unlink(missing_ok=True)
         self.addCleanup(stop)
         return journal
+
+
+class EngineLayerTests(EngineFixture):
+    """Phase 3 : n'importe quel moteur devient un agent complet de l'OS, avec les mêmes capacités."""
 
     def test_anthropic_message_conversion(self) -> None:
         system, converted = llm.anthropic_messages([
@@ -3017,6 +3072,240 @@ class EngineLayerTests(unittest.TestCase):
         fresh = store.begin("autre")["code"]
         self.assertIsNone(store.complete(fresh))  # force brute : appairage bloqué une minute
 
+
+
+class HistoryTests(unittest.TestCase):
+    """Phase 4 : historique par moteur, mémoire isolée ou partagée, continuité, sauvegarde, import."""
+
+    def memory(self) -> Memory:
+        memory = Memory(Path(tempfile.mkdtemp()) / "memory.db")
+        self.addCleanup(memory.close)
+        return memory
+
+    @staticmethod
+    def embed(texts: list[str]) -> tuple[str, list[list[float]]]:
+        from djerba_ai.core import embeddings
+        return embeddings.HASH_MODEL, [embeddings.hashed(text) for text in texts]
+
+    def test_v2_database_migrates_to_v3_without_loss_after_backup(self) -> None:
+        import sqlite3
+        from djerba_ai.core import memory as memory_module
+        path = Path(tempfile.mkdtemp()) / "memory.db"
+        box = crypto.Box()
+        legacy = sqlite3.connect(path)
+        legacy.executescript(memory_module.SCHEMA)
+        legacy.execute("INSERT INTO conversations VALUES (1, ?, 1, 2)", (box.encrypt("Imprimante", aad="conversations.title"),))
+        legacy.execute("INSERT INTO messages VALUES (1, 1, 'user', ?, NULL, 1)",
+                       (box.encrypt("l'imprimante ne répond plus", aad="messages.content"),))
+        legacy.execute("INSERT INTO facts VALUES (1, ?, ?, 1)", (box.encrypt("bureau", aad="facts.subject"),
+                                                                 box.encrypt("HP LaserJet", aad="facts.content")))
+        legacy.execute("INSERT INTO tool_runs (tool, request, params, success, message, created) "
+                       "VALUES ('cups_status', NULL, NULL, 1, NULL, 1)")
+        legacy.execute("PRAGMA user_version = 2")
+        legacy.commit()
+        legacy.close()
+        memory = Memory(path)
+        self.addCleanup(memory.close)
+        self.assertEqual(memory.db.execute("PRAGMA user_version").fetchone()[0], memory_module.VERSION)
+        self.assertEqual(memory.conversations()[0]["title"], "Imprimante")
+        self.assertEqual(memory.messages(1)[0]["content"], "l'imprimante ne répond plus")
+        self.assertEqual(memory.facts(engine="local")[0]["content"], "HP LaserJet")  # ancienne mémoire : commune
+        self.assertRegex(memory.conversation(1)["key"], r"^[0-9a-f]{32}$")
+        backups = list((path.parent / "backups").glob("memory-*avant-migration-v2*.db"))
+        self.assertEqual(len(backups), 1)
+        copy = sqlite3.connect(backups[0])
+        self.assertEqual(copy.execute("PRAGMA user_version").fetchone()[0], 2)  # état d'avant, intact
+        copy.close()
+        reopened_twice = Memory(path)  # aucune nouvelle migration ni sauvegarde
+        reopened_twice.close()
+        self.assertEqual(len(list((path.parent / "backups").glob("*.db"))), 1)
+
+    def test_history_per_engine_search_pin_rename_export_delete(self) -> None:
+        memory = self.memory()
+        wifi = memory.new_conversation("Wi-Fi")
+        memory.add_message(wifi, "user", "Le réseau du salon coupe")
+        memory.add_message(wifi, "assistant", "Je change le canal.", engine="jarvis:jarvis-1")
+        memory.record_run("wifi_channel", "réseau", {"canal": 11}, True, "canal 11", conversation=wifi,
+                          engine="jarvis:jarvis-1", tx="t20261028084635301a")
+        disk = memory.new_conversation("Disque")
+        memory.add_message(disk, "user", "mon disque est plein")
+        memory.add_message(disk, "assistant", "J'ai vidé le cache APT.", engine="local:qwen3:8b")
+        both = memory.new_conversation("Les deux")
+        memory.add_message(both, "assistant", "réponse locale", engine="local")
+        memory.add_message(both, "assistant", "réponse de Jarvis", engine="jarvis")
+        self.assertEqual({row["id"] for row in memory.conversations(engine="jarvis")}, {wifi, both})
+        self.assertEqual(memory.conversation(wifi)["engine"], "jarvis")
+        self.assertEqual([hit["conversation"] for hit in memory.search("RESEAU salon")], [wifi])  # accents, casse
+        self.assertEqual(memory.search("disque", engine="jarvis"), [])
+        semantic = memory.semantic_search("disque saturé, plus de place", self.embed)
+        self.assertEqual(semantic[0]["conversation"], disk)
+        self.assertTrue(memory.pin_conversation(disk))
+        self.assertEqual(memory.conversations()[0]["id"], disk)  # épinglée d'abord
+        memory.rename_conversation(wifi, "Wi-Fi du salon")
+        self.assertEqual(memory.conversation(wifi)["title"], "Wi-Fi du salon")
+        markdown = memory.export(wifi)
+        self.assertIn("# Wi-Fi du salon", markdown)
+        self.assertIn("**jarvis** : Je change le canal.", markdown)
+        self.assertIn("`wifi_channel`", markdown)
+        self.assertIn("transaction t20261028084635301a", markdown)
+        exported = json.loads(memory.export(wifi, "json"))
+        self.assertEqual(exported["format"], "djerba-history/1")
+        self.assertEqual(exported["actions"][0]["transaction"], "t20261028084635301a")
+        with self.assertRaises(memory_errors()):
+            memory.export(wifi, "pdf")
+        indexed = len(memory.embedding_refs("message"))
+        memory.delete_conversation(disk)
+        self.assertIsNone(memory.conversation(disk))
+        self.assertEqual(len(memory.embedding_refs("message")), indexed - 2)  # index sémantique nettoyé
+        self.assertEqual(memory.search("disque"), [])
+
+    def test_context_summary_fits_the_next_engine_window(self) -> None:
+        memory = self.memory()
+        conversation = memory.new_conversation("Long")
+        memory.add_message(conversation, "user", "Première demande : configurer l'imprimante du bureau")
+        for index in range(40):
+            memory.add_message(conversation, "assistant" if index % 2 else "user", f"échange {index} " + "x" * 400,
+                               engine="local" if index % 2 else "")
+        memory.record_run("cups_status", "imprimante", {}, True, "ok", conversation=conversation, engine="local")
+        memory.add_message(conversation, "user", "demande en cours")
+        summary, recent = memory.context(conversation, budget=3000, max_messages=10)
+        self.assertLessEqual(sum(len(row["content"]) for row in recent), 3000)
+        self.assertNotIn("demande en cours", [row["content"] for row in recent])
+        self.assertEqual(recent[-1]["content"], "échange 39 " + "x" * 400)  # derniers échanges intégraux
+        self.assertIn("Actions déjà menées : cups_status (réussi)", summary)
+        self.assertLessEqual(len(summary), 1000)
+        cached = memory.conversation(conversation)
+        self.assertEqual(cached["summary"], summary)  # en cache, chiffré
+        self.assertEqual(memory.context(conversation, budget=3000, max_messages=10)[0], summary)
+        roomy, everything = memory.context(conversation, budget=100000, max_messages=100)
+        self.assertEqual(roomy, "")
+        self.assertEqual(everything[0]["content"], "Première demande : configurer l'imprimante du bureau")
+
+    def test_isolated_and_shared_memory_per_engine(self) -> None:
+        memory = self.memory()
+        self.assertEqual(memory.engine_memory("local")["mode"], "partage")
+        self.assertEqual(memory.engine_memory("jarvis:jarvis-1")["mode"], "isole")  # par défaut : isolé
+        memory.remember("éditeur", "préfère Kate", engine="local")
+        memory.remember("projet", "prépare un exposé", engine="jarvis")
+        memory.learn("leçon", "redémarrer cups après mise à jour", engine="jarvis")
+        self.assertEqual([fact["content"] for fact in memory.facts(engine="local")], ["préfère Kate"])
+        self.assertEqual([fact["content"] for fact in memory.facts(engine="jarvis")], ["prépare un exposé"])
+        self.assertEqual(memory.lessons(engine="local"), [])
+        self.assertEqual(len(memory.lessons(engine="jarvis")), 1)
+        memory.set_engine_memory("jarvis", "partage")
+        self.assertEqual({fact["content"] for fact in memory.facts(engine="jarvis")},
+                         {"préfère Kate", "prépare un exposé"})
+        with self.assertRaises(memory_errors()):
+            memory.set_engine_memory("jarvis", "public")
+
+    def test_retention_backup_and_restore(self) -> None:
+        memory = self.memory()
+        old = memory.new_conversation("ancienne", engine="claude", created=time.time() - 40 * 86400)
+        pinned = memory.new_conversation("épinglée", engine="claude", created=time.time() - 40 * 86400)
+        memory.pin_conversation(pinned)
+        recent = memory.new_conversation("récente", engine="claude")
+        kept = memory.new_conversation("locale", engine="local", created=time.time() - 400 * 86400)
+        memory.set_engine_memory("claude", retention_days=30)
+        self.assertEqual(memory.prune(), 1)
+        self.assertIsNone(memory.conversation(old))
+        self.assertEqual({row["id"] for row in memory.conversations()}, {pinned, recent, kept})
+        saved = memory.backup(Path(tempfile.mkdtemp()) / "sauvegarde.db")
+        self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
+        memory.delete_conversation(recent)
+        report = memory.restore(saved)
+        self.assertTrue(report["success"])
+        self.assertIsNotNone(memory.conversation(recent))
+        self.assertTrue(Path(report["safety"]).exists())  # état d'avant la restauration conservé
+        other = Memory(Path(tempfile.mkdtemp()) / "memory.db", box=crypto.Box(Path(tempfile.mkdtemp()) / "cle"))
+        self.addCleanup(other.close)
+        other.new_conversation("autre clé")
+        foreign = other.backup(Path(tempfile.mkdtemp()) / "etrangere.db")
+        with self.assertRaises(memory_errors()):
+            memory.restore(foreign)
+        broken = Path(tempfile.mkdtemp()) / "cassee.db"
+        broken.write_bytes(b"pas une base")
+        with self.assertRaises(memory_errors()):
+            memory.restore(broken)
+        self.assertIsNotNone(memory.conversation(recent))  # refus : rien n'a changé
+
+
+class HistoryAgentTests(EngineFixture):
+    """Phase 4, de bout en bout : reprise par un autre moteur, actions liées, import Jarvis par le relais."""
+
+    def test_resume_with_another_engine_gets_a_summary_and_links_actions(self) -> None:
+        jarvis, jarvis_url = scripted(FakeJarvis)
+        self.store.save({"id": "jarvis", "kind": "jarvis", "name": "Jarvis", "endpoint": jarvis_url,
+                         "model": "jarvis-1", "context_window": 4096}, jarvis.token)
+        self.daemon()
+        config = Config()
+        config.set("llm.local.endpoint", start_fake_ollama())
+        memory = Memory(Path(tempfile.mkdtemp()) / "memory.db")
+        self.addCleanup(memory.close)
+        conversation = memory.new_conversation("Longue discussion")
+        memory.add_message(conversation, "user", "Au début : mon imprimante s'appelle Brother-Salon")
+        for index in range(30):
+            memory.add_message(conversation, "assistant" if index % 2 else "user", f"tour {index} " + "y" * 600,
+                               engine="local" if index % 2 else "")
+        config.set("llm.engine", "jarvis")
+        jarvis.script = [{"tool_calls": [{"name": "os_info", "arguments": {}}]}, {"content": "Voilà."}]
+        agent = Agent(Config(), registry(), memory)
+        self.assertEqual(agent.run("et maintenant ?", conversation, lambda *_: None, lambda *_: True), "Voilà.")
+        sent = json.dumps(jarvis.requests[0], ensure_ascii=False)
+        self.assertIn("Résumé du début de cette conversation", sent)
+        self.assertIn("mon imprimante s'appelle Brother-Salon", sent)  # le début survit, condensé
+        self.assertLess(len(sent), 4096 * 3 * 2)  # adapté à la petite fenêtre de Jarvis
+        self.assertEqual(memory.messages(conversation)[-1]["engine"], "jarvis")
+        action = memory.actions(conversation)[-1]
+        self.assertEqual((action["tool"], action["engine"]), ("os_info", "jarvis"))
+        self.assertIn(conversation, [row["id"] for row in memory.conversations(engine="jarvis")])
+
+    def test_settings_changed_by_the_agent_belong_to_the_conversation(self) -> None:
+        from djerba_ai.core import snapshots, transactions
+
+        class ConfigBackend(snapshots.FilesBackend):
+            ROOTS = ("etc-djerba",)  # sauvegarde du répertoire de configuration de test
+        journal = self.daemon(backend=ConfigBackend(self.base / "tx", SYSTEM_DIR))
+        config = Config()
+        config.set("llm.local.endpoint", start_fake_ollama())
+        config.set("agent.web_search", True)
+        memory = Memory(Path(tempfile.mkdtemp()) / "memory.db")
+        self.addCleanup(memory.close)
+        conversation = memory.new_conversation("Réglages")
+        FakeOllama.script = [{"tool_calls": [{"function": {"name": "settings_set", "arguments": {
+            "key": "agent.web_search", "value": "false"}}}]}, {"content": "Recherche web désactivée."}]
+        Agent(Config(), registry(), memory).run("désactive la recherche web dans les réglages", conversation,
+                                                lambda *_: None, lambda *_: True)
+        key = memory.conversation(conversation)["key"]
+        recorded = [item for item in journal.list() if item["method"] == "config.set" and item["session"] == key]
+        self.assertEqual(len(recorded), 1, journal.list())
+        self.assertTrue(recorded[0]["engine"].startswith("local:"))
+        result = ipc.call("tx.undo_session", {"session": key})
+        self.assertEqual(result["undone"], [recorded[0]["id"]])
+        self.assertEqual(journal.show(recorded[0]["id"])["state"], transactions.UNDONE)
+        self.assertTrue(Config().get("agent.web_search"))  # réglage rétabli depuis l'historique
+
+    def test_jarvis_history_import_through_the_root_relay(self) -> None:
+        jarvis, jarvis_url = scripted(FakeJarvis)
+        self.store.save({"id": "jarvis", "kind": "jarvis", "name": "Jarvis", "endpoint": jarvis_url,
+                         "model": "jarvis-1", "context_window": 32768}, jarvis.token)
+        self.daemon()
+        memory = Memory(Path(tempfile.mkdtemp()) / "memory.db")
+        self.addCleanup(memory.close)
+        data = ipc.call("engines.jarvis_history", {"id": "jarvis"})
+        self.assertNotIn(jarvis.token, json.dumps(data))
+        self.assertEqual(memory.import_history(data)["imported"], 1)
+        self.assertEqual(memory.import_history(data)["skipped"], 1)  # dédoublonnage
+        imported = memory.conversations(engine="jarvis")
+        self.assertEqual([row["title"] for row in imported], ["Réseau du salon"])
+        self.assertEqual([row["role"] for row in memory.messages(imported[0]["id"])], ["user", "assistant"])
+        self.assertEqual(memory.search("canal 11")[0]["engine"], "jarvis")
+        with self.assertRaises(ipc.RPCError):
+            ipc.call("engines.jarvis_history", {"id": "local"})
+
+
+def memory_errors() -> type:
+    from djerba_ai.core.memory import HistoryError
+    return HistoryError
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

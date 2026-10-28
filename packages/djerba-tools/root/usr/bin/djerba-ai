@@ -37,6 +37,15 @@ Usage :
     djerba-ai mcp pair NOM [--cap 0-2] | list | revoke NOM
                                       Djerba serveur d'outils pour un assistant distant (Jarvis)
     djerba-ai mcp-serve               serveur MCP (service djerba-ai-mcp.service)
+    djerba-ai history [--engine ID]   historique des conversations (par moteur d'IA)
+    djerba-ai history search TEXTE [--engine ID] [--semantic]
+    djerba-ai history show|export ID [--format markdown|json] [--output FICHIER]
+    djerba-ai history pin|unpin|delete|undo ID | rename ID TITRE
+    djerba-ai history memory [ID [isole|partage] [--retention JOURS]]
+                                      mémoire isolée ou partagée et conservation, par moteur
+    djerba-ai history backup [FICHIER] | restore FICHIER | prune
+    djerba-ai history import [FICHIER] [--engine ID]
+                                      historique de Jarvis (fichier JSON ou relais du démon root)
     djerba-ai pause [raison]          disjoncteur : l'agent n'effectue plus aucune modification
     djerba-ai resume                  reprise (authentification administrateur)
     djerba-ai policy [prudent|autonome|total]
@@ -272,6 +281,112 @@ def engines_command(argv: list[str]) -> int:
     return 2
 
 
+def history_command(argv: list[str]) -> int:
+    from datetime import datetime
+    from pathlib import Path
+    from djerba_ai.core import ipc
+    from djerba_ai.core.memory import HistoryError, Memory
+    flags = {arg for arg in argv if arg in ("--semantic",)}
+    options = {argv[index][2:]: argv[index + 1] for index in range(len(argv) - 1)
+               if argv[index].startswith("--") and argv[index] not in flags}
+    rest = [arg for index, arg in enumerate(argv[1:], 1) if not arg.startswith("--")
+            and not (argv[index - 1].startswith("--") and argv[index - 1] not in flags)]
+    action = rest[0] if rest else "list"
+    memory = Memory()
+
+    def when(stamp: float) -> str:
+        return datetime.fromtimestamp(stamp).strftime("%d/%m/%Y %H:%M")
+
+    try:
+        if action == "list":
+            for row in memory.conversations(100, options.get("engine")):
+                print(f"{'📌' if row['pinned'] else '  '} {row['id']:>5}  {when(row['updated'])}  "
+                      f"{row['engine'] or '—':<12} {row['title']}")
+            return 0
+        if action == "search" and len(rest) >= 2:
+            query = " ".join(rest[1:])
+            if "--semantic" in flags:
+                from djerba_ai.core.config import Config
+                from djerba_ai.core.embeddings import embed
+                config = Config()
+                hits = memory.semantic_search(query, lambda texts: embed(texts, config), options.get("engine"))
+            else:
+                hits = memory.search(query, options.get("engine"))
+            for hit in hits:
+                print(f"{hit['conversation']:>5}  {hit['engine'] or '—':<12} {hit['title'][:40]:<40} {hit['snippet'][:90]}")
+            return 0 if hits else 1
+        if action == "memory":
+            if len(rest) >= 2:
+                retention = options.get("retention")
+                setting = memory.set_engine_memory(rest[1], rest[2] if len(rest) > 2 else None,
+                                                   int(retention) if retention is not None else None)
+                print(f"{setting['engine']} : mémoire {setting['mode']}, conservation "
+                      f"{setting['retention_days'] or 'illimitée'}{' jour(s)' if setting['retention_days'] else ''}")
+                return 0
+            from djerba_ai.core import engines
+            from djerba_ai.core.config import Config
+            for engine in engines.catalog(Config()):
+                setting = memory.engine_memory(engine["id"])
+                print(f"{engine['id']:<14} {setting['mode']:<8} conservation "
+                      f"{setting['retention_days'] or 'illimitée'}")
+            return 0
+        if action == "backup":
+            print(f"Sauvegarde : {memory.backup(Path(rest[1]) if len(rest) > 1 else None)}")
+            return 0
+        if action == "restore" and len(rest) >= 2:
+            print(memory.restore(Path(rest[1]))["message"])
+            return 0
+        if action == "prune":
+            print(f"{memory.prune()} conversation(s) supprimée(s) (rétention par moteur)")
+            return 0
+        if action == "import":
+            engine = options.get("engine", "jarvis")
+            data = json.loads(Path(rest[1]).read_text(encoding="utf-8")) if len(rest) > 1 else \
+                ipc.call("engines.jarvis_history", {"id": engine}, timeout=120)
+            print(memory.import_history(data, engine=engine, source=engine)["message"])
+            return 0
+        if len(rest) < 2 or not rest[1].isdigit():
+            print(__doc__)
+            return 2
+        conversation = int(rest[1])
+        if memory.conversation(conversation) is None:
+            print(f"conversation introuvable : {conversation}", file=sys.stderr)
+            return 1
+        if action in ("show", "export"):
+            text = memory.export(conversation, options.get("format", "markdown"))
+            if options.get("output"):
+                Path(options["output"]).write_text(text, encoding="utf-8")
+                print(f"Exportée : {options['output']}")
+            else:
+                print(text, end="")
+            return 0
+        if action in ("pin", "unpin"):
+            memory.pin_conversation(conversation, action == "pin")
+            print("Épinglée." if action == "pin" else "Désépinglée.")
+            return 0
+        if action == "rename" and len(rest) >= 3:
+            memory.rename_conversation(conversation, " ".join(rest[2:]))
+            print("Renommée.")
+            return 0
+        if action == "delete":
+            memory.delete_conversation(conversation)
+            print("Supprimée.")
+            return 0
+        if action == "undo":
+            result = ipc.call("tx.undo_session", {"session": memory.conversation(conversation)["key"]}, timeout=3600)
+            print(result["message"])
+            for error in result.get("errors", []):
+                print(f"  {error}", file=sys.stderr)
+            return 0 if result.get("success") else 1
+    except (HistoryError, OSError, ValueError, ipc.RPCError) as exc:
+        print(f"djerba-ai history : {exc}", file=sys.stderr)
+        return 1
+    finally:
+        memory.close()
+    print(__doc__)
+    return 2
+
+
 def mcp_command(argv: list[str]) -> int:
     from djerba_ai.core import ipc, mcp
     from djerba_ai.core.config import Config
@@ -371,6 +486,8 @@ def main() -> int:
         return engines_command(argv)
     if command == "mcp":
         return mcp_command(argv)
+    if command == "history":
+        return history_command(argv)
     if command == "mcp-serve":
         from djerba_ai.core import mcp
         from djerba_ai.core.config import Config

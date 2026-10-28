@@ -53,13 +53,19 @@ def _tools_categories(_params: dict, _verbose: bool) -> dict:
     return ok(f"{len(reg)} capacités réparties en {len(counts)} catégories", categories=counts)
 
 
+def _active_engine() -> str:
+    """Moteur actif : propriétaire des souvenirs et leçons s'il a une mémoire isolée."""
+    from djerba_ai.core import engines
+    return engines.active_id(_config())
+
+
 def _remember(params: dict, _verbose: bool) -> dict:
-    fact_id = _memory().remember(params["subject"], params["content"])
+    fact_id = _memory().remember(params["subject"], params["content"], engine=_active_engine())
     return ok("C'est noté, je m'en souviendrai.", id=fact_id)
 
 
 def _recall(params: dict, _verbose: bool) -> dict:
-    facts = _memory().facts(params.get("query", ""))
+    facts = _memory().facts(params.get("query", ""), engine=_active_engine())
     return ok(f"{len(facts)} souvenir(s)", facts=[{"id": f["id"], "subject": f["subject"], "content": f["content"]}
                                                  for f in facts])
 
@@ -68,9 +74,77 @@ def _forget(params: dict, _verbose: bool) -> dict:
     return ok("Oublié.") if _memory().forget(params["id"]) else fail("souvenir introuvable")
 
 
-def _conversations(_params: dict, _verbose: bool) -> dict:
-    rows = _memory().conversations(20)
-    return ok(f"{len(rows)} discussion(s)", conversations=[{"id": r["id"], "title": r["title"]} for r in rows])
+def _conversations(params: dict, _verbose: bool) -> dict:
+    rows = _memory().conversations(20, engine=params.get("engine") or None)
+    return ok(f"{len(rows)} discussion(s)", conversations=[{"id": r["id"], "title": r["title"], "moteur": r["engine"],
+                                                           "épinglée": bool(r["pinned"])} for r in rows])
+
+
+def _history_search(params: dict, _verbose: bool) -> dict:
+    memory = _memory()
+    engine = params.get("engine") or None
+    if params.get("semantic"):
+        from djerba_ai.core.embeddings import embed
+        config = _config()
+        hits = memory.semantic_search(params["query"], lambda texts: embed(texts, config), engine=engine)
+    else:
+        hits = memory.search(params["query"], engine=engine)
+    return ok(f"{len(hits)} passage(s) trouvé(s)", hits=hits)
+
+
+def _history_export(params: dict, _verbose: bool) -> dict:
+    from pathlib import Path
+    from djerba_ai.core.memory import HistoryError
+    fmt = params.get("format", "markdown")
+    try:
+        text = _memory().export(params["conversation"], fmt)
+    except HistoryError as exc:
+        return fail(str(exc))
+    folder = Path.home() / "Documents" / "Djerba"
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"conversation-{params['conversation']}.{'json' if fmt == 'json' else 'md'}"
+    target.write_text(text, encoding="utf-8")
+    return ok(f"Conversation exportée : {target}", path=str(target), size=len(text))
+
+
+def _history_undo(params: dict, _verbose: bool) -> dict:
+    from djerba_ai.core import ipc
+    info = _memory().conversation(params["conversation"])
+    if info is None:
+        return fail("conversation introuvable")
+    try:
+        result = ipc.call("tx.undo_session", {"session": info["key"]}, timeout=3600)
+    except ipc.RPCError as exc:
+        return fail(f"annulation impossible : {exc}")
+    return ok(result["message"], **{key: value for key, value in result.items() if key != "message"}) \
+        if result.get("success") else fail(result["message"])
+
+
+def _memory_mode(params: dict, _verbose: bool) -> dict:
+    from djerba_ai.core.memory import HistoryError
+    try:
+        setting = _memory().set_engine_memory(params["engine"], params.get("mode"), params.get("retention_days"))
+    except HistoryError as exc:
+        return fail(str(exc))
+    days = setting["retention_days"]
+    return ok(f"Mémoire de {setting['engine']} : {'isolée' if setting['mode'] == 'isole' else 'partagée'}, "
+              f"historique conservé {f'{days} jour(s)' if days else 'sans limite'}.", **setting)
+
+
+def _history_import(params: dict, _verbose: bool) -> dict:
+    import json
+    from pathlib import Path
+    from djerba_ai.core import ipc
+    from djerba_ai.core.memory import HistoryError
+    engine = params.get("engine", "jarvis")
+    try:
+        if params.get("path"):
+            data = json.loads(Path(params["path"]).expanduser().read_text(encoding="utf-8"))
+        else:
+            data = ipc.call("engines.jarvis_history", {"id": engine}, timeout=120)
+        return ok(**_memory().import_history(data, engine=engine, source=engine))
+    except (OSError, ValueError, HistoryError, ipc.RPCError) as exc:
+        return fail(f"import impossible : {exc}")
 
 
 def _feedback(params: dict, _verbose: bool) -> dict:
@@ -450,12 +524,12 @@ def _audit_verify(_params: dict, _verbose: bool) -> dict:
 
 
 def _lesson_record(params: dict, _verbose: bool) -> dict:
-    lesson_id = _memory().learn(params["kind"], params["content"], source="agent")
+    lesson_id = _memory().learn(params["kind"], params["content"], source="agent", engine=_active_engine())
     return ok(f"Leçon n°{lesson_id} retenue ({params['kind']}).", id=lesson_id)
 
 
 def _lessons_list(params: dict, _verbose: bool) -> dict:
-    rows = _memory().lessons(params.get("kind") or None, limit=params["limit"])
+    rows = _memory().lessons(params.get("kind") or None, limit=params["limit"], engine=_active_engine())
     return ok(f"{len(rows)} leçon(s)", lessons=rows)
 
 
@@ -489,8 +563,43 @@ TOOLS = [
     function_tool("memory_forget", C, "Oublie une information mémorisée.", _forget,
                   parameters={"id": {"type": "integer", "description": "identifiant", "minimum": 1}},
                   required=("id",), dangerous=True, keywords=("oublie",)),
-    function_tool("conversations_list", C, "Discussions précédentes avec Djerba.", _conversations,
+    function_tool("conversations_list", C, "Discussions précédentes avec Djerba (filtre facultatif par moteur).",
+                  _conversations,
+                  parameters={"engine": {"type": "string", "description": "moteur (engines_list)",
+                                         "pattern": r"^[a-z0-9][a-z0-9-]{1,31}$"}},
                   keywords=("historique", "discussions")),
+    function_tool("history_search", C, "Recherche dans l'historique des conversations (plein texte ou sémantique).",
+                  _history_search,
+                  parameters={"query": {"type": "string", "description": "mots recherchés", "minLength": 1,
+                                        "maxLength": 300},
+                              "engine": {"type": "string", "description": "moteur (facultatif)",
+                                         "pattern": r"^[a-z0-9][a-z0-9-]{1,31}$"},
+                              "semantic": {"type": "boolean", "description": "recherche par le sens"}},
+                  required=("query",), keywords=("retrouver une conversation", "on avait parlé", "historique")),
+    function_tool("history_export", C, "Exporte une conversation (Markdown ou JSON) dans ~/Documents/Djerba.",
+                  _history_export,
+                  parameters={"conversation": {"type": "integer", "description": "identifiant", "minimum": 1},
+                              "format": {"type": "string", "description": "format", "enum": ["markdown", "json"]}},
+                  required=("conversation",), dangerous=True, keywords=("exporter la conversation", "sauvegarder")),
+    function_tool("history_undo", C, "Annule toutes les modifications du système faites dans une conversation.",
+                  _history_undo,
+                  parameters={"conversation": {"type": "integer", "description": "identifiant", "minimum": 1}},
+                  required=("conversation",), keywords=("annuler ce que tu as fait", "défaire la conversation")),
+    function_tool("memory_mode", C, "Mémoire d'un moteur d'IA : isolée ou partagée, durée de conservation.",
+                  _memory_mode,
+                  parameters={"engine": {"type": "string", "description": "moteur",
+                                         "pattern": r"^[a-z0-9][a-z0-9-]{1,31}$"},
+                              "mode": {"type": "string", "description": "mode", "enum": ["isole", "partage"]},
+                              "retention_days": {"type": "integer", "description": "jours (0 = illimité)",
+                                                 "minimum": 0, "maximum": 3650}},
+                  required=("engine",), dangerous=True, keywords=("mémoire partagée", "isoler", "rétention")),
+    function_tool("history_import", C, "Importe l'historique de Jarvis (par le relais root ou depuis un fichier JSON).",
+                  _history_import,
+                  parameters={"engine": {"type": "string", "description": "moteur Jarvis",
+                                         "pattern": r"^[a-z0-9][a-z0-9-]{1,31}$"},
+                              "path": {"type": "string", "description": "fichier JSON (facultatif)",
+                                       "pattern": r"^[^\x00]{1,400}$"}},
+                  dangerous=True, keywords=("importer historique", "jarvis")),
     function_tool("feedback", C, "Note l'utilité d'une action passée (améliore les choix de l'agent).", _feedback,
                   parameters={"run_id": {"type": "integer", "description": "identifiant d'exécution", "minimum": 1},
                               "useful": {"type": "boolean", "description": "utile ?"}},

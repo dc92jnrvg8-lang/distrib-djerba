@@ -146,6 +146,10 @@ engine_remove = 1
 engine_profile = 1
 jarvis_pair = 1
 engine_use = 1
+history_export = 1
+history_undo = 1
+memory_mode = 1
+history_import = 1
 
 [racines]
 # Seuls endroits où les outils d'écriture root (os_sys_file_write, os_sys_chown,

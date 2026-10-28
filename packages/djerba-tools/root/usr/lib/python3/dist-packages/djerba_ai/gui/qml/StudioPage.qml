@@ -93,7 +93,31 @@ Glass {
             // ------------------------------------------------ Historique
             ColumnLayout {
                 spacing: 10
-                Body { text: "Toutes vos discussions avec Djerba (mémoire locale ~/.local/share/djerba/memory.db, secrets masqués)." }
+                Body { text: "Vos discussions, par moteur d'IA (chiffrées sur cette machine, secrets masqués). Une conversation se reprend avec n'importe quel moteur ; « Annuler » défait toutes ses modifications du système." }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    ComboBox {
+                        id: historyEngine
+                        model: backend.historyEngines
+                        textRole: "name"
+                        valueRole: "id"
+                        Accessible.name: "Filtrer par moteur d'IA"
+                        onActivated: backend.filterHistory(currentValue, historySearch.text)
+                    }
+                    TextField {
+                        id: historySearch
+                        Layout.fillWidth: true
+                        placeholderText: "Rechercher dans l'historique…"
+                        Accessible.name: "Rechercher dans l'historique"
+                        onAccepted: backend.filterHistory(historyEngine.currentValue || "", text)
+                    }
+                    ActionButton {
+                        visible: (historyEngine.currentValue || "") !== ""
+                        text: backend.historyEngines[historyEngine.currentIndex] && backend.historyEngines[historyEngine.currentIndex].mode === "isole" ? "Mémoire : isolée" : "Mémoire : partagée"
+                        onClicked: backend.setEngineMemory(historyEngine.currentValue, text === "Mémoire : isolée" ? "partage" : "isole")
+                    }
+                }
                 ListView {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
@@ -102,13 +126,32 @@ Glass {
                     model: backend.conversations
                     delegate: Rectangle {
                         required property var modelData
-                        width: ListView.view.width; height: 48; radius: 12
+                        width: ListView.view.width; height: modelData.snippet ? 66 : 48; radius: 12
                         color: win.veil(rowHover.hovered ? 0.1 : 0.05)
                         HoverHandler { id: rowHover }
                         RowLayout {
                             anchors.fill: parent; anchors.margins: 10; spacing: 10
-                            Text { Layout.fillWidth: true; text: modelData.title; color: win.white; font.pixelSize: 14; elide: Text.ElideRight }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+                                TextField {
+                                    id: titleField
+                                    Layout.fillWidth: true
+                                    text: (modelData.pinned ? "📌 " : "") + modelData.title
+                                    readOnly: true
+                                    color: win.white; font.pixelSize: 14
+                                    background: null
+                                    Accessible.name: "Titre de la conversation"
+                                    onAccepted: { readOnly = true; backend.renameConversation(modelData.id, text.replace("📌 ", "")) }
+                                }
+                                Text { visible: modelData.snippet !== ""; Layout.fillWidth: true; text: modelData.snippet; color: win.white; opacity: 0.6; font.pixelSize: 12; elide: Text.ElideRight }
+                            }
+                            Pill { visible: modelData.engine !== ""; text: modelData.engine }
                             ActionButton { text: "Ouvrir"; onClicked: { chat.clear(); backend.openConversation(modelData.id); win.page = 0 } }
+                            ActionButton { text: modelData.pinned ? "Désépingler" : "Épingler"; onClicked: backend.pinConversation(modelData.id, !modelData.pinned) }
+                            ActionButton { text: "Renommer"; onClicked: { titleField.readOnly = false; titleField.text = modelData.title; titleField.forceActiveFocus(); titleField.selectAll() } }
+                            ActionButton { text: "Exporter"; onClicked: backend.exportConversation(modelData.id, "markdown") }
+                            ActionButton { text: "Annuler"; onClicked: backend.undoConversation(modelData.id) }
                             ActionButton { text: "Supprimer"; onClicked: backend.deleteConversation(modelData.id) }
                         }
                     }

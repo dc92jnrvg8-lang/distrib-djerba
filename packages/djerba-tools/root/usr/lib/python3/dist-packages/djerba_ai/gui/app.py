@@ -140,6 +140,7 @@ class Backend(QObject):
         self._hud_context = ""
         self._validations: list[dict] = []
         self._conversation = 0
+        self._history_engine, self._history_query = "", ""  # filtre de l'historique
         self._busy = False
         self._engine = {"available": False, "installed": [], "ollama_present": False}
         self._health: dict = {"score": 0, "items": []}
@@ -324,7 +325,77 @@ class Backend(QObject):
 
     @pyqtProperty("QVariantList", notify=conversationsChanged)
     def conversations(self) -> list:
-        return [{"id": row["id"], "title": row["title"]} for row in self.memory.conversations(30)]
+        """Historique (épinglées d'abord), filtré par moteur ou par recherche plein texte."""
+        engine = self._history_engine or None
+        query = self._history_query
+        if query:
+            seen, rows = set(), []
+            for hit in self.memory.search(query, engine=engine, limit=60):
+                if hit["conversation"] not in seen:
+                    seen.add(hit["conversation"])
+                    info = self.memory.conversation(hit["conversation"]) or {}
+                    rows.append({**info, "snippet": hit["snippet"]})
+        else:
+            rows = self.memory.conversations(60, engine=engine)
+        return [{"id": row["id"], "title": row["title"], "engine": row.get("engine", ""),
+                 "pinned": bool(row.get("pinned")), "snippet": row.get("snippet", "")} for row in rows]
+
+    @pyqtProperty("QVariantList", notify=conversationsChanged)
+    def historyEngines(self) -> list:
+        """Moteurs pour le filtre de l'historique (« » : tous), avec leur mode de mémoire."""
+        from djerba_ai.core import engines
+        items = [{"id": "", "name": "Tous les moteurs", "mode": ""}]
+        for engine in engines.catalog(self.config):
+            items.append({"id": engine["id"], "name": engine["name"],
+                          "mode": self.memory.engine_memory(engine["id"])["mode"]})
+        return items
+
+    @pyqtSlot(str, str)
+    def filterHistory(self, engine: str, query: str) -> None:
+        self._history_engine, self._history_query = engine, query.strip()
+        self.conversationsChanged.emit()
+
+    @pyqtSlot(int, bool)
+    def pinConversation(self, conversation_id: int, pinned: bool) -> None:
+        self.memory.pin_conversation(conversation_id, pinned)
+        self.conversationsChanged.emit()
+
+    @pyqtSlot(int, str)
+    def renameConversation(self, conversation_id: int, title: str) -> None:
+        from djerba_ai.core.memory import HistoryError
+        try:
+            self.memory.rename_conversation(conversation_id, title)
+        except HistoryError as exc:
+            self.notify.emit(str(exc))
+        self.conversationsChanged.emit()
+
+    @pyqtSlot(int, str)
+    def exportConversation(self, conversation_id: int, fmt: str) -> None:
+        folder = Path.home() / "Documents" / "Djerba"
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / f"conversation-{conversation_id}.{'json' if fmt == 'json' else 'md'}"
+        target.write_text(self.memory.export(conversation_id, fmt), encoding="utf-8")
+        self.notify.emit(f"Conversation exportée : {target}")
+
+    @pyqtSlot(int)
+    def undoConversation(self, conversation_id: int) -> None:
+        info = self.memory.conversation(conversation_id)
+        if info is None:
+            return
+
+        def work():
+            try:
+                return ipc.call("tx.undo_session", {"session": info["key"]}, timeout=3600)
+            except ipc.RPCError as exc:
+                return {"success": False, "message": f"Annulation impossible : {exc}"}
+
+        self._background(work, lambda result: self.notify.emit(str(result.get("message", ""))))
+
+    @pyqtSlot(str, str)
+    def setEngineMemory(self, engine: str, mode: str) -> None:
+        setting = self.memory.set_engine_memory(engine, mode)
+        self.notify.emit(f"Mémoire de {engine} : {'isolée' if setting['mode'] == 'isole' else 'partagée'}.")
+        self.conversationsChanged.emit()
 
     @pyqtProperty(int, notify=conversationsChanged)
     def conversation(self) -> int:
