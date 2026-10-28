@@ -209,8 +209,11 @@ NETWORK_CHECKS = [
      "rm -f /tmp/ff.png; timeout 300 firefox --headless --screenshot /tmp/ff.png https://deb.debian.org/ "
      ">/tmp/ff.log 2>&1; test -s /tmp/ff.png", 360),
     ("Mode anonyme : connexion au réseau Tor", "sudo djerba-anonsurf start --verbose", 400),
+    # Un relais de sortie peut couper une connexion TLS : comme un utilisateur, on demande alors de nouveaux
+    # circuits (djerba-anonsurf change) ; l'exigence reste la même (trafic sorti par Tor).
     ("Mode anonyme : trafic sortant via Tor",
-     "curl -fsS --max-time 60 https://check.torproject.org/api/ip | grep -q '\"IsTor\":true'", 120),
+     "for i in 1 2 3; do curl -fsS --max-time 60 https://check.torproject.org/api/ip > /tmp/tor-ip.json "
+     "&& break; sudo djerba-anonsurf change; sleep 15; done; grep -q '\"IsTor\":true' /tmp/tor-ip.json", 300),
     ("Mode anonyme : DNS résolu par Tor", "getent hosts www.debian.org >/dev/null", 90),
     ("Mode anonyme : IPv6 bloqué (pas de fuite)",
      "! curl -6 -fsS --max-time 10 -o /dev/null https://www.debian.org/", 60),
