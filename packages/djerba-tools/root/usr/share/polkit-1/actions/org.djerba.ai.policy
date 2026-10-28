@@ -110,4 +110,17 @@
       <allow_active>yes</allow_active>
     </defaults>
   </action>
+  <action id="org.djerba.ai.undo">
+    <description>Undo a change made to the system</description>
+    <description xml:lang="fr">Annuler une modification du système</description>
+    <message>Authentication is required to undo a change made to the system</message>
+    <message xml:lang="fr">Une authentification est nécessaire pour annuler une modification du système</message>
+    <icon_name>edit-undo</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
 </policyconfig>

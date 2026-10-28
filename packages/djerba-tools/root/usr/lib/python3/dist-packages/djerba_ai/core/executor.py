@@ -19,6 +19,8 @@ class Executor:
     def __init__(self, registry: Registry, memory=None) -> None:
         self.registry = registry
         self.memory = memory
+        #: moteur d'IA et session à l'origine des actions (journal de transactions du démon root)
+        self.origin: dict[str, str] = {}
 
     def tool(self, name: str) -> BaseTool | None:
         return self.registry.get(name)
@@ -31,7 +33,11 @@ class Executor:
         if tool.requires_root:
             try:
                 cleaned = tool.validate(params)  # refus immédiat d'un paramètre invalide
-                result = ipc.call("sys.exec_tool", {"name": name, "params": cleaned, "verbose": verbose})
+                request_params: dict[str, Any] = {"name": name, "params": cleaned, "verbose": verbose}
+                if self.origin:
+                    request_params["origin"] = {"engine": str(self.origin.get("engine", ""))[:80],
+                                                "session": str(self.origin.get("session", ""))[:80]}
+                result = ipc.call("sys.exec_tool", request_params)
             except ipc.RPCError as exc:
                 result = fail("autorisation refusée" if exc.code == ipc.NOT_AUTHORIZED else str(exc))
             except Exception as exc:  # noqa: BLE001 - erreur de validation (ToolError)

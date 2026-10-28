@@ -66,6 +66,15 @@ Méthodes :
   session.report {desktop, component, detail}
                                  consigne une défaillance de session graphique (extension,
                                  shell, adaptateur) dans /var/log/djerba/<bureau>-crash.log
+  tx.list {limit, since} / tx.show {id}
+                                 journal de transactions (core.transactions)
+  tx.undo {id, force} / tx.undo_since {since}
+                                 annulation depuis la sauvegarde (instantané Btrfs ou copie)
+
+Toute méthode qui modifie le système (outil root qui n'est pas en lecture
+seule, correctifs, Ollama, venv, réglages, AppArmor) s'exécute dans une
+transaction : sauvegarde préalable, vérification par sondes, annulation
+automatique en cas de régression, moteur d'IA et session d'origine consignés.
 """
 
 from __future__ import annotations
@@ -91,6 +100,7 @@ from typing import Any, Callable
 from djerba_ai import __version__
 from djerba_ai.core import audit, ipc, llm, sandbox, telemetry, trust
 from djerba_ai.core.config import CLOUD_ENDPOINTS, SCHEMA, ConfigError, Store, public_view
+from djerba_ai.core.config import validate as validate_setting
 from djerba_ai.core.schemas import parse_rpc
 
 STATE_DIR = Path("/var/lib/djerba-ai")
@@ -108,6 +118,11 @@ ACTION_CONFIGURE = "org.djerba.ai.configure"
 ACTION_CLOUD = "org.djerba.ai.cloud"
 ACTION_AUDIT = "org.djerba.ai.audit"
 ACTION_EXTEND = "org.djerba.ai.extend"
+ACTION_UNDO = "org.djerba.ai.undo"
+#: outils dont l'unité ciblée doit rester active (sonde « après » de la transaction)
+TARGETED_TOOLS = {"service_restart", "service_enable"}
+#: outils qui touchent l'amorçage (sauvegarde de /boot et de l'ESP sans Btrfs)
+BOOT_TOOLS = {"grub_timeout", "grub_update", "initramfs_update", "apt_full_upgrade", "os_pkg_update"}
 
 VENV = Path(os.environ.get("DJERBA_AI_VENV", "/usr/share/djerba-ai/venv"))
 PLUGIN_NAME = re.compile(r"^[a-z0-9_]{3,48}$")
@@ -116,7 +131,7 @@ REQUIREMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}(\[[A-Za-z0-9,_-]+\])
 APP_SCOPE = re.compile(r"/djerba-(?:app|ghost)-[^/\n]*\.(?:scope|service)")
 #: méthodes sans effet ni donnée sensible : non journalisées
 QUIET = {"sys.ping", "sys.metrics", "sys.list_patches", "config.get", "audit.tail", "audit.verify", "security.status",
-         "llm.cloud_health", "llm.cloud_models", "session.report"}
+         "llm.cloud_health", "llm.cloud_models", "session.report", "tx.list", "tx.show"}
 
 Authorizer = Callable[[int, int, str], bool]
 Emit = Callable[[str, dict], None]
@@ -670,10 +685,30 @@ Verifier = Callable[[int, int], tuple[bool, str]]
 
 
 class Dispatcher:
-    def __init__(self, authorizer: Authorizer = polkit_authorize, verifier: Verifier = trust.verify) -> None:
+    def __init__(self, authorizer: Authorizer = polkit_authorize, verifier: Verifier = trust.verify,
+                 journal=None) -> None:
         self.authorizer = authorizer
         self.verifier = verifier
         self._registry = None
+        self._journal = journal
+
+    def journal(self):
+        """Journal de transactions (sauvegarde, vérification, undo) des actions qui modifient le système."""
+        if self._journal is None:
+            from djerba_ai.core import transactions
+            self._journal = transactions.Journal()
+        return self._journal
+
+    def transact(self, action: Callable[[], Any], method: str, params: dict, uid: int, tool: str = "",
+                 targets: tuple[str, ...] = (), boot: bool = False) -> Any:
+        from djerba_ai.core.transactions import Origin
+        origin = params.get("origin") or {}
+        recorded = self._audit_params(method, params)
+        if isinstance(recorded, dict):
+            recorded = {key: value for key, value in recorded.items() if key != "origin"}
+        return self.journal().run(action, method=method, tool=tool, params=recorded, uid=uid,
+                                  origin=Origin(str(origin.get("engine", "")), str(origin.get("session", ""))),
+                                  targets=targets, boot=boot)
 
     def registry(self):
         if self._registry is None:
@@ -770,7 +805,8 @@ class Dispatcher:
             return {"success": done, "message": f"{params['ip']} débloquée" if done else f"échec : {detail}"}
         if method == "security.apparmor_load":
             self.require(pid, uid, ACTION_EXTEND)
-            return apparmor_load(uid, str(params["kind"]), str(params["name"]), bool(params.get("network")))
+            return self.transact(lambda: apparmor_load(uid, str(params["kind"]), str(params["name"]),
+                                                       bool(params.get("network"))), method, params, uid)
         if method == "sys.list_patches":
             return list_patches()
         if method == "sys.exec_tool":
@@ -778,38 +814,47 @@ class Dispatcher:
             if tool is None or not tool.requires_root:
                 raise ipc.RPCError(ipc.METHOD_NOT_FOUND, "outil root inconnu")
             self.require(pid, uid, ACTION_EXEC)
-            return tool.run(params.get("params") or {}, verbose=bool(params.get("verbose")))
+            arguments = params.get("params") or {}
+            if not tool.mutates:
+                return tool.run(arguments, verbose=bool(params.get("verbose")))
+            targets = (str(arguments["unit"]),) if tool.name in TARGETED_TOOLS and arguments.get("unit") else ()
+            return self.transact(lambda: tool.run(arguments, verbose=bool(params.get("verbose"))), method, params,
+                                 uid, tool=tool.name, targets=targets, boot=tool.name in BOOT_TOOLS)
         if method == "sys.test_patch":
             self.require(pid, uid, ACTION_PATCH)
             return test_patch(str(params.get("target", "")), str(params.get("content", "")),
                               str(params.get("reason", "")))
         if method == "sys.deploy_patch":
             self.require(pid, uid, ACTION_DEPLOY)
-            return deploy_patch(str(params.get("patch_id", "")))
+            return self.transact(lambda: deploy_patch(str(params.get("patch_id", ""))), method, params, uid)
         if method == "sys.rollback_patch":
             self.require(pid, uid, ACTION_DEPLOY)
-            return rollback_patch(str(params.get("name", "")))
+            return self.transact(lambda: rollback_patch(str(params.get("name", ""))), method, params, uid)
         if method == "sys.install_ollama":
             self.require(pid, uid, ACTION_SETUP)
-            return install_ollama()
+            return self.transact(install_ollama, method, params, uid)
         if method == "sys.test_plugin":
             self.require(pid, uid, ACTION_EXTEND)
             return test_plugin(uid, str(params.get("name", "")), str(params.get("content", "")),
                                str(params.get("tests", "")), list(params.get("requirements") or []))
         if method == "sys.venv_install":
             self.require(pid, uid, ACTION_SETUP)
-            return venv_install(list(params.get("packages") or []))
+            return self.transact(lambda: venv_install(list(params.get("packages") or [])), method, params, uid)
         if method == "config.get":
             return public_view(Store().load())
         if method == "config.set":
             self.require(pid, uid, ACTION_CONFIGURE)
+            key = str(params.get("key", ""))
             try:
-                old, new = Store().set(str(params.get("key", "")), params.get("value"))
+                validate_setting(key, params.get("value"))
             except ConfigError as exc:
                 raise ipc.RPCError(ipc.INVALID_PARAMS, str(exc)) from exc
-            secret = SCHEMA[str(params["key"])].get("secret")
-            return {"success": True, "key": params["key"], "value": None if secret else new,
-                    "message": f"{params['key']} modifié"}
+            secret = SCHEMA[key].get("secret")
+
+            def change() -> dict:
+                _old, new = Store().set(key, params.get("value"))
+                return {"success": True, "key": key, "value": None if secret else new, "message": f"{key} modifié"}
+            return self.transact(change, method, params, uid)
         if method == "llm.cloud_chat":
             self.require(pid, uid, ACTION_CLOUD)
             return cloud_chat(params, emit)
@@ -822,6 +867,26 @@ class Dispatcher:
             try:
                 return {"models": llm.cloud_models(settings["endpoint"], settings["key"])}
             except llm.LLMError as exc:
+                raise ipc.RPCError(ipc.TOOL_FAILED, str(exc)) from exc
+        if method in ("tx.list", "tx.show"):
+            self.require(pid, uid, ACTION_AUDIT)
+            if method == "tx.show":
+                found = self.journal().show(str(params["id"]))
+                if found is None:
+                    raise ipc.RPCError(ipc.INVALID_PARAMS, "transaction inconnue")
+                return found
+            since = str(params["since"]).replace(" ", "T") if params.get("since") else None
+            return {"transactions": self.journal().list(int(params.get("limit", 50)), since)}
+        if method in ("tx.undo", "tx.undo_since"):
+            self.require(pid, uid, ACTION_UNDO)
+            from djerba_ai.core.transactions import TransactionError
+            try:
+                if method == "tx.undo":
+                    report = self.journal().undo(str(params["id"]), uid=uid, force=bool(params.get("force")))
+                    return {"success": report["state"] != "annulation partielle", **report}
+                result = self.journal().undo_since(str(params["since"]).replace(" ", "T"), uid=uid)
+                return {"success": not result["errors"], **result}
+            except TransactionError as exc:
                 raise ipc.RPCError(ipc.TOOL_FAILED, str(exc)) from exc
         if method == "session.report":
             return session_report(uid, str(params["desktop"]), str(params["component"]), str(params["detail"]))

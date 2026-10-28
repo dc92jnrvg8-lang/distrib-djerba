@@ -172,6 +172,8 @@ class Agent:
             on_event("final", {"text": answer})
             return answer
         self.memory.add_message(conversation, "user", prompt.text)
+        active = self.engine.manager.active
+        self.executor.origin = {"engine": f"{active.kind}:{active.model}", "session": str(conversation)}
         state = self.engine.session(conversation)
         state.tainted = False
         if verdict.suspicious:

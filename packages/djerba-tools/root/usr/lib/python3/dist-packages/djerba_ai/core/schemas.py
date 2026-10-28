@@ -228,10 +228,21 @@ class NoParams(Strict):
     pass
 
 
+class OriginParams(Strict):
+    """Moteur d'IA et session à l'origine d'une action (étiquettes du journal de transactions)."""
+
+    engine: Annotated[StrictStr, Field(max_length=80)] = ""
+    session: Annotated[StrictStr, Field(max_length=80)] = ""
+
+
+Origin = OriginParams | None
+
+
 class ExecToolParams(Strict):
     name: Name
     params: dict[str, Any] = Field(default_factory=dict)
     verbose: StrictBool = False
+    origin: Origin = None
 
 
 class TestPatchParams(Strict):
@@ -250,10 +261,12 @@ class TestPatchParams(Strict):
 
 class PatchIdParams(Strict):
     patch_id: Annotated[StrictStr, Field(pattern=r"^p\d{14}$")]
+    origin: Origin = None
 
 
 class PatchNameParams(Strict):
     name: Annotated[StrictStr, Field(pattern=r"^djerba-[a-z0-9-]{1,40}$")]
+    origin: Origin = None
 
 
 class TestPluginParams(Strict):
@@ -265,11 +278,13 @@ class TestPluginParams(Strict):
 
 class VenvParams(Strict):
     packages: list[Annotated[StrictStr, Field(pattern=REQUIREMENT)]] = Field(min_length=1, max_length=20)
+    origin: Origin = None
 
 
 class ConfigSetParams(Strict):
     key: Annotated[StrictStr, Field(pattern=r"^[a-z_]+(\.[a-z_]+){1,3}$")]
     value: StrictStr | StrictInt | StrictBool | list[StrictStr]
+    origin: Origin = None
 
 
 class CloudChatParams(Strict):
@@ -293,12 +308,36 @@ class ApparmorParams(Strict):
     kind: Literal["app", "plugin"]
     name: Annotated[StrictStr, Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,47}$")]
     network: StrictBool = False
+    origin: Origin = None
 
 
 class SessionReportParams(Strict):
     desktop: Literal["gnome", "kde", "generic"]
     component: Annotated[StrictStr, Field(pattern=r"^[a-z0-9][a-z0-9_.@-]{0,63}$")]
     detail: Annotated[StrictStr, Field(min_length=1, max_length=16000)]
+
+
+TX_ID = r"^t\d{14}[0-9a-f]{4}$"
+#: date ISO 8601 (jour, ou jour et heure) pour « undo --since »
+SINCE = r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?([+-]\d{4})?)?$"
+
+
+class TxListParams(Strict):
+    limit: Annotated[StrictInt, Field(ge=1, le=500)] = 50
+    since: Annotated[StrictStr, Field(pattern=SINCE)] | None = None
+
+
+class TxIdParams(Strict):
+    id: Annotated[StrictStr, Field(pattern=TX_ID)]
+
+
+class TxUndoParams(Strict):
+    id: Annotated[StrictStr, Field(pattern=TX_ID)]
+    force: StrictBool = False
+
+
+class TxSinceParams(Strict):
+    since: Annotated[StrictStr, Field(pattern=SINCE)]
 
 
 RPC_PARAMS: dict[str, type[Strict]] = {
@@ -324,6 +363,10 @@ RPC_PARAMS: dict[str, type[Strict]] = {
     "security.unblock": UnblockParams,
     "security.apparmor_load": ApparmorParams,
     "session.report": SessionReportParams,
+    "tx.list": TxListParams,
+    "tx.show": TxIdParams,
+    "tx.undo": TxUndoParams,
+    "tx.undo_since": TxSinceParams,
 }
 
 

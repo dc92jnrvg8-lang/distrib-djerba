@@ -292,6 +292,33 @@ def _model_set(params: dict, _verbose: bool) -> dict:
     return ok(f"Modèle {params['model']} pour {PROVIDER_LABELS[provider]}.")
 
 
+def _transactions_list(params: dict, _verbose: bool) -> dict:
+    from djerba_ai.core import ipc
+    try:
+        items = ipc.call("tx.list", {"limit": int(params.get("limit", 20))}, timeout=60)["transactions"]
+    except ipc.RPCError as exc:
+        return fail(f"journal des modifications indisponible : {exc}")
+    summary = [{"id": item["id"], "date": item["started"], "état": item["state"],
+                "action": item.get("tool") or item["method"], "moteur": item.get("engine", ""),
+                "fichiers": len(item.get("changes") or {}), "annulable": item["undoable"]} for item in items]
+    return ok(f"{len(summary)} modification(s) récente(s) du système", transactions=summary)
+
+
+def _transaction_undo(params: dict, _verbose: bool) -> dict:
+    from djerba_ai.core import ipc
+    try:
+        if params.get("since"):
+            result = ipc.call("tx.undo_since", {"since": params["since"]}, timeout=3600)
+        elif not params.get("id"):
+            return fail("préciser l'identifiant de la modification (transactions_list) ou une date (since)")
+        else:
+            result = ipc.call("tx.undo", {"id": params["id"]}, timeout=3600)
+    except ipc.RPCError as exc:
+        return fail(f"annulation impossible : {exc}")
+    return ok(result["message"], **{key: value for key, value in result.items() if key != "message"}) \
+        if result.get("success") else fail(result["message"])
+
+
 def _settings_get(_params: dict, _verbose: bool) -> dict:
     return ok("Réglages de Djerba (/etc/djerba/config.toml)", **_config().public())
 
@@ -499,6 +526,17 @@ TOOLS = [
                               "provider": {"type": "string", "description": "local, tailscale ou cloud",
                                            "enum": ["local", "tailscale", "cloud"]}},
                   required=("model",), keywords=("changer de modèle", "utiliser modèle")),
+    function_tool("transactions_list", C, "Dernières modifications du système (journal de transactions : moteur "
+                  "d'IA à l'origine, fichiers touchés, état, annulable ou non).", _transactions_list,
+                  parameters={"limit": {"type": "integer", "description": "nombre", "minimum": 1, "maximum": 200}},
+                  keywords=("historique des modifications", "qu'as-tu changé", "journal", "undo", "transactions")),
+    function_tool("transaction_undo", C, "Annule une modification du système (par identifiant) ou toutes celles "
+                  "depuis une date (restauration depuis la sauvegarde prise avant l'action).", _transaction_undo,
+                  parameters={"id": {"type": "string", "description": "identifiant (t…)",
+                                     "pattern": r"^t\d{14}[0-9a-f]{4}$"},
+                              "since": {"type": "string", "description": "date AAAA-MM-JJ[THH:MM]",
+                                        "pattern": r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2})?$"}},
+                  keywords=("annuler", "undo", "revenir en arrière", "restaurer", "défaire")),
     function_tool("settings_get", C, "Réglages de Djerba (/etc/djerba/config.toml, sans les secrets).", _settings_get,
                   keywords=("réglages", "paramètres", "configuration de djerba")),
     function_tool("settings_set", C, "Modifie un réglage de Djerba (clé pointée, ex. agent.web_search).", _settings_set,
