@@ -263,7 +263,7 @@ conteneur Debian 13, CI x86_64 et arm64).
 - [x] DLP et « tainted » pour les moteurs distants.
 - [x] Lints et 129 tests verts en local ; contrôles ISO (modules, unité MCP)
       et session live (registre, MCP inactif par défaut) ajoutés.
-- [ ] CI verte (x86_64 et arm64).
+- [x] CI verte (x86_64 et arm64) : run 40682259564 (63c5041), 138 tests, 50/50 contrôles en session live.
 
 ### Décisions
 
@@ -364,7 +364,7 @@ conteneur Debian 13, CI x86_64 et arm64).
 - [x] Import Jarvis (fichier et relais root) contre le serveur factice,
       dédoublonné.
 - [x] Lints et 138 tests verts en local ; contrôle de session live ajouté.
-- [ ] CI verte (x86_64 et arm64).
+- [x] CI verte (x86_64 et arm64) : run 40682259564 (63c5041), 138 tests, 50/50 contrôles en session live.
 
 ### Décisions
 
