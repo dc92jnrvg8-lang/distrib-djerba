@@ -228,7 +228,7 @@ if ! grep -q "subvol=/@\|subvol=@" "${TARGET}/boot/grub/grub.cfg"; then
     echo "[rollback] grub.cfg sans racine Btrfs @ ; diagnostic de 10_linux :" >&2
     # shellcheck disable=SC2016  # développé dans le chroot
     chroot "${TARGET}" sh -c 'GRUB_DEVICE="$(grub-probe --target=device /)"; echo "périphérique : ${GRUB_DEVICE}";
-        grub-probe --target=fs_uuid / ; sh -x /etc/grub.d/10_linux' 2>&1 | tail -n 40 >&2
+        grub-probe --target=fs_uuid / ; export pkgdatadir=/usr/share/grub GRUB_DEVICE GRUB_DEVICE_UUID="$(grub-probe --target=fs_uuid /)" GRUB_FS=btrfs; sh -x /etc/grub.d/10_linux' 2>&1 | tail -n 40 >&2
     exit 1
 fi
 if grep -q "djerba-last-good" "${TARGET}/boot/grub/grub.cfg"; then
