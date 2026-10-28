@@ -119,6 +119,11 @@ ACTION_CLOUD = "org.djerba.ai.cloud"
 ACTION_AUDIT = "org.djerba.ai.audit"
 ACTION_EXTEND = "org.djerba.ai.extend"
 ACTION_UNDO = "org.djerba.ai.undo"
+#: confirmation hors bande (mode « prudent ») et action irréversible (mode « total »)
+ACTION_CONFIRM = "org.djerba.ai.confirm"
+ACTION_CRITICAL = "org.djerba.ai.critical"
+#: changement de la politique elle-même (mode, plafonds, reprise après pause)
+ACTION_POLICY = "org.djerba.ai.policy"
 #: outils dont l'unité ciblée doit rester active (sonde « après » de la transaction)
 TARGETED_TOOLS = {"service_restart", "service_enable"}
 #: outils qui touchent l'amorçage (sauvegarde de /boot et de l'ESP sans Btrfs)
@@ -131,7 +136,8 @@ REQUIREMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}(\[[A-Za-z0-9,_-]+\])
 APP_SCOPE = re.compile(r"/djerba-(?:app|ghost)-[^/\n]*\.(?:scope|service)")
 #: méthodes sans effet ni donnée sensible : non journalisées
 QUIET = {"sys.ping", "sys.metrics", "sys.list_patches", "config.get", "audit.tail", "audit.verify", "security.status",
-         "llm.cloud_health", "llm.cloud_models", "session.report", "tx.list", "tx.show"}
+         "llm.cloud_health", "llm.cloud_models", "session.report", "tx.list", "tx.show",
+         "policy.check", "policy.status"}
 
 Authorizer = Callable[[int, int, str], bool]
 Emit = Callable[[str, dict], None]
@@ -686,11 +692,54 @@ Verifier = Callable[[int, int], tuple[bool, str]]
 
 class Dispatcher:
     def __init__(self, authorizer: Authorizer = polkit_authorize, verifier: Verifier = trust.verify,
-                 journal=None) -> None:
+                 journal=None, policy=None) -> None:
         self.authorizer = authorizer
         self.verifier = verifier
         self._registry = None
         self._journal = journal
+        self._policy = policy
+
+    def policy(self):
+        """Moteur de politique (core.policy) : la décision appartient au démon, pas à l'agent."""
+        if self._policy is None:
+            from djerba_ai.core.policy import Policy
+            self._policy = Policy()
+        return self._policy
+
+    def gate(self, tool, arguments: dict, params: dict, pid: int, uid: int, method: str):
+        """Décision de la politique (comptée), confirmation hors bande si requise ; refus consignés."""
+        from djerba_ai.core.policy import Origin
+        origin = Origin.from_params(params.get("origin"))
+        decision = self.policy().decide(tool, arguments, origin, commit=True)
+        name = tool if isinstance(tool, str) else tool.name
+        if decision.allowed and decision.confirm:
+            action = ACTION_CRITICAL if decision.admin else ACTION_CONFIRM
+            if not self.authorizer(pid, uid, action):
+                decision.allowed, decision.reason = False, "confirmation refusée par l'utilisateur"
+        if not decision.allowed:
+            telemetry.inc("djerba_policy_refusals_total", tool=name, level=str(decision.level))
+            audit.record("refus politique", uid=uid, pid=pid, method=method, tool=name,
+                         params={"niveau": decision.level, "mode": decision.mode, "moteur": origin.engine,
+                                 "session": origin.session, "non_fiable": origin.tainted},
+                         success=False, message=decision.reason)
+        return decision
+
+    @staticmethod
+    def refused(decision) -> dict:
+        return {"success": False, "message": f"Refusé par la politique de Djerba : {decision.reason}", "data": {},
+                "policy": decision.to_dict()}
+
+    def guarded(self, method: str, params: dict, pid: int, uid: int, action, tool: str = "",
+                targets: tuple[str, ...] = (), boot: bool = False) -> Any:
+        """Méthode qui modifie le système : politique, puis transaction annulable."""
+        from djerba_ai.core.policy import METHOD_TOOLS
+        decision = self.gate(METHOD_TOOLS.get(method, tool or method), params, params, pid, uid, method)
+        if not decision.allowed:
+            return self.refused(decision)
+        result = self.transact(action, method, params, uid, tool=tool, targets=targets, boot=boot)
+        if isinstance(result, dict):
+            result["policy"] = decision.to_dict()
+        return result
 
     def journal(self):
         """Journal de transactions (sauvegarde, vérification, undo) des actions qui modifient le système."""
@@ -805,8 +854,8 @@ class Dispatcher:
             return {"success": done, "message": f"{params['ip']} débloquée" if done else f"échec : {detail}"}
         if method == "security.apparmor_load":
             self.require(pid, uid, ACTION_EXTEND)
-            return self.transact(lambda: apparmor_load(uid, str(params["kind"]), str(params["name"]),
-                                                       bool(params.get("network"))), method, params, uid)
+            return self.guarded(method, params, pid, uid, lambda: apparmor_load(
+                uid, str(params["kind"]), str(params["name"]), bool(params.get("network"))))
         if method == "sys.list_patches":
             return list_patches()
         if method == "sys.exec_tool":
@@ -815,36 +864,46 @@ class Dispatcher:
                 raise ipc.RPCError(ipc.METHOD_NOT_FOUND, "outil root inconnu")
             self.require(pid, uid, ACTION_EXEC)
             arguments = params.get("params") or {}
+            decision = self.gate(tool, arguments, params, pid, uid, method)
+            if not decision.allowed:
+                return self.refused(decision)
             if not tool.mutates:
-                return tool.run(arguments, verbose=bool(params.get("verbose")))
-            targets = (str(arguments["unit"]),) if tool.name in TARGETED_TOOLS and arguments.get("unit") else ()
-            return self.transact(lambda: tool.run(arguments, verbose=bool(params.get("verbose"))), method, params,
-                                 uid, tool=tool.name, targets=targets, boot=tool.name in BOOT_TOOLS)
+                result = tool.run(arguments, verbose=bool(params.get("verbose")))
+            else:
+                targets = (str(arguments["unit"]),) if tool.name in TARGETED_TOOLS and arguments.get("unit") else ()
+                result = self.transact(lambda: tool.run(arguments, verbose=bool(params.get("verbose"))), method,
+                                       params, uid, tool=tool.name, targets=targets, boot=tool.name in BOOT_TOOLS)
+            if isinstance(result, dict) and decision.level:
+                result["policy"] = decision.to_dict()
+            return result
         if method == "sys.test_patch":
             self.require(pid, uid, ACTION_PATCH)
             return test_patch(str(params.get("target", "")), str(params.get("content", "")),
                               str(params.get("reason", "")))
         if method == "sys.deploy_patch":
             self.require(pid, uid, ACTION_DEPLOY)
-            return self.transact(lambda: deploy_patch(str(params.get("patch_id", ""))), method, params, uid)
+            return self.guarded(method, params, pid, uid, lambda: deploy_patch(str(params.get("patch_id", ""))))
         if method == "sys.rollback_patch":
             self.require(pid, uid, ACTION_DEPLOY)
-            return self.transact(lambda: rollback_patch(str(params.get("name", ""))), method, params, uid)
+            return self.guarded(method, params, pid, uid, lambda: rollback_patch(str(params.get("name", ""))))
         if method == "sys.install_ollama":
             self.require(pid, uid, ACTION_SETUP)
-            return self.transact(install_ollama, method, params, uid)
+            return self.guarded(method, params, pid, uid, install_ollama)
         if method == "sys.test_plugin":
             self.require(pid, uid, ACTION_EXTEND)
             return test_plugin(uid, str(params.get("name", "")), str(params.get("content", "")),
                                str(params.get("tests", "")), list(params.get("requirements") or []))
         if method == "sys.venv_install":
             self.require(pid, uid, ACTION_SETUP)
-            return self.transact(lambda: venv_install(list(params.get("packages") or [])), method, params, uid)
+            return self.guarded(method, params, pid, uid, lambda: venv_install(list(params.get("packages") or [])))
         if method == "config.get":
             return public_view(Store().load())
         if method == "config.set":
             self.require(pid, uid, ACTION_CONFIGURE)
             key = str(params.get("key", ""))
+            if key.startswith("policy."):
+                raise ipc.RPCError(ipc.NOT_AUTHORIZED, "la politique ne se modifie que par policy.set_mode ou "
+                                                       "policy.set_caps (authentification administrateur)")
             try:
                 validate_setting(key, params.get("value"))
             except ConfigError as exc:
@@ -854,7 +913,7 @@ class Dispatcher:
             def change() -> dict:
                 _old, new = Store().set(key, params.get("value"))
                 return {"success": True, "key": key, "value": None if secret else new, "message": f"{key} modifié"}
-            return self.transact(change, method, params, uid)
+            return self.guarded(method, params, pid, uid, change)
         if method == "llm.cloud_chat":
             self.require(pid, uid, ACTION_CLOUD)
             return cloud_chat(params, emit)
@@ -868,6 +927,29 @@ class Dispatcher:
                 return {"models": llm.cloud_models(settings["endpoint"], settings["key"])}
             except llm.LLMError as exc:
                 raise ipc.RPCError(ipc.TOOL_FAILED, str(exc)) from exc
+        if method == "policy.check":
+            from djerba_ai.core.policy import Origin
+            tool = self.registry().get(str(params["tool"])) or str(params["tool"])
+            if params.get("commit"):
+                return self.gate(tool, params.get("params") or {}, params, pid, uid, method).to_dict()
+            return self.policy().decide(tool, params.get("params") or {}, Origin.from_params(params.get("origin"))
+                                        ).to_dict()
+        if method == "policy.status":
+            return self.policy().status()
+        if method in ("policy.set_mode", "policy.set_caps", "policy.resume"):
+            # Authentification administrateur à chaque fois : l'agent ne peut pas changer sa propre politique.
+            self.require(pid, uid, ACTION_POLICY)
+            if method == "policy.resume":
+                self.policy().resume()
+                return {"success": True, "message": "agent réactivé"}
+            key, value = (("policy.mode", str(params["mode"])) if method == "policy.set_mode"
+                          else ("policy.engine_caps", list(params["caps"])))
+            Store().set(key, value)
+            return {"success": True, "message": f"{key} = {value}", "status": self.policy().status()}
+        if method == "policy.pause":
+            self.require(pid, uid, ACTION_UNDO)
+            return {"success": True, "message": "agent en pause : plus aucune action de niveau ≥ 1",
+                    "paused": self.policy().pause(str(params.get("reason", "")), uid)}
         if method in ("tx.list", "tx.show"):
             self.require(pid, uid, ACTION_AUDIT)
             if method == "tx.show":

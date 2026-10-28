@@ -233,6 +233,8 @@ class OriginParams(Strict):
 
     engine: Annotated[StrictStr, Field(max_length=80)] = ""
     session: Annotated[StrictStr, Field(max_length=80)] = ""
+    #: la tâche a lu un contenu non fiable (web, fichier, sortie d'outil, moteur distant)
+    tainted: StrictBool = False
 
 
 Origin = OriginParams | None
@@ -317,6 +319,26 @@ class SessionReportParams(Strict):
     detail: Annotated[StrictStr, Field(min_length=1, max_length=16000)]
 
 
+class PolicyCheckParams(Strict):
+    tool: Name
+    params: dict[str, Any] = Field(default_factory=dict)
+    origin: Origin = None
+    #: l'action va être exécutée (comptée pour les plafonds, confirmation hors bande si requise)
+    commit: StrictBool = False
+
+
+class PolicyModeParams(Strict):
+    mode: Literal["prudent", "autonome", "total"]
+
+
+class PolicyCapsParams(Strict):
+    caps: list[Annotated[StrictStr, Field(pattern=r"^[a-z][a-z0-9_-]{0,30}:[0-3]$")]] = Field(max_length=10)
+
+
+class PolicyPauseParams(Strict):
+    reason: Annotated[StrictStr, Field(max_length=200)] = ""
+
+
 TX_ID = r"^t\d{14}[0-9a-f]{4}$"
 #: date ISO 8601 (jour, ou jour et heure) pour « undo --since »
 SINCE = r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?([+-]\d{4})?)?$"
@@ -367,6 +389,12 @@ RPC_PARAMS: dict[str, type[Strict]] = {
     "tx.show": TxIdParams,
     "tx.undo": TxUndoParams,
     "tx.undo_since": TxSinceParams,
+    "policy.check": PolicyCheckParams,
+    "policy.status": NoParams,
+    "policy.set_mode": PolicyModeParams,
+    "policy.set_caps": PolicyCapsParams,
+    "policy.pause": PolicyPauseParams,
+    "policy.resume": NoParams,
 }
 
 

@@ -123,4 +123,43 @@
     </defaults>
   </action>
 
+  <action id="org.djerba.ai.confirm">
+    <description>Confirm an action of the Djerba agent (careful mode)</description>
+    <description xml:lang="fr">Confirmer une action de l'agent Djerba (mode prudent)</description>
+    <message>The Djerba agent wants to change the system: confirm with your password</message>
+    <message xml:lang="fr">L'agent Djerba veut modifier le système : confirmez avec votre mot de passe</message>
+    <icon_name>djerba-ai</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.djerba.ai.critical">
+    <description>Allow an irreversible action of the Djerba agent</description>
+    <description xml:lang="fr">Autoriser une action irréversible de l'agent Djerba</description>
+    <message>The Djerba agent wants to perform an IRREVERSIBLE action: administrator authentication is required</message>
+    <message xml:lang="fr">L'agent Djerba veut effectuer une action IRRÉVERSIBLE : authentification administrateur requise</message>
+    <icon_name>dialog-warning</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.djerba.ai.policy">
+    <description>Change the autonomy policy of the Djerba agent</description>
+    <description xml:lang="fr">Modifier la politique d'autonomie de l'agent Djerba</description>
+    <message>Administrator authentication is required to change what the Djerba agent may do on its own</message>
+    <message xml:lang="fr">Une authentification administrateur est nécessaire pour changer ce que l'agent Djerba peut faire seul</message>
+    <icon_name>security-high</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+
 </policyconfig>
