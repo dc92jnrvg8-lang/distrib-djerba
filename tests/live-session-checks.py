@@ -176,6 +176,9 @@ OFFLINE_CHECKS = [
      "&& sudo djerba-ai run timezone_set '{\"zone\": \"Pacific/Tahiti\"}' | grep -q 'agent en pause' "
      "&& sudo djerba-ai resume && sudo djerba-ai policy | grep -q 'refus' "
      "&& ! sudo djerba-ai policy | grep -q 'EN PAUSE'", 120),
+    ("Moteurs d'IA : registre (Ollama local actif) ; serveur MCP désactivé par défaut",
+     f"djerba-ai engines | grep -q '^● local ' && djerba-ai mcp list >/dev/null "
+     f"&& {SESSION}; journalctl --user -u djerba-ai-mcp --no-pager -o cat | grep -q 'désactivé'", 60),
     ("Store : catalogue JSON",
      "djerba-apps list --json | python3 -c 'import json,sys; assert len(json.load(sys.stdin)[\"apps\"]) >= 10'", 60),
     ("Mode discret : bascule Windows 11 puis restauration à l'identique",
