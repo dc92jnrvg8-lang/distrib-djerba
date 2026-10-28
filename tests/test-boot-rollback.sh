@@ -225,6 +225,10 @@ if [[ -n "${ESP_STAGING}" ]]; then
     mcopy -s -o -i "${ESP_DEV}" "${ESP_STAGING}"/* ::/
     mdir -/ -i "${ESP_DEV}" ::/EFI/BOOT | grep -qi "BOOTX64" || { echo "[rollback] ESP sans BOOTX64.EFI" >&2; exit 1; }
 fi
+# Sans udev (conteneur), /dev/disk/by-uuid est vide : 10_linux écrirait alors root=/dev/loopNpM, absent de la
+# VM. Le lien attendu est créé (dans /dev du conteneur, lié dans le chroot) pour obtenir root=UUID=….
+mkdir -p /dev/disk/by-uuid
+ln -sfn "${ROOT_DEV}" "/dev/disk/by-uuid/${ROOT_UUID}"
 if [[ ${LOOP_PARTITIONS} -eq 1 ]]; then
     # Racine sur un loop entier : 10_linux de GRUB l'écarte (« loop-mounted from files ») ; on lui donne le
     # périphérique qu'aura la VM (lu après la détection ; root= reste l'UUID détecté). Retiré ensuite.
@@ -233,6 +237,11 @@ if [[ ${LOOP_PARTITIONS} -eq 1 ]]; then
 fi
 chroot "${TARGET}" update-grub >>"${OUT}/rollback-grub.log" 2>&1 || { cat "${OUT}/rollback-grub.log"; exit 1; }
 rm -f "${TARGET}/etc/default/grub.d/99-djerba-test.cfg"
+if ! grep -q "root=UUID=${ROOT_UUID}" "${TARGET}/boot/grub/grub.cfg"; then
+    echo "[rollback] grub.cfg sans root=UUID=${ROOT_UUID} :" >&2
+    grep -n "linux\s" "${TARGET}/boot/grub/grub.cfg" >&2 || true
+    exit 1
+fi
 if ! grep -q "subvol=/@\|subvol=@" "${TARGET}/boot/grub/grub.cfg"; then
     echo "[rollback] grub.cfg sans racine Btrfs @ ; diagnostic de 10_linux :" >&2
     # shellcheck disable=SC2016  # développé dans le chroot
