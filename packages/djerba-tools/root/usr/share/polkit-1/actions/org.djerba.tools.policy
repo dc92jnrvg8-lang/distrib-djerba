@@ -48,4 +48,18 @@
     <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/djerba-dpkg-repair</annotate>
   </action>
 
+  <action id="org.djerba.boot-rollback">
+    <description>Keep the system restored at boot</description>
+    <description xml:lang="fr">Conserver le système restauré au démarrage</description>
+    <message>Authentication is required to make the restored system permanent</message>
+    <message xml:lang="fr">Une authentification est nécessaire pour conserver le système restauré</message>
+    <icon_name>document-revert</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/djerba-boot</annotate>
+  </action>
+
 </policyconfig>

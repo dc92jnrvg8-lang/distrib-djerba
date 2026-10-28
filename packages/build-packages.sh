@@ -79,7 +79,7 @@ build_package() {
     local executable
     while IFS= read -r -d '' executable; do
         chmod 0755 "${executable}"
-    done < <(find "${stage}/usr/bin" "${stage}/usr/sbin" "${stage}/usr/libexec" "${stage}/usr/lib/djerba" \
+    done < <(find "${stage}/usr/bin" "${stage}/usr/sbin" "${stage}/usr/libexec" "${stage}/usr/lib/djerba" "${stage}/etc/grub.d" \
                   -type f -print0 2>/dev/null)
     find "${stage}/etc/sudoers.d" -type f -exec chmod 0440 {} + 2>/dev/null || true
 

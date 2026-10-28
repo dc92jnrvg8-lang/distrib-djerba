@@ -1,0 +1,5 @@
+#!/bin/sh
+# Djerba OS — entrée « dernier démarrage réussi (restauration) » du menu GRUB.
+set -eu
+[ -x /usr/libexec/djerba-boot ] || exit 0
+/usr/libexec/djerba-boot grub-snippet entry 2>/dev/null || true

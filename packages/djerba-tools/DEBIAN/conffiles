@@ -3,3 +3,5 @@
 /etc/xdg/autostart/djerba-ai-tray.desktop
 /etc/xdg/autostart/djerba-dpkg-watch.desktop
 /etc/apt/apt.conf.d/80djerba-dpkg-repair
+/etc/grub.d/09_djerba_bootcount
+/etc/grub.d/42_djerba_rollback

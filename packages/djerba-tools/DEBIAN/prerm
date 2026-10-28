@@ -12,6 +12,7 @@ case "$1" in
         systemctl disable djerba-ai-sysd.socket >/dev/null 2>&1 || true
         systemctl disable --now djerba-ai-ids.service >/dev/null 2>&1 || true
         systemctl disable --now djerba-dpkg-repair.timer >/dev/null 2>&1 || true
+        systemctl disable --now djerba-boot-ok.timer >/dev/null 2>&1 || true
         nft delete table inet djerba_ids >/dev/null 2>&1 || true
         systemctl --global disable djerba-ai.service >/dev/null 2>&1 || true
         ;;

@@ -23,6 +23,13 @@ Usage :
     djerba-ai doctor                  diagnostic : moteur d'IA, démon root, outils manquants
     djerba-ai run-app SLUG [--live]   lance une application du Studio
     djerba-ai daemon                  démon utilisateur (service djerba-ai.service)
+    djerba-ai transactions [N]        dernières modifications du système (journal du démon root)
+    djerba-ai undo ID [--force]       annule une modification (restauration depuis la sauvegarde)
+    djerba-ai undo --since DATE       annule tout depuis DATE (AAAA-MM-JJ[THH:MM]), du plus récent
+                                      au plus ancien
+    djerba-ai rollback --make-permanent
+                                      conserve le système restauré au démarrage (après deux
+                                      démarrages ratés, GRUB revient au dernier bon état)
     djerba-ai session-report gnome [unité]
                                       rapport de plantage de la session GNOME
                                       (/var/log/djerba/gnome-crash.log), lancé par systemd
@@ -126,6 +133,44 @@ def run(name: str, raw: str, verbose: bool) -> int:
     return 0 if result.get("success") else 1
 
 
+def transactions(limit: int) -> int:
+    from djerba_ai.core import ipc
+    try:
+        items = ipc.call("tx.list", {"limit": limit}, timeout=60)["transactions"]
+    except ipc.RPCError as exc:
+        print(f"Journal indisponible : {exc}", file=sys.stderr)
+        return 1
+    if not items:
+        print("Aucune modification enregistrée.")
+    for item in reversed(items):
+        origin = " · ".join(part for part in (item.get("engine"), f"session {item['session']}"
+                                              if item.get("session") else "") if part)
+        changes = len(item.get("changes") or {})
+        print(f"{item['id']}  {item['started'][:16].replace('T', ' ')}  {item['state']:<24} "
+              f"{item.get('tool') or item['method']}  ({changes} fichier(s)"
+              + (f", {origin}" if origin else "") + ")")
+    return 0
+
+
+def undo(argv: list[str]) -> int:
+    from djerba_ai.core import ipc
+    try:
+        if argv[:1] == ["--since"] and len(argv) >= 2:
+            result = ipc.call("tx.undo_since", {"since": argv[1]}, timeout=3600)
+            for error in result.get("errors", []):
+                print(f"  - {error}")
+        elif argv and not argv[0].startswith("-"):
+            result = ipc.call("tx.undo", {"id": argv[0], "force": "--force" in argv}, timeout=3600)
+        else:
+            print("Usage : djerba-ai undo ID [--force] | djerba-ai undo --since AAAA-MM-JJ[THH:MM]", file=sys.stderr)
+            return 2
+    except ipc.RPCError as exc:
+        print(f"Annulation impossible : {exc}", file=sys.stderr)
+        return 1
+    print(result["message"])
+    return 0 if result.get("success") else 1
+
+
 def health() -> int:
     from djerba_ai.core.health import report
     result = report()
@@ -180,6 +225,12 @@ def main() -> int:
         return run(argv[1], rest[0] if rest else "", verbose)
     if command == "health":
         return health()
+    if command == "transactions":
+        return transactions(int(argv[1]) if len(argv) > 1 and argv[1].isdigit() else 30)
+    if command == "undo":
+        return undo(argv[1:])
+    if command == "rollback" and "--make-permanent" in argv:
+        os.execvp("pkexec", ["pkexec", "/usr/libexec/djerba-boot", "make-permanent"])
     if command == "doctor":
         return doctor()
     if command == "run-app" and len(argv) >= 2:

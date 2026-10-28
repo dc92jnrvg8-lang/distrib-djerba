@@ -1,0 +1,7 @@
+#!/bin/sh
+# Djerba OS — compteur de démarrages : après deux échecs consécutifs, GRUB
+# démarre le dernier état qui a démarré correctement (djerba-boot, Btrfs + UEFI).
+# N'écrit rien si les conditions ne sont pas réunies (racine non Btrfs, LUKS, BIOS).
+set -eu
+[ -x /usr/libexec/djerba-boot ] || exit 0
+/usr/libexec/djerba-boot grub-snippet counter 2>/dev/null || true
