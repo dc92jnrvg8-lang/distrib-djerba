@@ -27,6 +27,16 @@ Usage :
     djerba-ai undo ID [--force]       annule une modification (restauration depuis la sauvegarde)
     djerba-ai undo --since DATE       annule tout depuis DATE (AAAA-MM-JJ[THH:MM]), du plus récent
                                       au plus ancien
+    djerba-ai engines                 moteurs d'IA configurés (actif, capacité mesurée)
+    djerba-ai engines add TYPE ID [--endpoint URL] [--model M] [--name NOM]
+                                      TYPE : ollama, openai, gemini, anthropic, openai_compat
+                                      (clé d'API demandée au clavier, transmise au démon root)
+    djerba-ai engines pair-jarvis ADRESSE CODE [ID]
+                                      appairage avec Jarvis (code à 6 chiffres affiché par Jarvis)
+    djerba-ai engines use|test|measure|remove ID
+    djerba-ai mcp pair NOM [--cap 0-2] | list | revoke NOM
+                                      Djerba serveur d'outils pour un assistant distant (Jarvis)
+    djerba-ai mcp-serve               serveur MCP (service djerba-ai-mcp.service)
     djerba-ai pause [raison]          disjoncteur : l'agent n'effectue plus aucune modification
     djerba-ai resume                  reprise (authentification administrateur)
     djerba-ai policy [prudent|autonome|total]
@@ -203,6 +213,100 @@ def policy_command(argv: list[str]) -> int:
     return 0 if result.get("success") else 1
 
 
+def engines_command(argv: list[str]) -> int:
+    import getpass
+    from djerba_ai.core import engines, ipc
+    from djerba_ai.core.config import Config
+    config = Config()
+    action = argv[1] if len(argv) > 1 else "list"
+    options = {argv[index][2:]: argv[index + 1] for index in range(len(argv) - 1) if argv[index].startswith("--")}
+    try:
+        if action == "list":
+            active = engines.active_id(config)
+            for engine in engines.catalog(config):
+                label = (engine.get("profile") or {}).get("label", "capacité non mesurée")
+                print(f"{'●' if engine['id'] == active else ' '} {engine['id']:<14} {engine['name']:<28} "
+                      f"{engines.KIND_LABELS.get(engine['kind'], engine['kind']):<22} {engine.get('model', ''):<24} "
+                      f"{label}")
+            return 0
+        if action == "add" and len(argv) >= 4:
+            kind, identifier = argv[2], argv[3]
+            spec = {"id": identifier, "kind": kind, "name": options.get("name") or engines.KIND_LABELS.get(kind, kind),
+                    "endpoint": options.get("endpoint", ""), "model": options.get("model") or
+                    engines.DEFAULT_MODELS.get(kind, ""), "context_window": 128000 if kind != "ollama" else 8192}
+            secret = getpass.getpass("Clé d'API (laisser vide si aucune) : ") if kind != "ollama" else ""
+            result = ipc.call("engines.save", {"engine": spec, "secret": secret}, timeout=330)
+            print(result["message"])
+            return 0 if result.get("success") else 1
+        if action == "pair-jarvis" and len(argv) >= 4:
+            result = ipc.call("engines.pair_jarvis", {"address": argv[2], "code": argv[3],
+                                                      "id": argv[4] if len(argv) > 4 else "jarvis"}, timeout=330)
+            print(result["message"])
+            return 0 if result.get("success") else 1
+        if action in ("use", "test", "measure", "remove") and len(argv) >= 3:
+            engine = engines.find(argv[2], config)
+            if engine is None:
+                print(f"Moteur inconnu : {argv[2]}", file=sys.stderr)
+                return 1
+            if action == "use":
+                config.set("llm.engine", engine["id"])
+                print(f"Moteur actif : {engine['name']}")
+                return 0
+            if action == "remove":
+                print(ipc.call("engines.remove", {"id": engine["id"]}, timeout=330)["message"])
+                return 0
+            provider = engines.make_provider(engine, config)
+            if action == "test":
+                health = provider.health(10)
+                print(f"{engine['name']} : {health.get('detail')} ({health.get('latency_ms', 0)} ms)")
+                return 0 if health.get("ok") else 1
+            profile = engines.measure(provider)
+            print(f"{engine['name']} : {profile['label']}")
+            if not engine.get("builtin"):
+                ipc.call("engines.set_profile", {"id": engine["id"], "profile": profile}, timeout=330)
+            return 0 if profile.get("reachable") else 1
+    except ipc.RPCError as exc:
+        print(f"Impossible : {exc}", file=sys.stderr)
+        return 1
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+def mcp_command(argv: list[str]) -> int:
+    from djerba_ai.core import ipc, mcp
+    from djerba_ai.core.config import Config
+    action = argv[1] if len(argv) > 1 else "list"
+    try:
+        if action == "pair" and len(argv) >= 3:
+            cap = int(argv[argv.index("--cap") + 1]) if "--cap" in argv else 2
+            result = ipc.call("mcp.pair_begin", {"name": argv[2], "cap": cap}, timeout=330)
+            address = mcp.bind_address() or "<adresse Tailscale>"
+            link = f"djerba-mcp://{address}:{Config().get('mcp.port')}?code={result['code']}"
+            print(f"Code d'appairage pour « {argv[2]} » : {result['code']} (valable "
+                  f"{result['expires_in'] // 60} min)\n{link}")
+            try:
+                import qrcode  # python3-qrcode (recommandé)
+                code = qrcode.QRCode(border=1)
+                code.add_data(link)
+                code.print_ascii(invert=True)
+            except ImportError:
+                pass
+            return 0
+        if action == "list":
+            for client in ipc.call("mcp.list", {}, timeout=60)["clients"]:
+                print(f"{client['client']:<20} plafond {client['cap']}  dernier appel : {client.get('last_used') or '—'}")
+            return 0
+        if action == "revoke" and len(argv) >= 3:
+            result = ipc.call("mcp.revoke", {"client": argv[2]}, timeout=330)
+            print(result["message"])
+            return 0 if result.get("success") else 1
+    except ipc.RPCError as exc:
+        print(f"Impossible : {exc}", file=sys.stderr)
+        return 1
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
 def health() -> int:
     from djerba_ai.core.health import report
     result = report()
@@ -263,6 +367,14 @@ def main() -> int:
         return undo(argv[1:])
     if command in ("pause", "resume", "policy"):
         return policy_command(argv)
+    if command == "engines":
+        return engines_command(argv)
+    if command == "mcp":
+        return mcp_command(argv)
+    if command == "mcp-serve":
+        from djerba_ai.core import mcp
+        from djerba_ai.core.config import Config
+        return mcp.serve(Config())
     if command == "rollback" and "--make-permanent" in argv:
         os.execvp("pkexec", ["pkexec", "/usr/libexec/djerba-boot", "make-permanent"])
     if command == "doctor":

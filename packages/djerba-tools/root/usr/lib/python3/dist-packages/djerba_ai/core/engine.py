@@ -68,7 +68,7 @@ def _parameters(value: str) -> float:
 
 
 def profile_for(context_window: int, parameters_b: float, latency_ms: int, kind: str) -> str:
-    if kind == "cloud":
+    if kind in ("cloud", "openai", "gemini", "anthropic", "openai_compat"):
         return "extended"
     if (parameters_b and parameters_b < 5) or context_window <= 4096 or latency_ms > 2500:
         return "compact"
@@ -86,6 +86,9 @@ def handshake(provider, timeout: float = 5) -> Capabilities:
     model = getattr(provider, "model", "")
     context_window = getattr(provider, "context_window", 128000 if kind == "cloud" else 8192)
     tools, thinking, parameters = True, False, 0.0
+    profile = (getattr(provider, "engine", None) or {}).get("profile") or {}
+    if "outil" in profile:  # profil mesuré à l'ajout du moteur (core.engines.measure)
+        tools = bool(profile["outil"])
     if reachable and isinstance(provider, LocalOllamaProvider):
         try:
             info = provider.show(timeout)
@@ -103,6 +106,76 @@ def handshake(provider, timeout: float = 5) -> Capabilities:
     return Capabilities(provider=kind, model=model, reachable=reachable, latency_ms=latency,
                         context_window=context_window, tools=tools, thinking=thinking, parameters_b=parameters,
                         profile=profile_for(context_window, parameters, latency, kind))
+
+
+# ---------------------------------------------------------------- Repli « JSON contraint »
+JSON_INSTRUCTION = """Ce moteur n'a pas d'appels d'outils natifs : tu proposes tes actions en JSON.
+Outils disponibles (nom : description ; paramètres) :
+{tools}
+Réponds UNIQUEMENT par un objet JSON, sans texte autour :
+- pour agir : {{"outil": "nom_de_l_outil", "arguments": {{...}}}}
+- pour répondre à l'utilisateur : {{"reponse": "ta réponse en français"}}"""
+
+
+def describe_tools(tools: list[dict]) -> str:
+    lines = []
+    for tool in tools:
+        function = tool.get("function", {})
+        properties = (function.get("parameters") or {}).get("properties") or {}
+        arguments = ", ".join(f"{name} ({spec.get('type', 'string')})" for name, spec in properties.items())
+        lines.append(f"- {function.get('name')} : {function.get('description', '')} ; {arguments or 'aucun'}")
+    return "\n".join(lines)
+
+
+def parse_structured(text: str, names: set[str]) -> dict:
+    """JSON du modèle -> réponse normalisée ; ValueError si non conforme (le modèle est relancé)."""
+    match = re.search(r"\{.*\}", text or "", re.DOTALL)
+    if not match:
+        raise ValueError("aucun objet JSON")
+    data = json.loads(match.group(0))
+    if not isinstance(data, dict):
+        raise ValueError("objet JSON attendu")
+    if data.get("outil"):
+        name = str(data["outil"])
+        if name not in names:
+            raise ValueError(f"outil inconnu : {name}")
+        arguments = data.get("arguments") or {}
+        if not isinstance(arguments, dict):
+            raise ValueError("« arguments » doit être un objet")
+        return {"content": "", "tool_calls": [{"name": name, "arguments": arguments}]}
+    if isinstance(data.get("reponse"), str):
+        return {"content": data["reponse"], "tool_calls": []}
+    raise ValueError("ni « outil » ni « reponse »")
+
+
+def structured_chat(manager, messages: list[dict], tools: list[dict], on_token=None, attempts: int = 3) -> dict:
+    """Appels d'outils par sortie JSON validée strictement, avec relance motivée (au plus ``attempts``)."""
+    names = {str(tool.get("function", {}).get("name")) for tool in tools}
+    instruction = {"role": "system", "content": JSON_INSTRUCTION.format(tools=describe_tools(tools))}
+    conversation = [instruction, *messages]
+    provider = manager.active if getattr(manager, "active", None) is not None else manager
+    previous = getattr(provider, "json_mode", None)
+    if previous is not None:
+        provider.json_mode = True
+    try:
+        error = ""
+        for _attempt in range(attempts):
+            raw = manager.chat(conversation, None, None)
+            try:
+                result = parse_structured(raw.get("content", ""), names)
+            except ValueError as exc:
+                error = str(exc)
+                conversation += [{"role": "assistant", "content": raw.get("content", "")},
+                                 {"role": "user", "content": f"Réponse non conforme ({error}). Réponds uniquement "
+                                                             "par l'objet JSON demandé."}]
+                continue
+            if result["content"] and on_token:
+                on_token(result["content"])
+            return result
+        raise LLMError(f"le moteur ne produit pas de JSON conforme ({error})")
+    finally:
+        if previous is not None:
+            provider.json_mode = previous
 
 
 # ---------------------------------------------------------------- Sessions
@@ -183,10 +256,16 @@ class CognitiveEngine:
 
     # ------------------------------------------------------------ fournisseurs
     def _settings_signature(self) -> tuple:
-        keys = ("llm.provider", "llm.fallback_to_local", "llm.remote_timeout", "llm.context_window",
+        keys = ("llm.provider", "llm.engine", "llm.fallback_to_local", "llm.remote_timeout", "llm.context_window",
                 "llm.local.endpoint", "llm.local.model", "llm.tailscale.host", "llm.tailscale.port",
                 "llm.tailscale.model", "llm.cloud.service", "llm.cloud.model")
-        return tuple(self.config.get(key) for key in keys)
+        from djerba_ai.core import engines
+        try:
+            registry_stamp = max(path.stat().st_mtime for path in (engines.PUBLIC_FILE, engines.USER_FALLBACK)
+                                 if path.exists())
+        except ValueError:
+            registry_stamp = 0.0
+        return (*(self.config.get(key) for key in keys), registry_stamp)
 
     @property
     def manager(self) -> ProviderManager:
@@ -264,8 +343,12 @@ class CognitiveEngine:
         manager = self.manager
         capabilities = self.capabilities()
         started = time.monotonic()
-        raw = manager.chat([message.wire() for message in messages],
-                           tools if capabilities.tools else None, on_token)
+        wire = [message.wire() for message in messages]
+        if tools and not capabilities.tools:
+            # Parité : un moteur sans appels d'outils natifs propose ses actions en JSON contraint.
+            raw = structured_chat(manager, wire, tools, on_token)
+        else:
+            raw = manager.chat(wire, tools if capabilities.tools else None, on_token)
         active = manager.active
         try:
             result = ChatResult.model_validate({**raw, "provider": active.kind, "model": active.model,

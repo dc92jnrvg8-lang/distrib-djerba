@@ -61,6 +61,8 @@ SHORTCUT = r"^((Meta|Ctrl|Alt|Shift)\+){0,4}[A-Za-z0-9]{1,12}$"
 SCHEMA: dict[str, dict[str, Any]] = {
     # Moteur cognitif
     "llm.provider": {"type": "string", "default": "local", "enum": ["local", "tailscale", "cloud"]},
+    # Moteur actif du registre (core.engines) ; vide : llm.provider (local, tailscale, cloud).
+    "llm.engine": {"type": "string", "default": "", "pattern": r"^([a-z0-9][a-z0-9-]{1,31})?$"},
     "llm.fallback_to_local": {"type": "boolean", "default": True},
     "llm.remote_timeout": {"type": "integer", "default": 5, "minimum": 1, "maximum": 60},
     "llm.context_window": {"type": "integer", "default": 8192, "minimum": 2048, "maximum": 131072},
@@ -105,6 +107,9 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "security.ids": {"type": "boolean", "default": True},
     "security.ids_block_minutes": {"type": "integer", "default": 60, "minimum": 5, "maximum": 1440},
     "security.network_grants": {"type": "list", "default": [], "pattern": r"^(app|plugin):[a-z0-9][a-z0-9_-]{0,47}$"},
+    # Djerba comme serveur d'outils (MCP) pour un assistant distant (Jarvis), lié à l'adresse Tailscale
+    "mcp.enabled": {"type": "boolean", "default": False},
+    "mcp.port": {"type": "integer", "default": 8765, "minimum": 1024, "maximum": 65535},
     # Bus de contexte et télémétrie
     "context.interval": {"type": "integer", "default": 5, "minimum": 2, "maximum": 60},
     "context.window_titles": {"type": "boolean", "default": True},

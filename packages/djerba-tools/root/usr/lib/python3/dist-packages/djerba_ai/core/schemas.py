@@ -180,6 +180,8 @@ class OllamaChatRequest(BaseModel):
     tools: list[OllamaToolSpec] | None = None
     think: StrictBool | None = None
     keep_alive: StrictStr | StrictInt | None = None
+    #: « json » : sortie JSON imposée (repli des modèles sans appels d'outils natifs)
+    format: Literal["json"] | None = None
     options: dict[str, Any] = Field(default_factory=dict)
 
     def wire(self) -> dict:
@@ -339,6 +341,82 @@ class PolicyPauseParams(Strict):
     reason: Annotated[StrictStr, Field(max_length=200)] = ""
 
 
+# ---------------------------------------------------------------- Moteurs d'IA (phase 3)
+ENGINE_ID = r"^[a-z0-9][a-z0-9-]{1,31}$"
+ENGINE_KINDS = ("ollama", "jarvis", "openai", "gemini", "anthropic", "openai_compat")
+#: adresses HTTP(S) ; les moteurs à jeton (Jarvis) sont en plus limités au réseau privé (core.engines)
+ENGINE_URL = r"^https?://[A-Za-z0-9.\[\]:_-]{1,253}(:\d{1,5})?(/[^\s\x00]{0,200})?$"
+
+
+class EngineShare(Strict):
+    """Ce qui peut quitter la machine vers ce moteur (toujours après masquage DLP)."""
+
+    contexte: StrictBool = True
+    memoire: StrictBool = False
+
+
+class EngineSpec(Strict):
+    """Moteur d'IA déclaré par l'utilisateur (sans secret : le jeton ou la clé voyagent à part)."""
+
+    id: Annotated[StrictStr, Field(pattern=ENGINE_ID)]
+    kind: Literal["ollama", "jarvis", "openai", "gemini", "anthropic", "openai_compat"]
+    name: Annotated[StrictStr, Field(min_length=1, max_length=40)]
+    icon: Annotated[StrictStr, Field(pattern=r"^[a-z0-9-]{2,60}$")] = "djerba-ai"
+    color: Annotated[StrictStr, Field(pattern=r"^#[0-9A-Fa-f]{6}$")] = "#00C2CB"
+    role: Annotated[StrictStr, Field(max_length=80)] = ""
+    endpoint: Annotated[StrictStr, Field(pattern=ENGINE_URL)] | Literal[""] = ""
+    model: Annotated[StrictStr, Field(pattern=r"^[A-Za-z0-9._:/@-]{0,120}$")] = ""
+    context_window: Annotated[StrictInt, Field(ge=2048, le=2000000)] = 8192
+    share: EngineShare = Field(default_factory=EngineShare)
+
+
+class EngineSaveParams(Strict):
+    engine: EngineSpec
+    #: clé d'API ou jeton (lu seulement par root) ; vide : inchangé
+    secret: Annotated[StrictStr, Field(pattern=r"^[\x21-\x7e]{0,400}$")] = ""
+
+
+class EngineIdParams(Strict):
+    id: Annotated[StrictStr, Field(pattern=ENGINE_ID)]
+
+
+class EngineChatParams(Strict):
+    id: Annotated[StrictStr, Field(pattern=ENGINE_ID)]
+    messages: list[dict[str, Any]] = Field(max_length=400)
+    tools: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
+    json_mode: StrictBool = False
+
+
+class EngineProfileParams(Strict):
+    id: Annotated[StrictStr, Field(pattern=ENGINE_ID)]
+    profile: dict[str, Any]
+
+
+class JarvisPairParams(Strict):
+    id: Annotated[StrictStr, Field(pattern=ENGINE_ID)] = "jarvis"
+    name: Annotated[StrictStr, Field(min_length=1, max_length=40)] = "Jarvis"
+    address: Annotated[StrictStr, Field(pattern=ENGINE_URL)]
+    code: Annotated[StrictStr, Field(pattern=r"^\d{6}$")]
+
+
+class MCPBeginParams(Strict):
+    name: Annotated[StrictStr, Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,31}$")]
+    cap: Annotated[StrictInt, Field(ge=0, le=2)] = 2
+
+
+class MCPCompleteParams(Strict):
+    code: Annotated[StrictStr, Field(pattern=r"^\d{6}$")]
+    name: Annotated[StrictStr, Field(max_length=40)] = ""
+
+
+class MCPTokenParams(Strict):
+    token: Annotated[StrictStr, Field(min_length=16, max_length=200)]
+
+
+class MCPClientParams(Strict):
+    client: Annotated[StrictStr, Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,31}$")]
+
+
 TX_ID = r"^t\d{14}[0-9a-f]{4}$"
 #: date ISO 8601 (jour, ou jour et heure) pour « undo --since »
 SINCE = r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?([+-]\d{4})?)?$"
@@ -395,6 +473,18 @@ RPC_PARAMS: dict[str, type[Strict]] = {
     "policy.set_caps": PolicyCapsParams,
     "policy.pause": PolicyPauseParams,
     "policy.resume": NoParams,
+    "engines.list": NoParams,
+    "engines.save": EngineSaveParams,
+    "engines.remove": EngineIdParams,
+    "engines.set_profile": EngineProfileParams,
+    "engines.pair_jarvis": JarvisPairParams,
+    "llm.engine_chat": EngineChatParams,
+    "llm.engine_health": EngineIdParams,
+    "mcp.pair_begin": MCPBeginParams,
+    "mcp.pair_complete": MCPCompleteParams,
+    "mcp.verify": MCPTokenParams,
+    "mcp.list": NoParams,
+    "mcp.revoke": MCPClientParams,
 }
 
 

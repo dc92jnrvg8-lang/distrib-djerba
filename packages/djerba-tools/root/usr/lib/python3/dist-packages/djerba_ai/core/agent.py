@@ -115,15 +115,26 @@ class Agent:
                 names.append(name)
         return names
 
+    def engine_label(self) -> str:
+        """Origine des actions : identifiant du moteur (registre core.engines) et modèle."""
+        manager = self.engine.manager
+        active = manager.active
+        engine_id = getattr(active, "engine_id", None) or ("local" if active is manager.local else active.kind)
+        return f"{engine_id}:{active.model}"[:80]
+
     def _system_message(self, profile: dict) -> ChatMessage:
-        text, _data = context.snapshot()
+        # Confidentialité par moteur : ce qui peut quitter la machine (contexte système, mémoire).
+        share = (self.engine.manager.engine.get("share") or {}) if self.engine.manager.remote else {}
+        allow_context = share.get("contexte", True) if self.engine.manager.remote else True
+        allow_memory = share.get("memoire", False) if self.engine.manager.remote else True
+        text, _data = context.snapshot() if allow_context else ("(contexte système non partagé avec ce moteur)", {})
         from djerba_ai.core import contextbus
-        live = contextbus.context_block(profile["context_lines"])
+        live = contextbus.context_block(profile["context_lines"]) if allow_context else ""
         if live:
             text = f"{text}\n{live}"
-        facts = self.memory.facts(limit=20)
+        facts = self.memory.facts(limit=20) if allow_memory else []
         facts_text = "\n".join(f"- {fact['subject']} : {fact['content']}" for fact in facts) or "- (rien pour l'instant)"
-        lessons = self.memory.lessons(limit=8)
+        lessons = self.memory.lessons(limit=8) if allow_memory else []
         if lessons:
             facts_text += "\nLeçons apprises :\n" + "\n".join(f"- {lesson['content']}" for lesson in lessons)
         rules = f"\nProfil du moteur ({profile['name']}) : {profile['rules']}" if profile["rules"] else ""
@@ -169,8 +180,7 @@ class Agent:
             on_event("final", {"text": answer})
             return answer
         self.memory.add_message(conversation, "user", prompt.text)
-        active = self.engine.manager.active
-        self.executor.origin = {"engine": f"{active.kind}:{active.model}", "session": str(conversation)}
+        self.executor.origin = {"engine": self.engine_label(), "session": str(conversation)}
         state = self.engine.session(conversation)
         state.tainted = False
         if verdict.suspicious:
@@ -200,6 +210,7 @@ class Agent:
                 messages.append(ChatMessage(role="system", content=f"Demandes similaires réussies : {hints}."))
             messages.append(ChatMessage(role="user", content=prompt.text))
             active = set(self.select_tools(prompt.text, limit=profile["max_tools"]))
+            remote = self.engine.manager.remote
             trace("sélection", f"{len(active)} capacités proposées au modèle : {', '.join(sorted(active)[:12])}…")
 
             for step in range(1, MAX_STEPS + 1):
@@ -214,6 +225,17 @@ class Agent:
                     return answer
                 messages.append(ChatMessage(role="assistant", content=result.content,
                                             tool_calls=list(result.tool_calls)))
+                # Moteur distant : une réponse anormale (outil non proposé, indices d'injection dans son
+                # texte) est traitée comme un contenu non fiable, au même titre qu'une page web.
+                anomalies = [f"outil non proposé « {call.name} »" for call in result.tool_calls
+                             if call.name not in active and call.name != "tools_search"]
+                if remote and result.content and self.engine.untrusted("moteur distant", result.content)[1].suspicious:
+                    anomalies.append("indices d'injection dans sa réponse")
+                if remote and anomalies:
+                    state.tainted = True
+                    trace("garde anti-injection", f"réponse anormale du moteur distant ({', '.join(anomalies)}) "
+                          "— session plafonnée au niveau 1.", level="élevé")
+                    on_event("guard", {"origin": "moteur distant", "level": "élevé", "findings": anomalies})
                 for call in result.tool_calls:
                     outcome = self._call_tool(call.name, call.arguments, prompt.text, state.tainted, on_event, confirm,
                                               trace)

@@ -1,0 +1,15 @@
+# Djerba OS — Djerba serveur d'outils (MCP) pour un assistant distant (Jarvis).
+# Ne démarre réellement que si le réglage mcp.enabled est actif ; écoute
+# uniquement sur l'adresse Tailscale de la machine. Contrat :
+# /usr/share/doc/djerba-tools (docs/JARVIS-CONTRAT.md du dépôt).
+[Unit]
+Description=Djerba : serveur d'outils MCP (Tailscale)
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/djerba-ai mcp-serve
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=default.target

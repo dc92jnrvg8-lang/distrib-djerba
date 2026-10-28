@@ -419,6 +419,8 @@ class LocalOllamaProvider(BaseLLMProvider):
         self.context_window = context_window
         self.first_byte_timeout = first_byte_timeout
         self.think = False
+        #: repli « JSON contraint » (modèle sans appels d'outils natifs) : sortie JSON imposée par Ollama
+        self.json_mode = False
         self.fallback_hosts = self.kind == "local"
         self.read_timeout = READ_TIMEOUT
         self.backoff = BACKOFF
@@ -510,7 +512,7 @@ class LocalOllamaProvider(BaseLLMProvider):
         try:
             request = OllamaChatRequest(model=self.model, messages=messages, stream=stream, tools=tools or None,
                                         think=(self.think or None) if think is None else (think or None),
-                                        keep_alive="15m",
+                                        keep_alive="15m", format="json" if self.json_mode else None,
                                         options={"num_ctx": self.context_window, "temperature": 0.3})
         except ValidationError as exc:
             error = exc.errors()[0]
@@ -680,15 +682,153 @@ class CloudAPIProvider(BaseLLMProvider):
 
 
 def cloud_request(service: str, endpoint: str, api_key: str, model: str, messages: list[dict],
-                  tools: list[dict], on_token: Token | None, timeout: float) -> dict[str, Any]:
+                  tools: list[dict], on_token: Token | None, timeout: float, json_mode: bool = False) -> dict[str, Any]:
     """Requête « chat/completions » réelle (exécutée par le démon root)."""
     payload: dict[str, Any] = {"model": model, "messages": openai_messages(messages), "stream": True,
                                "temperature": 0.3}
     if tools:
         payload["tools"] = tools
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
     with _request(f"{endpoint.rstrip('/')}/chat/completions", payload, timeout=timeout,
                   headers={"Authorization": f"Bearer {api_key}"}) as response:
         return parse_openai_stream(response, on_token)
+
+
+ANTHROPIC_VERSION = "2023-06-01"
+
+
+def anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
+    """Messages internes (format Ollama/OpenAI) -> (consigne système, messages de l'API Messages d'Anthropic)."""
+    system = "\n\n".join(message["content"] for message in messages if message["role"] == "system")
+    converted: list[dict] = []
+    pending: list[str] = []
+    for index, message in enumerate(messages):
+        role = message["role"]
+        if role == "system":
+            continue
+        if role == "tool":
+            block = {"type": "tool_result", "tool_use_id": pending.pop(0) if pending else f"appel{index}",
+                     "content": message.get("content", "")}
+            if converted and converted[-1]["role"] == "user" and isinstance(converted[-1]["content"], list):
+                converted[-1]["content"].append(block)
+            else:
+                converted.append({"role": "user", "content": [block]})
+            continue
+        if role == "assistant" and message.get("tool_calls"):
+            blocks: list[dict] = [{"type": "text", "text": message["content"]}] if message.get("content") else []
+            for number, call in enumerate(message["tool_calls"]):
+                identifier = call.get("id") or f"appel{index}_{number}"
+                pending.append(identifier)
+                blocks.append({"type": "tool_use", "id": identifier, "name": call["function"]["name"],
+                               "input": call["function"].get("arguments") or {}})
+            converted.append({"role": "assistant", "content": blocks})
+            continue
+        converted.append({"role": "user" if role == "user" else "assistant", "content": message.get("content", "")})
+    return system, converted
+
+
+def anthropic_request(endpoint: str, api_key: str, model: str, messages: list[dict], tools: list[dict],
+                      on_token: Token | None, timeout: float, max_tokens: int = 4096) -> dict[str, Any]:
+    """API Messages d'Anthropic en flux SSE (exécutée par le démon root : la clé ne quitte jamais root)."""
+    system, converted = anthropic_messages(messages)
+    payload: dict[str, Any] = {"model": model, "max_tokens": max_tokens, "messages": converted, "stream": True,
+                               "temperature": 0.3}
+    if system:
+        payload["system"] = system
+    if tools:
+        payload["tools"] = [{"name": tool["function"]["name"], "description": tool["function"].get("description", ""),
+                             "input_schema": tool["function"].get("parameters") or {"type": "object", "properties": {}}}
+                            for tool in tools]
+    content: list[str] = []
+    blocks: dict[int, dict] = {}
+    with _request(f"{endpoint.rstrip('/')}/messages", payload, timeout=timeout,
+                  headers={"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}) as response:
+        for raw in response:
+            line = raw.decode(errors="replace").strip() if isinstance(raw, bytes) else raw.strip()
+            if not line.startswith("data:"):
+                continue
+            event = json.loads(line[5:].strip() or "{}")
+            kind = event.get("type")
+            if kind == "error":
+                raise LLMError(str((event.get("error") or {}).get("message", "erreur de l'API")))
+            if kind == "content_block_start":
+                block = event.get("content_block") or {}
+                if block.get("type") == "tool_use":
+                    blocks[event.get("index", len(blocks))] = {"name": block.get("name", ""), "json": ""}
+            elif kind == "content_block_delta":
+                delta = event.get("delta") or {}
+                if delta.get("type") == "text_delta" and delta.get("text"):
+                    content.append(delta["text"])
+                    if on_token:
+                        on_token(delta["text"])
+                elif delta.get("type") == "input_json_delta":
+                    blocks.setdefault(event.get("index", 0), {"name": "", "json": ""})["json"] += \
+                        delta.get("partial_json", "")
+            elif kind == "message_stop":
+                break
+    calls = []
+    for block in blocks.values():
+        try:
+            arguments = json.loads(block["json"] or "{}")
+        except ValueError:
+            arguments = {}
+        calls.append({"name": block["name"], "arguments": arguments if isinstance(arguments, dict) else {}})
+    return {"content": "".join(content), "tool_calls": calls}
+
+
+class RelayProvider(BaseLLMProvider):
+    """Moteur à secret (Jarvis, OpenAI, Gemini, Anthropic…) relayé par le démon root, seul à lire
+    le jeton ou la clé : la session de l'utilisateur ne les voit jamais."""
+
+    def __init__(self, engine: dict, timeout: float = 5) -> None:
+        super().__init__(str(engine.get("model", "")))
+        self.engine = engine
+        self.engine_id = str(engine["id"])
+        self.kind = str(engine.get("kind", "openai"))
+        self.label = str(engine.get("name", self.engine_id))
+        self.context_window = int(engine.get("context_window", 128000))
+        self.timeout = timeout
+        self.json_mode = False
+
+    def _call(self, method: str, params: dict, on_event=None, timeout: float = 600):
+        from djerba_ai.core import ipc
+        try:
+            if on_event:
+                return ipc.call_stream(method, params, on_event, timeout=timeout)
+            return ipc.call(method, params, timeout=timeout)
+        except ipc.RPCError as exc:
+            if "délai" in str(exc):
+                raise ProviderTimeout(str(exc)) from exc
+            raise LLMError(str(exc)) from exc
+
+    def available(self, timeout: float = 5) -> bool:
+        try:
+            return bool(self._call("llm.engine_health", {"id": self.engine_id}, timeout=timeout + 10).get("ok"))
+        except LLMError:
+            return False
+
+    def health(self, timeout: float = 5) -> dict[str, Any]:
+        started = time.monotonic()
+        try:
+            result = self._call("llm.engine_health", {"id": self.engine_id}, timeout=timeout + 10)
+        except LLMError as exc:
+            result = {"ok": False, "detail": str(exc)}
+        result.update(provider=self.kind, label=self.label, model=self.model,
+                      latency_ms=int((time.monotonic() - started) * 1000))
+        return result
+
+    def models(self) -> list[dict]:
+        return [{"name": self.model, "size_gb": 0, "family": "", "parameters": ""}] if self.model else []
+
+    def chat(self, messages: list[dict], tools: list[dict] | None = None,
+             on_token: Token | None = None) -> dict[str, Any]:
+        def on_event(method: str, params: dict) -> None:
+            if method == "llm.token" and on_token:
+                on_token(params.get("text", ""))
+
+        return self._call("llm.engine_chat", {"id": self.engine_id, "messages": messages, "tools": tools or [],
+                                              "json_mode": self.json_mode}, on_event, timeout=600)
 
 
 def cloud_models(endpoint: str, api_key: str, timeout: float = 10) -> list[dict]:
@@ -707,16 +847,14 @@ class ProviderManager(BaseLLMProvider):
         self.notify = notify
         self.local = LocalOllamaProvider(config.get("llm.local.endpoint"), config.get("llm.local.model"),
                                          int(config.get("llm.context_window")))
-        provider = config.get("llm.provider")
         timeout = float(config.get("llm.remote_timeout"))
-        if provider == "tailscale":
-            self.primary: BaseLLMProvider = RemoteTailscaleProvider(
-                config.get("llm.tailscale.host"), int(config.get("llm.tailscale.port")),
-                config.get("llm.tailscale.model"), int(config.get("llm.context_window")), timeout)
-        elif provider == "cloud":
-            self.primary = CloudAPIProvider(config.get("llm.cloud.service"), config.get("llm.cloud.model"), timeout)
+        from djerba_ai.core import engines
+        #: moteur actif (registre core.engines) : Ollama local ou distant, Jarvis, API en ligne
+        self.engine: dict = engines.find(engines.active_id(config), config) or engines.find("local", config) or {}
+        if self.engine.get("id", "local") == "local":
+            self.primary: BaseLLMProvider = self.local
         else:
-            self.primary = self.local
+            self.primary = engines.make_provider(self.engine, config, timeout)
         super().__init__(self.primary.model)
         self.kind = self.primary.kind
         self.label = self.primary.label
@@ -726,6 +864,14 @@ class ProviderManager(BaseLLMProvider):
     @property
     def remote(self) -> bool:
         return self.primary is not self.local
+
+    def outgoing(self, messages: list[dict]) -> list[dict]:
+        """Vers un moteur distant, rien ne part sans masquage DLP (secrets, clés, mots de passe)."""
+        if not self.remote:
+            return messages
+        from djerba_ai.core import dlp
+        return [dict(message, content=dlp.mask(message["content"])) if isinstance(message.get("content"), str)
+                else message for message in messages]
 
     def _fallback(self, reason: str) -> bool:
         if not self.remote or not self.config.get("llm.fallback_to_local") or not self.local.available(2):
@@ -773,7 +919,7 @@ class ProviderManager(BaseLLMProvider):
                 return self.local.chat(messages, tools, on_token)
             raise LLMError(f"{self.primary.label} injoignable")
         try:
-            return self.primary.chat(messages, tools, on_token)
+            return self.primary.chat(self.outgoing(messages), tools, on_token)
         except LLMError as exc:
             if self._fallback("délai dépassé" if isinstance(exc, ProviderTimeout) else str(exc)[:80]):
                 return self.local.chat(messages, tools, on_token)

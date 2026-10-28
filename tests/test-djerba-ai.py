@@ -48,6 +48,8 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -128,11 +130,11 @@ class FakeOllama(http.server.BaseHTTPRequestHandler):
             self._send(json.dumps(type(self).show).encode())
             return
         if self.path == "/api/generate":
-            FakeOllama.requests.append(body)
+            type(self).requests.append(body)
             self._send(b'{"done": true}')
             return
-        FakeOllama.requests.append(body)
-        step = FakeOllama.script.pop(0) if FakeOllama.script else {"content": "Terminé."}
+        type(self).requests.append(body)
+        step = type(self).script.pop(0) if type(self).script else {"content": "Terminé."}
         lines = []
         if step.get("content"):
             for word in step["content"].split(" "):
@@ -2580,6 +2582,440 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(journal.list(), [])  # aucune transaction : rien n'a été exécuté
         log = Path(os.environ["DJERBA_AUDIT_LOG"]).read_text()
         self.assertIn('"non_fiable": true', log)
+
+
+class ScriptedEngine(http.server.BaseHTTPRequestHandler):
+    """Base des faux moteurs distants : un script d'étapes {content, tool_calls} rejoué dans l'ordre."""
+
+    script: list[dict] = []
+    requests: list[dict] = []
+    token = "jeton-de-test-0123456789abcdef"
+
+    def log_message(self, *_args) -> None:
+        pass
+
+    def _json(self, status: int, payload: dict) -> None:
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _sse(self, events: list[dict]) -> None:
+        body = "".join(f"data: {json.dumps(event)}\n\n" for event in events).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def body(self) -> dict:
+        return json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
+
+    def step(self) -> dict:
+        cls = type(self)
+        return cls.script.pop(0) if cls.script else {"content": "Terminé."}
+
+
+class FakeJarvis(ScriptedEngine):
+    """Jarvis selon le contrat (docs/JARVIS-CONTRAT.md) : API compatible OpenAI, appairage par code."""
+
+    def authorized(self) -> bool:
+        if self.headers.get("Authorization") != f"Bearer {type(self).token}":
+            self._json(401, {"error": "jeton invalide"})
+            return False
+        return True
+
+    def do_GET(self) -> None:
+        if not self.authorized():
+            return
+        if self.path == "/v1/health":
+            self._json(200, {"name": "Jarvis", "status": "ok"})
+        else:
+            self._json(200, {"data": [{"id": "jarvis-1"}]})
+
+    def do_POST(self) -> None:
+        body = self.body()
+        if self.path == "/v1/pair":
+            if body.get("code") == "123456":
+                self._json(200, {"token": type(self).token, "name": "Jarvis maison", "model": "jarvis-1"})
+            else:
+                self._json(403, {"error": "code invalide"})
+            return
+        if not self.authorized():
+            return
+        type(self).requests.append(body)
+        step = self.step()
+        events = [{"choices": [{"delta": {"content": step["content"]}}]}] if step.get("content") else []
+        for index, call in enumerate(step.get("tool_calls", [])):
+            events.append({"choices": [{"delta": {"tool_calls": [{"index": index, "function": {
+                "name": call["name"], "arguments": json.dumps(call["arguments"])}}]}}]})
+        self._sse(events)
+        self.wfile.write(b"data: [DONE]\n\n")
+
+
+class FakeAnthropic(ScriptedEngine):
+    """API Messages d'Anthropic (flux SSE : text_delta, tool_use + input_json_delta)."""
+
+    def do_GET(self) -> None:
+        self._json(200, {"data": [{"id": "claude-test"}]})
+
+    def do_POST(self) -> None:
+        if self.headers.get("x-api-key") != "cle-anthropic-0123456789" or not self.headers.get("anthropic-version"):
+            self._json(401, {"type": "error", "error": {"message": "clé invalide"}})
+            return
+        type(self).requests.append(self.body())
+        step = self.step()
+        events = [{"type": "message_start", "message": {}}]
+        index = 0
+        if step.get("content"):
+            events += [{"type": "content_block_start", "index": index, "content_block": {"type": "text"}},
+                       {"type": "content_block_delta", "index": index,
+                        "delta": {"type": "text_delta", "text": step["content"]}}]
+            index += 1
+        for call in step.get("tool_calls", []):
+            arguments = json.dumps(call["arguments"])
+            events += [{"type": "content_block_start", "index": index,
+                        "content_block": {"type": "tool_use", "id": f"toolu_{index}", "name": call["name"]}},
+                       {"type": "content_block_delta", "index": index,
+                        "delta": {"type": "input_json_delta", "partial_json": arguments[:5]}},
+                       {"type": "content_block_delta", "index": index,
+                        "delta": {"type": "input_json_delta", "partial_json": arguments[5:]}}]
+            index += 1
+        events.append({"type": "message_stop"})
+        self._sse(events)
+
+
+class ToolsLessOllama(FakeOllama):
+    """Ollama dont le modèle n'a pas d'appels d'outils natifs (repli « JSON contraint »)."""
+
+    show = {"details": {"parameter_size": "8B"}, "capabilities": ["completion"],
+            "model_info": {"llama.context_length": 32768}}
+    script: list[dict] = []
+    requests: list[dict] = []
+
+
+def scripted(handler_base, **attributes) -> tuple[type, str]:
+    handler = type(handler_base.__name__, (handler_base,), {"script": [], "requests": [], **attributes})
+    return handler, serve(handler)
+
+
+class EngineLayerTests(unittest.TestCase):
+    """Phase 3 : n'importe quel moteur devient un agent complet de l'OS, avec les mêmes capacités."""
+
+    def setUp(self) -> None:
+        from djerba_ai.core import engines
+        self.engines = engines
+        self.base = Path(tempfile.mkdtemp())
+        self.saved = (engines.ENGINES_FILE, engines.PUBLIC_FILE, engines.USER_FALLBACK)
+        engines.ENGINES_FILE = self.base / "engines.json"
+        engines.PUBLIC_FILE = self.base / "engines.public.json"
+        engines.USER_FALLBACK = self.base / "user-engines.json"
+        self.store = engines.EngineStore(engines.ENGINES_FILE)
+
+    def tearDown(self) -> None:
+        self.engines.ENGINES_FILE, self.engines.PUBLIC_FILE, self.engines.USER_FALLBACK = self.saved
+        reset_system_config()
+
+    def daemon(self, policy_mode: str = "autonome"):
+        from djerba_ai.core import policy, snapshots, transactions
+        journal = transactions.Journal(db=self.base / "tx.db",
+                                       backend=snapshots.FilesBackend(self.base / "tx", self.base / "live"),
+                                       probe=lambda targets=(): {}, packages=lambda: {})
+        engines = self.engines
+        original_store = engines.EngineStore
+
+        def store_factory(path=None):
+            return original_store(path or engines.ENGINES_FILE)
+        engines.EngineStore = store_factory
+        self.addCleanup(setattr, engines, "EngineStore", original_store)
+        state = Path(tempfile.mkdtemp())
+        rules = policy.Policy(settings={"policy.mode": policy_mode}, state_dir=state)
+        self.rules = rules
+        path = Path(os.environ["DJERBA_AI_SYSD_SOCKET"])
+        path.unlink(missing_ok=True)
+        server = sysd.Server(None, str(path), sysd.Dispatcher(authorizer=lambda *_: True, verifier=TRUSTED,
+                                                              journal=journal, policy=rules))
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True).start()
+
+        def stop():
+            server.shutdown()
+            server.server_close()
+            path.unlink(missing_ok=True)
+        self.addCleanup(stop)
+        return journal
+
+    def test_anthropic_message_conversion(self) -> None:
+        system, converted = llm.anthropic_messages([
+            {"role": "system", "content": "Tu es Djerba."},
+            {"role": "user", "content": "Quelle version ?"},
+            {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "os_info", "arguments": {}}}]},
+            {"role": "tool", "content": "{\"success\": true}"},
+            {"role": "assistant", "content": "Debian 13."}])
+        self.assertEqual(system, "Tu es Djerba.")
+        self.assertEqual([item["role"] for item in converted], ["user", "assistant", "user", "assistant"])
+        tool_use = converted[1]["content"][0]
+        self.assertEqual((tool_use["type"], tool_use["name"]), ("tool_use", "os_info"))
+        self.assertEqual(converted[2]["content"][0]["tool_use_id"], tool_use["id"])
+
+    def test_registry_public_view_never_contains_secrets(self) -> None:
+        saved = self.store.save({"id": "claude", "kind": "anthropic", "name": "Claude", "endpoint": "",
+                                 "model": "claude-test", "context_window": 200000}, "cle-anthropic-0123456789")
+        self.assertTrue(saved["secret_set"])
+        public = self.engines.PUBLIC_FILE.read_text()
+        self.assertNotIn("cle-anthropic", public)
+        self.assertEqual(self.engines.ENGINES_FILE.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.engines.PUBLIC_FILE.stat().st_mode & 0o777, 0o644)
+        with self.assertRaises(self.engines.EngineError):
+            self.store.save({"id": "local", "kind": "ollama", "name": "x"})
+        with self.assertRaises(self.engines.EngineError):  # Jarvis : réseau privé seulement
+            self.store.save({"id": "jarvis", "kind": "jarvis", "name": "J", "endpoint": "http://8.8.8.8:8000"})
+        config = Config()
+        ids = [engine["id"] for engine in self.engines.catalog(config)]
+        self.assertEqual(ids[0], "claude")
+        self.assertIn("local", ids)
+
+    def test_jarvis_pairing_and_relay_keep_token_in_root(self) -> None:
+        handler, url = scripted(FakeJarvis)
+        self.daemon()
+        dispatcher = sysd.Dispatcher(authorizer=lambda *_: True, verifier=TRUSTED)
+        refused = dispatcher.dispatch("engines.pair_jarvis", {"id": "jarvis", "name": "Jarvis", "address": url,
+                                                              "code": "000000"}, 1, 1000)
+        self.assertFalse(refused["success"])
+        paired = dispatcher.dispatch("engines.pair_jarvis", {"id": "jarvis", "name": "Jarvis", "address": url,
+                                                             "code": "123456"}, 1, 1000)
+        self.assertTrue(paired["success"], paired)
+        self.assertNotIn(handler.token, self.engines.PUBLIC_FILE.read_text())
+        self.assertIn(handler.token, self.engines.ENGINES_FILE.read_text())
+        provider = self.engines.make_provider(self.engines.find("jarvis", Config()), Config())
+        self.assertIsInstance(provider, llm.RelayProvider)
+        self.assertTrue(provider.health(5)["ok"])
+        handler.script = [{"content": "Bonjour depuis Jarvis."}]
+        tokens = []
+        reply = provider.chat([{"role": "user", "content": "salut"}], None, tokens.append)
+        self.assertEqual(reply["content"], "Bonjour depuis Jarvis.")
+        self.assertTrue(tokens)
+
+    def test_parity_same_actions_on_every_engine(self) -> None:
+        """Même scénario (diagnostic, écriture d'un rapport, réponse) rejoué sur chaque moteur."""
+        ollama_url = start_fake_ollama()
+        toolless = serve(ToolsLessOllama)
+        jarvis, jarvis_url = scripted(FakeJarvis)
+        anthropic, anthropic_url = scripted(FakeAnthropic)
+        self.store.save({"id": "jarvis", "kind": "jarvis", "name": "Jarvis", "endpoint": jarvis_url,
+                         "model": "jarvis-1", "context_window": 32768}, jarvis.token)
+        self.store.save({"id": "claude", "kind": "anthropic", "name": "Claude", "endpoint": anthropic_url + "/v1",
+                         "model": "claude-test", "context_window": 200000}, "cle-anthropic-0123456789")
+        self.store.save({"id": "atelier", "kind": "ollama", "name": "Ollama de l'atelier",
+                         "endpoint": toolless.replace("127.0.0.1", "localhost"), "model": "petit:8b",
+                         "context_window": 32768})
+        self.daemon()
+        config = Config()
+        config.set("llm.local.endpoint", ollama_url)  # par le démon : configuration système
+        outcomes = {}
+        for engine_id in ("local", "atelier", "jarvis", "claude"):
+            report = TEMP_HOME / f"rapport-{engine_id}.txt"
+            report.unlink(missing_ok=True)
+            steps = [{"tool_calls": [{"name": "os_info", "arguments": {}}]},
+                     {"tool_calls": [{"name": "os_file_write", "arguments": {"path": str(report),
+                                                                             "content": "diagnostic ok"}}]},
+                     {"tool_calls": [{"name": "settings_set", "arguments": {"key": "agent.web_search",
+                                                                            "value": "false"}}]},
+                     {"content": "Terminé."}]
+            FakeOllama.script = [{"tool_calls": [{"function": call} for call in step.get("tool_calls", [])],
+                                  "content": step.get("content", "")} for step in steps]
+            ToolsLessOllama.script = [{"content": json.dumps({"outil": call["name"], "arguments": call["arguments"]})}
+                                      for step in steps[:3] for call in step["tool_calls"]] + \
+                                     [{"content": json.dumps({"reponse": "Terminé."})}]
+            jarvis.script, anthropic.script = [dict(step) for step in steps], [dict(step) for step in steps]
+            config.set("llm.engine", engine_id)
+            memory = Memory(Path(tempfile.mkdtemp()) / "memory.db")
+            self.addCleanup(memory.close)
+            agent = Agent(Config(), registry(), memory)
+            events = []
+            config.set("agent.web_search", True)
+            # Sessions indépendantes : la détection de boucle (testée à part) ne doit pas lier les moteurs.
+            self.rules._repeats.clear()
+            answer = agent.run("version du système, écrire un fichier texte, puis désactiver recherche web dans "
+                               "les réglages", memory.new_conversation("t"),
+                               lambda kind, payload: events.append((kind, payload)), lambda *_: True)
+            calls = [payload["tool"] for kind, payload in events if kind == "tool_start"]
+            results = [bool(payload["result"].get("success")) for kind, payload in events if kind == "tool_result"]
+            outcomes[engine_id] = (calls, results, answer, report.exists() and report.read_text(),
+                                   Config().get("agent.web_search"))
+            self.assertTrue(agent.engine_label().startswith(f"{engine_id}:"), agent.engine_label())
+        reference = outcomes["local"]
+        self.assertEqual(reference, (["os_info", "os_file_write", "settings_set"], [True, True, True], "Terminé.",
+                                     "diagnostic ok", False))
+        for engine_id, outcome in outcomes.items():
+            self.assertEqual(outcome, reference, f"écart de parité : {engine_id}")
+        self.assertEqual(ToolsLessOllama.requests[-1].get("format"), "json")  # repli JSON contraint
+        self.assertNotIn("tools", ToolsLessOllama.requests[-1])
+        self.assertIn("tools", anthropic.requests[0])
+        self.assertIn("tool_use", json.dumps(anthropic.requests[-1]))
+
+    def test_hot_switch_keeps_conversation_and_falls_back_to_local(self) -> None:
+        """Bascule de moteur en cours de conversation : l'historique suit ; distant injoignable -> local."""
+        jarvis, jarvis_url = scripted(FakeJarvis)
+        anthropic, anthropic_url = scripted(FakeAnthropic)
+        self.store.save({"id": "jarvis", "kind": "jarvis", "name": "Jarvis", "endpoint": jarvis_url,
+                         "model": "jarvis-1", "context_window": 32768}, jarvis.token)
+        self.store.save({"id": "claude", "kind": "anthropic", "name": "Claude", "endpoint": anthropic_url + "/v1",
+                         "model": "claude-test", "context_window": 200000}, "cle-anthropic-0123456789")
+        self.store.save({"id": "eteint", "kind": "jarvis", "name": "Jarvis éteint", "endpoint": "http://127.0.0.1:9",
+                         "model": "jarvis-1", "context_window": 32768}, jarvis.token)
+        self.daemon()
+        config = Config()
+        config.set("llm.local.endpoint", start_fake_ollama())
+        config.set("llm.fallback_to_local", True)
+        memory = Memory(Path(tempfile.mkdtemp()) / "memory.db")
+        self.addCleanup(memory.close)
+        conversation = memory.new_conversation("t")
+        jarvis.script = [{"content": "Je retiens : le serveur s'appelle atlas."}]
+        anthropic.script = [{"content": "Votre serveur s'appelle atlas."}]
+        FakeOllama.script = [{"content": "Toujours atlas, en local."}]
+        answers = []
+        for engine_id, question in (("jarvis", "mon serveur s'appelle atlas"), ("claude", "comment s'appelle-t-il ?"),
+                                    ("eteint", "et maintenant ?")):
+            config.set("llm.engine", engine_id)
+            agent = Agent(Config(), registry(), memory)
+            answers.append(agent.run(question, conversation, lambda *_: None, lambda *_: True))
+        self.assertEqual(answers, ["Je retiens : le serveur s'appelle atlas.", "Votre serveur s'appelle atlas.",
+                                   "Toujours atlas, en local."])
+        handed_over = json.dumps(anthropic.requests[0], ensure_ascii=False)
+        self.assertIn("mon serveur s'appelle atlas", handed_over)  # l'historique a suivi la bascule
+        self.assertIn("Je retiens : le serveur s'appelle atlas.", handed_over)
+        self.assertIn("comment s'appelle-t-il ?", json.dumps(FakeOllama.requests[-1], ensure_ascii=False))
+
+    def test_remote_engines_get_masked_secrets_and_anomalies_taint(self) -> None:
+        jarvis, jarvis_url = scripted(FakeJarvis)
+        self.store.save({"id": "jarvis", "kind": "jarvis", "name": "Jarvis", "endpoint": jarvis_url,
+                         "model": "jarvis-1", "context_window": 32768,
+                         "share": {"contexte": False, "memoire": False}}, jarvis.token)
+        self.daemon()
+        config = Config()
+        config.set("llm.engine", "jarvis")
+        # Outil hors du périmètre proposé pour cette demande : réponse anormale du moteur distant.
+        jarvis.script = [{"tool_calls": [{"name": "sddm_autologin", "arguments": {"enabled": True}}]},
+                         {"content": "D'accord."}]
+        memory = Memory(Path(tempfile.mkdtemp()) / "memory.db")
+        self.addCleanup(memory.close)
+        memory.remember("préférence", "aime le thème sombre")
+        agent = Agent(Config(), registry(), memory)
+        events = []
+        agent.run("mon jeton est sk-test-0123456789abcdefghijklmnop, vérifie le pare-feu",
+                  memory.new_conversation("t"), lambda kind, payload: events.append((kind, payload)), lambda *_: True)
+        sent = json.dumps(jarvis.requests[0], ensure_ascii=False)
+        self.assertNotIn("sk-test-0123456789abcdefghijklmnop", sent)  # DLP avant tout envoi distant
+        self.assertNotIn("thème sombre", sent)  # mémoire non partagée avec ce moteur
+        self.assertIn("contexte système non partagé", sent)
+        guards = [payload for kind, payload in events if kind == "guard"]
+        self.assertTrue(any(guard["origin"] == "moteur distant" for guard in guards), guards)
+        result = next(payload["result"] for kind, payload in events if kind == "tool_result")
+        self.assertIn("contenu non fiable", result["message"])  # anomalie -> plafond niveau 1
+
+    def test_capability_profile_and_policy_cap(self) -> None:
+        from djerba_ai.core.policy import Origin, Policy
+        jarvis, jarvis_url = scripted(FakeJarvis)
+        self.store.save({"id": "jarvis", "kind": "jarvis", "name": "Jarvis", "endpoint": jarvis_url,
+                         "model": "jarvis-1", "context_window": 32768}, jarvis.token)
+        self.daemon()
+        provider = self.engines.make_provider(self.engines.find("jarvis", Config()), Config())
+        jarvis.script = [{"tool_calls": [{"name": "time_status", "arguments": {}}]},
+                         {"content": '{"ok": true, "n": 3}'}, {"content": "def add(a, b):\n    return a + b\n"}]
+        strong = self.engines.measure(provider)
+        self.assertEqual((strong["label"], strong["cap"]), ("Très adapté", 3))
+        jarvis.script = [{"content": "Il est midi."}, {"content": "ok"}, {"content": "je ne sais pas"}]
+        weak = self.engines.measure(provider)
+        self.assertEqual((weak["label"], weak["cap"]), ("Limité : réparations simples seulement", 1))
+        self.store.set_profile("jarvis", weak)
+        policy = Policy(settings={}, state_dir=Path(tempfile.mkdtemp()))
+        capped = policy.decide(registry().get("ufw_enable"), {}, Origin("jarvis:jarvis-1", "1"))
+        self.assertFalse(capped.allowed)
+        self.assertIn("limité au niveau 1", capped.reason)
+        self.assertTrue(policy.decide(registry().get("service_restart"), {}, Origin("jarvis:jarvis-1", "1")).allowed)
+
+    def test_structured_fallback_retries_and_validates(self) -> None:
+        from djerba_ai.core.engine import parse_structured, structured_chat
+        names = {"os_info"}
+        self.assertEqual(parse_structured('blabla {"outil": "os_info", "arguments": {}}', names)["tool_calls"][0]["name"],
+                         "os_info")
+        for bad in ('{"outil": "rm_rf"}', "pas de JSON", '{"outil": "os_info", "arguments": [1]}', "{}"):
+            with self.assertRaises(ValueError):
+                parse_structured(bad, names)
+
+        class Manager:
+            replies = ["désolé", '{"outil": "inconnu"}', '{"reponse": "Voilà."}']
+            seen: list = []
+
+            def chat(self, messages, tools, on_token):
+                self.seen.append(messages)
+                return {"content": self.replies.pop(0), "tool_calls": []}
+        manager = Manager()
+        result = structured_chat(manager, [{"role": "user", "content": "x"}], [registry().get("os_info").schema()])
+        self.assertEqual(result["content"], "Voilà.")
+        self.assertIn("non conforme", manager.seen[-1][-1]["content"])
+
+    def test_mcp_server_pairing_auth_policy_and_revocation(self) -> None:
+        from djerba_ai.core import mcp
+        clients = self.base / "mcp-clients.json"
+        original = mcp.CLIENTS_FILE
+        mcp.CLIENTS_FILE = clients
+        self.addCleanup(setattr, mcp, "CLIENTS_FILE", original)
+        mcp._FAILURES.clear()
+        store = mcp.ClientStore(clients)
+        code = store.begin("jarvis", cap=1)["code"]
+        self.assertEqual(clients.stat().st_mode & 0o777, 0o600)
+        executed = []
+
+        def execute(name, arguments, origin):
+            executed.append((name, origin["engine"]))
+            return {"success": True, "message": "ok", "data": {}}
+
+        def rpc(method, params):
+            handlers = {"mcp.pair_complete": lambda: store.complete(params["code"], params.get("name", "")),
+                        "mcp.verify": lambda: store.verify(params["token"])}
+            return handlers[method]() or {}
+        server = mcp.MCPServer(registry(), execute, rpc)
+        url = serve(mcp.make_handler(server))
+
+        def post(path, payload, token=""):
+            request = urllib.request.Request(url + path, data=json.dumps(payload).encode(), method="POST",
+                                             headers={"Content-Type": "application/json",
+                                                      **({"Authorization": f"Bearer {token}"} if token else {})})
+            try:
+                with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=10) as reply:
+                    return reply.status, json.loads(reply.read() or b"null")
+            except urllib.error.HTTPError as exc:
+                return exc.code, json.loads(exc.read() or b"null")
+        status, _body = post("/mcp", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        self.assertEqual(status, 401)
+        status, body = post("/pair", {"code": "999999"})
+        self.assertEqual(status, 403)
+        status, body = post("/pair", {"code": code, "name": "jarvis"})
+        self.assertEqual(status, 200, body)
+        token = body["token"]
+        self.assertNotIn(token, clients.read_text())  # jeton haché
+        status, body = post("/mcp", {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}, token)
+        self.assertEqual(body["result"]["serverInfo"]["name"], "djerba-os")
+        status, body = post("/mcp", {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, token)
+        self.assertGreater(len(body["result"]["tools"]), 200)
+        status, body = post("/mcp", {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                                     "params": {"name": "os_info", "arguments": {}}}, token)
+        self.assertFalse(body["result"]["isError"])
+        self.assertEqual(executed, [("os_info", "mcp-jarvis")])
+        status, _body = post("/mcp", {"jsonrpc": "2.0", "method": "notifications/initialized"}, token)
+        self.assertEqual(status, 202)
+        self.assertEqual(store.cap("jarvis"), 1)  # plafond fixé à l'appairage, appliqué par la politique
+        self.assertTrue(store.revoke("jarvis"))
+        status, _body = post("/mcp", {"jsonrpc": "2.0", "id": 4, "method": "tools/list"}, token)
+        self.assertEqual(status, 401)
+        self.assertEqual(store.cap("jarvis"), 0)
+        for _ in range(6):
+            store.complete("000000")
+        fresh = store.begin("autre")["code"]
+        self.assertIsNone(store.complete(fresh))  # force brute : appairage bloqué une minute
 
 
 if __name__ == "__main__":

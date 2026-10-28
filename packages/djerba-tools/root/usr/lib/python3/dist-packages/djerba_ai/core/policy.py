@@ -67,7 +67,9 @@ FORBIDDEN_TREES = (
 #: pseudo-outils des méthodes du démon (même politique que les outils)
 METHOD_TOOLS = {"sys.deploy_patch": "patch_deploy", "sys.rollback_patch": "patch_rollback",
                 "sys.install_ollama": "ollama_install", "sys.venv_install": "venv_install",
-                "config.set": "settings_set", "security.apparmor_load": "apparmor_load"}
+                "config.set": "settings_set", "security.apparmor_load": "apparmor_load",
+                "engines.save": "engine_save", "engines.remove": "engine_remove",
+                "engines.set_profile": "engine_profile", "engines.pair_jarvis": "jarvis_pair"}
 
 
 @dataclass
@@ -172,12 +174,28 @@ class Policy:
         return value if value in MODES else DEFAULT_MODE
 
     def engine_cap(self, origin: Origin) -> int:
+        """Plafond du moteur : réglage administrateur (par identifiant) et profil de capacité mesuré."""
         caps = {}
         for item in self.settings().get("policy.engine_caps", []) or []:
             kind, _sep, level = str(item).partition(":")
             if level.isdigit():
                 caps[kind] = int(level)
-        return caps.get(origin.kind, 3)
+        configured = caps.get(origin.kind, 3)
+        measured = 3
+        if origin.kind.startswith("mcp-"):
+            # Appelant MCP (Jarvis…) : plafond fixé à l'appairage ; révoqué -> 0 (plus rien au-delà de la lecture).
+            try:
+                from djerba_ai.core.mcp import ClientStore
+                measured = ClientStore().cap(origin.kind[4:])
+            except Exception:  # noqa: BLE001
+                measured = 0
+        elif origin.kind and origin.kind not in ("local", "tailscale", "cloud"):
+            try:
+                from djerba_ai.core.engines import EngineStore
+                measured = EngineStore().measured_cap(origin.kind)
+            except Exception:  # noqa: BLE001 - registre illisible : plafond prudent
+                measured = 1
+        return min(configured, measured)
 
     @property
     def pause_file(self) -> Path:

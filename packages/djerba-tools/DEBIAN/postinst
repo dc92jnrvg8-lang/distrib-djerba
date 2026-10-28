@@ -29,6 +29,7 @@ case "$1" in
         install -d -m 0700 /var/lib/djerba-ai
         install -d -m 0755 /etc/apparmor.d/djerba-generated
         systemctl --global enable djerba-ai.service >/dev/null 2>&1 || true
+        systemctl --global enable djerba-ai-mcp.service >/dev/null 2>&1 || true
         if [ -d /run/systemd/system ]; then
             systemctl daemon-reload || true
             systemctl start djerba-ai-sysd.socket >/dev/null 2>&1 || true

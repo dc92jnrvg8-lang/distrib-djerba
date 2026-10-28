@@ -247,6 +247,7 @@ def _brain_switch(params: dict, _verbose: bool) -> dict:
     config = _config()
     try:
         config.set("llm.provider", params["provider"])
+        config.set("llm.engine", params["provider"])
         if params.get("model"):
             config.set(MODEL_KEYS[params["provider"]], params["model"])
     except ConfigError as exc:
@@ -254,6 +255,31 @@ def _brain_switch(params: dict, _verbose: bool) -> dict:
     health = _client().health(5)
     return (ok if health.get("ok") else fail)(
         f"Cerveau : {PROVIDER_LABELS[params['provider']]} — {health.get('detail')}", **health)
+
+
+def _engines_list(_params: dict, _verbose: bool) -> dict:
+    from djerba_ai.core import engines
+    config = _config()
+    active = engines.active_id(config)
+    items = [{"id": engine["id"], "nom": engine["name"], "type": engines.KIND_LABELS.get(engine["kind"], engine["kind"]),
+              "modèle": engine.get("model", ""), "actif": engine["id"] == active,
+              "capacité": (engine.get("profile") or {}).get("label", "non mesurée")}
+             for engine in engines.catalog(config)]
+    return ok(f"{len(items)} moteur(s) d'IA configuré(s) ; actif : {active}", engines=items)
+
+
+def _engine_use(params: dict, _verbose: bool) -> dict:
+    from djerba_ai.core import engines
+    from djerba_ai.core.config import ConfigError
+    config = _config()
+    engine = engines.find(params["id"], config)
+    if engine is None:
+        return fail(f"moteur inconnu : {params['id']} (engines_list)")
+    try:
+        config.set("llm.engine", engine["id"])
+    except ConfigError as exc:
+        return fail(str(exc))
+    return ok(f"Moteur actif : {engine['name']} — la conversation continue avec lui.")
 
 
 def _model_list(_params: dict, _verbose: bool) -> dict:
@@ -507,6 +533,14 @@ TOOLS = [
                   required=("url",), keywords=("lire page", "site", "url")),
     function_tool("engine_status", C, "État du cerveau de Djerba (local, Tailscale ou en ligne) : santé, latence, repli.",
                   _engine_status, keywords=("moteur", "cerveau", "ollama", "modèle", "ia", "tailscale", "latence")),
+    function_tool("engines_list", C, "Moteurs d'IA configurés (Ollama local ou distant, Jarvis, OpenAI, Gemini, "
+                  "Anthropic…), moteur actif et capacité mesurée.", _engines_list,
+                  keywords=("moteurs", "ia disponibles", "jarvis", "cerveaux", "engines")),
+    function_tool("engine_use", C, "Bascule à chaud sur un autre moteur d'IA (la conversation est conservée).",
+                  _engine_use,
+                  parameters={"id": {"type": "string", "description": "identifiant du moteur (engines_list)",
+                                     "pattern": r"^[a-z0-9][a-z0-9-]{1,31}$"}},
+                  required=("id",), keywords=("changer de moteur", "utiliser jarvis", "basculer", "engine")),
     function_tool("brain_switch", C, "Change de cerveau : Ollama local, machine distante via Tailscale ou API en ligne.",
                   _brain_switch,
                   parameters={"provider": {"type": "string", "description": "local, tailscale ou cloud",

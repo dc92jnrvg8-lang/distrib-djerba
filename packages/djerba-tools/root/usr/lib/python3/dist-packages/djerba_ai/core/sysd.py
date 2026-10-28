@@ -137,7 +137,8 @@ APP_SCOPE = re.compile(r"/djerba-(?:app|ghost)-[^/\n]*\.(?:scope|service)")
 #: méthodes sans effet ni donnée sensible : non journalisées
 QUIET = {"sys.ping", "sys.metrics", "sys.list_patches", "config.get", "audit.tail", "audit.verify", "security.status",
          "llm.cloud_health", "llm.cloud_models", "session.report", "tx.list", "tx.show",
-         "policy.check", "policy.status"}
+         "policy.check", "policy.status", "engines.list", "llm.engine_chat", "llm.engine_health",
+         "mcp.verify", "mcp.list"}
 
 Authorizer = Callable[[int, int, str], bool]
 Emit = Callable[[str, dict], None]
@@ -633,6 +634,31 @@ def cloud_health() -> dict:
 
 
 # ---------------------------------------------------------------- Confinement AppArmor
+def engines_change(method: str, params: dict) -> dict:
+    """Registre des moteurs (secrets lus et écrits par root uniquement)."""
+    from djerba_ai.core import engines as engine_registry
+    store = engine_registry.EngineStore()
+    try:
+        if method == "engines.save":
+            saved = store.save(dict(params["engine"]), str(params.get("secret", "")))
+            return {"success": True, "message": f"moteur « {saved['name']} » enregistré", "engine": saved}
+        if method == "engines.remove":
+            store.remove(str(params["id"]))
+            return {"success": True, "message": f"moteur {params['id']} retiré"}
+        if method == "engines.set_profile":
+            store.set_profile(str(params["id"]), dict(params["profile"]))
+            return {"success": True, "message": "profil de capacité enregistré"}
+        paired = engine_registry.pair_jarvis(str(params["address"]), str(params["code"]))
+        spec = {"id": str(params.get("id", "jarvis")), "kind": "jarvis", "name": str(params.get("name") or
+                paired["name"]), "icon": "user-available", "color": "#F59E0B",
+                "role": "Assistant de l'utilisateur sur une autre machine", "endpoint": str(params["address"]),
+                "model": paired["model"], "context_window": 32768, "share": {"contexte": True, "memoire": False}}
+        saved = store.save(spec, paired["token"])
+        return {"success": True, "message": f"Jarvis appairé : « {saved['name']} »", "engine": saved}
+    except engine_registry.EngineError as exc:
+        return {"success": False, "message": str(exc)}
+
+
 SESSION_LOG_DIR = Path(os.environ.get("DJERBA_SESSION_LOG_DIR", "/var/log/djerba"))
 SESSION_LOG_MAX = 1024 * 1024
 SESSION_REPORTS_PER_HOUR = 30
@@ -927,6 +953,45 @@ class Dispatcher:
                 return {"models": llm.cloud_models(settings["endpoint"], settings["key"])}
             except llm.LLMError as exc:
                 raise ipc.RPCError(ipc.TOOL_FAILED, str(exc)) from exc
+        if method == "engines.list":
+            from djerba_ai.core.engines import EngineStore
+            return {"engines": EngineStore().list()}
+        if method in ("engines.save", "engines.remove", "engines.set_profile", "engines.pair_jarvis"):
+            self.require(pid, uid, ACTION_CONFIGURE)
+            return self.guarded(method, params, pid, uid, lambda: engines_change(method, params))
+        if method in ("llm.engine_chat", "llm.engine_health"):
+            self.require(pid, uid, ACTION_CLOUD)
+            from djerba_ai.core import engines as engine_registry
+            try:
+                engine, secret = engine_registry.EngineStore().get(str(params["id"]))
+            except engine_registry.EngineError as exc:
+                raise ipc.RPCError(ipc.INVALID_PARAMS, str(exc)) from exc
+            if method == "llm.engine_health":
+                return engine_registry.engine_health(engine, secret)
+            try:
+                return engine_registry.engine_request(engine, secret, list(params["messages"]),
+                                                      list(params.get("tools") or []),
+                                                      lambda text: (emit or (lambda *_: None))(
+                                                          "llm.token", {"text": text}),
+                                                      json_mode=bool(params.get("json_mode")))
+            except (engine_registry.EngineError, llm.LLMError) as exc:
+                raise ipc.RPCError(ipc.TOOL_FAILED, str(exc)) from exc
+        if method.startswith("mcp."):
+            from djerba_ai.core.mcp import ClientStore
+            store = ClientStore()
+            if method == "mcp.pair_begin":
+                self.require(pid, uid, ACTION_CONFIGURE)
+                return {"success": True, **store.begin(str(params["name"]), int(params.get("cap", 2)))}
+            if method == "mcp.pair_complete":
+                return store.complete(str(params["code"]), str(params.get("name", ""))) or {}
+            if method == "mcp.verify":
+                return store.verify(str(params["token"])) or {}
+            if method == "mcp.list":
+                self.require(pid, uid, ACTION_AUDIT)
+                return {"clients": store.list()}
+            self.require(pid, uid, ACTION_CONFIGURE)
+            found = store.revoke(str(params["client"]))
+            return {"success": found, "message": f"accès de {params['client']} révoqué" if found else "inconnu"}
         if method == "policy.check":
             from djerba_ai.core.policy import Origin
             tool = self.registry().get(str(params["tool"])) or str(params["tool"])

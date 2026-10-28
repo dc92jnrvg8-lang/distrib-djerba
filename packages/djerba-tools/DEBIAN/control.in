@@ -16,7 +16,7 @@ Depends: djerba-branding (= @VERSION@), python3, python3-yaml, python3-dbus,
  upower, rfkill, pciutils, usbutils, xdg-user-dirs, zstd, smartmontools, util-linux,
  python3-pyflakes, python3-venv, python3-pydantic (>= 2), python3-cryptography, python3-seccomp,
  python3-pytest, python3-pytest-timeout, python3-gi, apparmor
-Recommends: flatpak, torsocks, linux-cpupower, lm-sensors, x11-utils
+Recommends: flatpak, torsocks, linux-cpupower, lm-sensors, x11-utils, python3-qrcode
 Suggests: tailscale, python3-nautilus, gnome-shell-extension-prefs
 Description: outils et assistant d'accueil de Djerba OS
  - djerba-welcome : assistant d'accueil et de premier démarrage (PyQt6 + QML)
