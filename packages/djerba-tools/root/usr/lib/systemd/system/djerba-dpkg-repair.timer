@@ -1,0 +1,12 @@
+# Djerba OS — vérifie l'état de dpkg deux minutes après le démarrage, puis
+# toutes les six heures.
+[Unit]
+Description=Djerba : vérification périodique de dpkg
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=6h
+RandomizedDelaySec=30s
+
+[Install]
+WantedBy=timers.target

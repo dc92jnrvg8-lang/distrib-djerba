@@ -269,12 +269,34 @@ def sync(config, adapter: DesktopAdapter | None = None) -> dict:
         previous = json.loads(STATE.read_text()).get("desktop")
     except (OSError, ValueError):
         previous = None
+    from djerba_ai.ui.session_guard import guarded
+    desktop = adapter.name if adapter.name in ("kde", "gnome") else "generic"
+    # Chaque étape est isolée : un échec (GSettings absent, gnome-extensions en erreur…)
+    # est consigné et n'empêche ni les autres étapes ni la session.
+    integrations = guarded("adapter.integrations", adapter.install_integrations, default=None, desktop=desktop)
     report = {"desktop": adapter.name, "switched": previous not in (None, adapter.name), "shortcuts": [],
-              "integrations": adapter.install_integrations()}
-    for name in COMMANDS:
+              "integrations": integrations or [], "degraded": integrations is None}
+
+    def apply(name: str) -> dict:
         try:
-            report["shortcuts"].append(adapter.apply_shortcut(name, str(config.get(f"shortcuts.{name}"))))
+            return adapter.apply_shortcut(name, str(config.get(f"shortcuts.{name}")))
         except shortcuts.ShortcutError as exc:
-            report["shortcuts"].append({"name": name, "applied": False, "message": str(exc)})
-    remember({"desktop": adapter.name})
+            return {"name": name, "applied": False, "message": str(exc)}
+
+    for name in COMMANDS:
+        result = guarded(f"adapter.shortcut.{name}", apply, name, default=None, desktop=desktop)
+        if result is None:
+            report["degraded"] = True
+            result = {"name": name, "applied": False, "message": "raccourci non appliqué (mode dégradé)"}
+        report["shortcuts"].append(result)
+    guarded("adapter.state", remember, {"desktop": adapter.name}, desktop=desktop)
     return report
+
+
+def safe_sync(config) -> dict:
+    """``sync`` sans jamais lever : détection impossible -> bureau générique (mode dégradé)."""
+    from djerba_ai.ui.session_guard import guarded
+    adapter = guarded("adapter.detect", detect, default=None) or GenericAdapter()
+    report = guarded("adapter.sync", sync, config, adapter, default=None)
+    return report or {"desktop": adapter.name, "switched": False, "shortcuts": [], "integrations": [],
+                      "degraded": True}

@@ -2,6 +2,8 @@
 # Djerba OS — djerba-branding : rafraîchit les caches et la configuration GRUB.
 set -e
 
+dpkg-maintscript-helper rm_conffile /etc/xdg/kcm-about-distrorc "@VERSION@~" djerba-branding -- "$@"
+
 case "$1" in
     configure)
         # Les images live-build remplacent le lien /etc/os-release par une
@@ -22,6 +24,16 @@ case "$1" in
         # Absent dans le chroot de construction, où aucun grub.cfg n'existe.
         if [ -x /usr/sbin/update-grub ] && [ -e /boot/grub/grub.cfg ]; then
             update-grub || echo "djerba-branding : update-grub a échoué, configuration GRUB inchangée." >&2
+        fi
+        # Filet de sécurité non bloquant : dpkg --configure -a est impossible ici
+        # (verrou dpkg tenu par la transaction en cours). Une réparation est
+        # programmée hors transaction : elle attend la libération du verrou et
+        # n'agit que si l'état de dpkg est réellement incohérent (paquets à
+        # moitié installés, transaction interrompue, conflit de fichiers).
+        if [ -d /run/systemd/system ] && [ -x /usr/libexec/djerba-dpkg-repair ]; then
+            systemd-run --quiet --no-block --collect --on-active=60 \
+                --unit="djerba-dpkg-repair-postinst-$$" \
+                /usr/libexec/djerba-dpkg-repair --auto >/dev/null 2>&1 || true
         fi
         ;;
 esac

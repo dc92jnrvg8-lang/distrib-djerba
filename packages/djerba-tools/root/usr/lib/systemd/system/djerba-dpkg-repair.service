@@ -1,0 +1,15 @@
+# Djerba OS — réparation automatique de dpkg (transaction interrompue, conflit
+# de fichiers avec un paquet Djerba). N'agit que si l'état est incohérent et
+# qu'aucune installation n'est en cours. Lancée par sa minuterie : jamais sur
+# le chemin critique du démarrage.
+[Unit]
+Description=Djerba : vérification et réparation de dpkg
+Documentation=file:///usr/share/doc/djerba-tools
+ConditionPathExists=/var/lib/dpkg/status
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/djerba-dpkg-repair --auto
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=45min

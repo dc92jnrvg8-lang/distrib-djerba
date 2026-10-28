@@ -307,7 +307,7 @@ class Backend(QObject):
 
     @pyqtProperty("QVariantList", notify=engineChanged)
     def installedModels(self) -> list:
-        return self._engine["installed"]
+        return self._engine.get("installed", [])
 
     @pyqtProperty("QVariantList", constant=True)
     def recommendedModels(self) -> list:

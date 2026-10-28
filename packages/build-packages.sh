@@ -64,7 +64,9 @@ build_package() {
     local script
     for script in preinst postinst prerm postrm conffiles triggers; do
         if [[ -f "${source}/DEBIAN/${script}" ]]; then
-            install -m 0755 "${source}/DEBIAN/${script}" "${stage}/DEBIAN/${script}"
+            # @VERSION@ aussi dans les scripts (dpkg-maintscript-helper : version de transition).
+            sed -e "s/@VERSION@/${DEB_VERSION}/g" "${source}/DEBIAN/${script}" > "${stage}/DEBIAN/${script}"
+            chmod 0755 "${stage}/DEBIAN/${script}"
         fi
     done
     if [[ -f "${stage}/DEBIAN/conffiles" ]]; then

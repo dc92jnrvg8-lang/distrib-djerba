@@ -34,4 +34,18 @@
     <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/djerba-anonsurf</annotate>
   </action>
 
+  <action id="org.djerba.dpkg-repair">
+    <description>Repair the package manager</description>
+    <description xml:lang="fr">Réparer le gestionnaire de paquets</description>
+    <message>Authentication is required to repair the package manager (dpkg)</message>
+    <message xml:lang="fr">Une authentification est nécessaire pour réparer le gestionnaire de paquets (dpkg)</message>
+    <icon_name>system-software-update</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/djerba-dpkg-repair</annotate>
+  </action>
+
 </policyconfig>

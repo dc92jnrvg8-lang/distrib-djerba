@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Djerba package state watcher
+Name[fr]=Veille du gestionnaire de paquets Djerba
+Comment=Offers to repair dpkg when an installation was interrupted
+Comment[fr]=Propose de réparer dpkg quand une installation a été interrompue
+Exec=/usr/libexec/djerba-dpkg-repair --watch
+Icon=system-software-update
+Terminal=false
+NoDisplay=true
+X-KDE-autostart-phase=2
+X-GNOME-Autostart-Delay=20

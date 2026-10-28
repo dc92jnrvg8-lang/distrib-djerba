@@ -24,9 +24,11 @@ Tous exposent : ``available()``, ``health()``, ``models()``,
 
 from __future__ import annotations
 
+import http.client
 import json
 import shutil
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -71,6 +73,240 @@ def _request(url: str, payload: dict | None = None, timeout: float = 30, headers
         if isinstance(reason, TimeoutError):
             raise ProviderTimeout(f"délai dépassé ({url})") from exc
         raise LLMError(f"moteur injoignable ({url}) : {reason}") from exc
+
+
+# ---------------------------------------------------------------- Transport persistant (Ollama)
+CONNECT_TIMEOUT = 5.0
+#: délai maximal entre deux fragments du flux (le premier fragment, qui attend le
+#: chargement du modèle en mémoire, a son propre délai : first_byte_timeout)
+READ_TIMEOUT = 60.0
+RETRIES = 3
+BACKOFF = 0.5
+#: fermetures de connexion sans réponse (connexion persistante périmée, moteur
+#: redémarré, relais Tailscale coupé) : la requête est rejouée sur une connexion neuve
+DISCONNECTED = (http.client.RemoteDisconnected, ConnectionResetError, ConnectionAbortedError, BrokenPipeError,
+                http.client.BadStatusLine)
+HEADERS = {"Content-Type": "application/json", "Accept": "application/x-ndjson, application/json",
+           "Connection": "keep-alive", "User-Agent": "djerba-ai"}
+
+_POOL: dict[tuple, list] = {}
+_POOL_LOCK = threading.Lock()
+_POOL_SIZE = 4
+
+
+class Unreachable(LLMError):
+    """Aucune connexion possible (refus, hôte absent) ou fermée sans réponse après les reprises."""
+
+    def __init__(self, message: str, disconnected: bool = False) -> None:
+        super().__init__(message)
+        #: le serveur a accepté puis fermé la connexion sans répondre (vs. refus de connexion)
+        self.disconnected = disconnected
+
+
+def _http2_client():
+    """Client HTTP/2 (httpx + h2) si disponible : négocié par ALPN sur les points d'accès TLS
+    (tailscale serve, proxy inverse). Ollama lui-même parle HTTP/1.1 en clair (keep-alive)."""
+    import importlib.util
+    if importlib.util.find_spec("h2") is None:
+        return None
+    try:
+        import httpx
+    except ImportError:
+        return None
+    return httpx
+
+
+class Transport:
+    """Connexions HTTP persistantes (keep-alive) vers un moteur, réutilisées entre requêtes."""
+
+    def __init__(self, base: str, connect_timeout: float = CONNECT_TIMEOUT, read_timeout: float = READ_TIMEOUT,
+                 retries: int = RETRIES, backoff: float = BACKOFF) -> None:
+        parsed = urllib.parse.urlparse(base)
+        self.base = base.rstrip("/")
+        self.scheme = parsed.scheme or "http"
+        self.host = parsed.hostname or "127.0.0.1"
+        self.port = parsed.port or (443 if self.scheme == "https" else 80)
+        self.prefix = parsed.path.rstrip("/")
+        self.connect_timeout, self.read_timeout = connect_timeout, read_timeout
+        self.retries, self.backoff = max(1, retries), backoff
+        self.key = (self.scheme, self.host, self.port)
+        self.http2 = self.scheme == "https" and _http2_client() is not None
+
+    # -- réserve de connexions
+    def _checkout(self, fresh: bool):
+        if not fresh:
+            with _POOL_LOCK:
+                idle = _POOL.get(self.key, [])
+                if idle:
+                    return idle.pop()
+        factory = http.client.HTTPSConnection if self.scheme == "https" else http.client.HTTPConnection
+        connection = factory(self.host, self.port, timeout=self.connect_timeout)
+        connection.connect()
+        return connection
+
+    def _checkin(self, connection) -> None:
+        with _POOL_LOCK:
+            idle = _POOL.setdefault(self.key, [])
+            if len(idle) < _POOL_SIZE:
+                idle.append(connection)
+                return
+        connection.close()
+
+    def request(self, method: str, path: str, payload: dict | None = None,
+                first_byte_timeout: float | None = None) -> "StreamResponse":
+        if self.http2:
+            return self._request_http2(method, path, payload, first_byte_timeout)
+        body = json.dumps(payload).encode() if payload is not None else None
+        url = f"{self.base}{path}"
+        last: BaseException | None = None
+        for attempt in range(self.retries):
+            # Première tentative : connexion persistante si disponible ; ensuite, toujours neuve.
+            try:
+                connection = self._checkout(fresh=attempt > 0)
+            except TimeoutError as exc:
+                raise ProviderTimeout(f"connexion impossible en {self.connect_timeout:.0f} s ({url})") from exc
+            except OSError as exc:
+                raise Unreachable(f"moteur injoignable ({url}) : {exc}") from exc
+            try:
+                sock = connection.sock  # http.client l'oublie si le serveur annonce la fermeture
+                sock.settimeout(first_byte_timeout or self.read_timeout)
+                connection.request(method, f"{self.prefix}{path}", body=body, headers=HEADERS)
+                response = connection.getresponse()
+                sock.settimeout(self.read_timeout)
+            except DISCONNECTED as exc:
+                connection.close()
+                last = exc
+                if attempt + 1 < self.retries:
+                    time.sleep(self.backoff * (2 ** attempt))
+                continue
+            except TimeoutError as exc:
+                connection.close()
+                raise ProviderTimeout(f"aucune réponse en {first_byte_timeout or self.read_timeout:.0f} s ({url})") \
+                    from exc
+            except OSError as exc:
+                connection.close()
+                raise Unreachable(f"moteur injoignable ({url}) : {exc}") from exc
+            if response.status >= 400:
+                detail = response.read().decode(errors="replace")[:300]
+                self._release(connection, response)
+                raise LLMError(f"{response.status} : {detail}")
+            return StreamResponse(self, connection, response, url)
+        raise Unreachable(f"moteur injoignable ({url}) : {last or 'connexion fermée'} "
+                          f"— {self.retries} tentatives", disconnected=True)
+
+    def _release(self, connection, response) -> None:
+        if response.will_close or not response.isclosed():
+            connection.close()
+        else:
+            self._checkin(connection)
+
+    def _request_http2(self, method: str, path: str, payload: dict | None,
+                       first_byte_timeout: float | None) -> "StreamResponse":
+        httpx = _http2_client()
+        timeout = httpx.Timeout(connect=self.connect_timeout, read=max(first_byte_timeout or 0, self.read_timeout),
+                                write=self.read_timeout, pool=self.connect_timeout)
+        with _POOL_LOCK:
+            client = _POOL.get(("httpx",) + self.key)
+            if client is None:
+                client = httpx.Client(http2=True, timeout=timeout, headers=HEADERS, trust_env=False)
+                _POOL[("httpx",) + self.key] = client
+        url = f"{self.base}{path}"
+        last: BaseException | None = None
+        for attempt in range(self.retries):
+            try:
+                request = client.build_request(method, url, json=payload, timeout=timeout)
+                response = client.send(request, stream=True)
+            except httpx.RemoteProtocolError as exc:
+                last = exc
+                if attempt + 1 < self.retries:
+                    time.sleep(self.backoff * (2 ** attempt))
+                continue
+            except httpx.TimeoutException as exc:
+                raise ProviderTimeout(f"délai dépassé ({url})") from exc
+            except httpx.TransportError as exc:
+                raise Unreachable(f"moteur injoignable ({url}) : {exc}") from exc
+            if response.status_code >= 400:
+                detail = response.read().decode(errors="replace")[:300]
+                response.close()
+                raise LLMError(f"{response.status_code} : {detail}")
+            return StreamResponse(self, None, response, url)
+        raise Unreachable(f"moteur injoignable ({url}) : {last or 'connexion fermée'} — {self.retries} tentatives",
+                          disconnected=True)
+
+
+class StreamResponse:
+    """Réponse lue ligne à ligne (NDJSON) ; la connexion revient à la réserve une fois lue."""
+
+    def __init__(self, transport: Transport, connection, response, url: str) -> None:
+        self.transport, self.connection, self.response, self.url = transport, connection, response, url
+        self.status = getattr(response, "status", None) or getattr(response, "status_code", 0)
+
+    def __enter__(self) -> "StreamResponse":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close(failed=exc[0] is not None)
+
+    def close(self, failed: bool = False) -> None:
+        if self.connection is None:
+            self.response.close()
+            return
+        if failed:
+            self.connection.close()
+        else:
+            self.transport._release(self.connection, self.response)
+        self.connection = None
+
+    def __iter__(self):
+        try:
+            if self.connection is None:
+                for line in self.response.iter_lines():
+                    yield line.encode() if isinstance(line, str) else line
+                return
+            while True:
+                line = self.response.readline()
+                if not line:
+                    return
+                yield line
+        except TimeoutError as exc:
+            raise ProviderTimeout(f"flux interrompu : rien reçu depuis {self.transport.read_timeout:.0f} s "
+                                  f"({self.url})") from exc
+        except (http.client.IncompleteRead, *DISCONNECTED) as exc:
+            raise LLMError(f"flux interrompu par le moteur ({self.url}) : {exc}") from exc
+
+    def read(self) -> bytes:
+        return b"".join(self)
+
+    def json(self) -> Any:
+        return json.loads(self.read() or b"{}")
+
+
+def local_candidates(port: int, original: str) -> list[str]:
+    """Adresses de repli quand le moteur n'écoute pas sur la boucle locale
+    (OLLAMA_HOST lié à l'adresse Tailscale ou du réseau local)."""
+    hosts: list[str] = []
+    if original != "127.0.0.1":
+        hosts.append("127.0.0.1")
+    if original != "::1":
+        hosts.append("[::1]")
+    if shutil.which("tailscale"):
+        try:
+            output = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=3).stdout
+            hosts += [line.strip() for line in output.splitlines() if line.strip()]
+        except (OSError, subprocess.SubprocessError):
+            pass
+    try:
+        output = subprocess.run(["ip", "-j", "-4", "addr", "show", "scope", "global"], capture_output=True,
+                                text=True, timeout=3).stdout
+        for interface in json.loads(output or "[]"):
+            hosts += [item.get("local", "") for item in interface.get("addr_info", []) if item.get("local")]
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    seen: list[str] = []
+    for host in hosts:
+        if host and host not in seen:
+            seen.append(host)
+    return [f"http://{host}:{port}" for host in seen]
 
 
 def parse_openai_stream(response, on_token: Token | None) -> dict[str, Any]:
@@ -164,27 +400,78 @@ class BaseLLMProvider(ABC):
 
 
 class LocalOllamaProvider(BaseLLMProvider):
+    """Ollama : connexions persistantes (keep-alive), délais séparés (connexion 5 s,
+    60 s entre deux fragments), reprise sur fermeture sans réponse (3 tentatives,
+    attente exponentielle), corps /api/chat validé (Pydantic) et, pour un moteur
+    local, repli sur l'adresse Tailscale ou du réseau local si Ollama n'écoute pas
+    sur la boucle locale."""
+
     kind = "local"
     label = "Ollama local"
+    #: adresses de repli déjà trouvées (point d'accès configuré -> point d'accès joignable)
+    resolved: dict[str, str] = {}
 
     def __init__(self, endpoint: str = "http://127.0.0.1:11434", model: str = "", context_window: int = 8192,
                  first_byte_timeout: float = 600) -> None:
         super().__init__(model)
-        self.endpoint = endpoint.rstrip("/")
+        self.configured = endpoint.rstrip("/")
+        self.endpoint = self.resolved.get(self.configured, self.configured)
         self.context_window = context_window
         self.first_byte_timeout = first_byte_timeout
         self.think = False
+        self.fallback_hosts = self.kind == "local"
+        self.read_timeout = READ_TIMEOUT
+        self.backoff = BACKOFF
+
+    def transport(self) -> Transport:
+        return Transport(self.endpoint, read_timeout=self.read_timeout, backoff=self.backoff)
+
+    def _send(self, method: str, path: str, payload: dict | None = None, timeout: float | None = None,
+              first_byte: float | None = None) -> StreamResponse:
+        def transport() -> Transport:
+            current = self.transport()
+            if timeout is not None:
+                current.read_timeout = timeout
+                current.connect_timeout = min(current.connect_timeout, timeout)
+            return current
+
+        try:
+            return transport().request(method, path, payload, first_byte)
+        except Unreachable:
+            if not (self.fallback_hosts and self.relocate()):
+                raise
+            return transport().request(method, path, payload, first_byte)
+
+    def relocate(self) -> str | None:
+        """Cherche Ollama sur les autres adresses de cette machine (boucle IPv6, Tailscale, réseau local)."""
+        parsed = urllib.parse.urlparse(self.endpoint)
+        if (parsed.hostname or "") not in LOCAL_HOSTS:
+            return None
+        for candidate in local_candidates(parsed.port or 11434, parsed.hostname or ""):
+            if candidate == self.endpoint:
+                continue
+            try:
+                with Transport(candidate, connect_timeout=2, read_timeout=3, retries=1).request(
+                        "GET", "/api/version") as response:
+                    response.read()
+            except LLMError:
+                continue
+            self.endpoint = candidate
+            LocalOllamaProvider.resolved[self.configured] = candidate
+            return candidate
+        return None
 
     def available(self, timeout: float = 3) -> bool:
         try:
-            with _request(f"{self.endpoint}/api/version", timeout=timeout) as response:
+            with self._send("GET", "/api/version", timeout=timeout) as response:
+                response.read()
                 return response.status == 200
         except LLMError:
             return False
 
     def models(self) -> list[dict]:
-        with _request(f"{self.endpoint}/api/tags", timeout=10) as response:
-            data = json.load(response)
+        with self._send("GET", "/api/tags", timeout=10) as response:
+            data = response.json()
         return [{"name": model["name"], "size_gb": round(model.get("size", 0) / 1e9, 1),
                  "family": model.get("details", {}).get("family", ""),
                  "parameters": model.get("details", {}).get("parameter_size", "")}
@@ -192,12 +479,12 @@ class LocalOllamaProvider(BaseLLMProvider):
 
     def warmup(self) -> None:
         # Requête vide : Ollama charge le modèle et le garde 15 min en mémoire.
-        with _request(f"{self.endpoint}/api/generate", {"model": self.model, "prompt": "", "keep_alive": "15m"},
-                      timeout=120) as response:
+        with self._send("POST", "/api/generate", {"model": self.model, "prompt": "", "keep_alive": "15m",
+                                                  "stream": False}, first_byte=120) as response:
             response.read()
 
     def pull(self, model: str, on_progress: Callable[[str, int], None] | None = None) -> None:
-        with _request(f"{self.endpoint}/api/pull", {"model": model, "stream": True}, timeout=3600) as response:
+        with self._send("POST", "/api/pull", {"model": model, "stream": True}, timeout=600) as response:
             for raw in response:
                 if not raw.strip():
                     continue
@@ -209,23 +496,51 @@ class LocalOllamaProvider(BaseLLMProvider):
                     on_progress(event.get("status", ""), int(done * 100 / total) if total else 0)
 
     def delete(self, model: str) -> None:
-        with _request(f"{self.endpoint}/api/delete", {"model": model}, timeout=30, method="DELETE") as response:
+        with self._send("DELETE", "/api/delete", {"model": model}, timeout=30) as response:
             response.read()
+
+    def chat_payload(self, messages: list[dict], tools: list[dict] | None = None, stream: bool = True,
+                     think: bool | None = None) -> dict[str, Any]:
+        """Corps /api/chat validé : messages au format Ollama, « stream » explicite, outils conformes."""
+        from pydantic import ValidationError
+
+        from djerba_ai.core.schemas import OllamaChatRequest
+        if not self.model:
+            raise LLMError("aucun modèle configuré pour Ollama (llm.local.model)")
+        try:
+            request = OllamaChatRequest(model=self.model, messages=messages, stream=stream, tools=tools or None,
+                                        think=(self.think or None) if think is None else (think or None),
+                                        keep_alive="15m",
+                                        options={"num_ctx": self.context_window, "temperature": 0.3})
+        except ValidationError as exc:
+            error = exc.errors()[0]
+            where = ".".join(str(part) for part in error.get("loc", ()))
+            raise LLMError(f"requête /api/chat invalide ({where}) : {error.get('msg', '')}") from exc
+        return request.wire()
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              on_token: Token | None = None) -> dict[str, Any]:
-        payload: dict[str, Any] = {"model": self.model, "messages": messages, "stream": True, "keep_alive": "15m",
-                                   "options": {"num_ctx": self.context_window, "temperature": 0.3}}
-        if tools:
-            payload["tools"] = tools
-        if self.think:
-            payload["think"] = True  # modèles de raisonnement : réflexion visible séparée de la réponse
+        payload = self.chat_payload(messages, tools)
+        try:
+            return self._stream_chat(payload, on_token)
+        except Unreachable as exc:
+            if not exc.disconnected or ("tools" not in payload and "think" not in payload):
+                raise
+        # Le moteur ferme la connexion sans répondre à chaque tentative : certaines versions
+        # d'Ollama s'interrompent sur les outils ou la réflexion d'un modèle qui ne les
+        # prend pas en charge. Dernier essai avec une requête minimale.
+        return self._stream_chat(self.chat_payload(messages, None, think=False), on_token)
+
+    def _stream_chat(self, payload: dict, on_token: Token | None) -> dict[str, Any]:
         content, calls, thinking = [], [], []
-        with _request(f"{self.endpoint}/api/chat", payload, timeout=self.first_byte_timeout) as response:
+        with self._send("POST", "/api/chat", payload, first_byte=self.first_byte_timeout) as response:
             for raw in response:
                 if not raw.strip():
                     continue
-                event = json.loads(raw)
+                try:
+                    event = json.loads(raw)
+                except ValueError as exc:
+                    raise LLMError(f"réponse du moteur illisible : {raw[:120]!r}") from exc
                 if "error" in event:
                     raise LLMError(event["error"])
                 message = event.get("message", {})
@@ -246,8 +561,8 @@ class LocalOllamaProvider(BaseLLMProvider):
 
     def show(self, timeout: float = 5) -> dict[str, Any]:
         """Fiche du modèle (contexte, taille, capacités) : /api/show."""
-        with _request(f"{self.endpoint}/api/show", {"model": self.model}, timeout=timeout) as response:
-            return json.load(response)
+        with self._send("POST", "/api/show", {"model": self.model}, timeout=timeout) as response:
+            return response.json()
 
 
 # Compatibilité : nom historique.

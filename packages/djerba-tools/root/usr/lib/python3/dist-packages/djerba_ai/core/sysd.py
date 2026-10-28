@@ -63,10 +63,14 @@ Méthodes :
   security.unblock {ip}          débloque une adresse bloquée par l'IDS
   security.apparmor_load {kind, name, network}
                                  génère et charge le profil AppArmor d'un code généré
+  session.report {desktop, component, detail}
+                                 consigne une défaillance de session graphique (extension,
+                                 shell, adaptateur) dans /var/log/djerba/<bureau>-crash.log
 """
 
 from __future__ import annotations
 
+import grp
 import hashlib
 import json
 import os
@@ -112,7 +116,7 @@ REQUIREMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}(\[[A-Za-z0-9,_-]+\])
 APP_SCOPE = re.compile(r"/djerba-(?:app|ghost)-[^/\n]*\.(?:scope|service)")
 #: méthodes sans effet ni donnée sensible : non journalisées
 QUIET = {"sys.ping", "sys.metrics", "sys.list_patches", "config.get", "audit.tail", "audit.verify", "security.status",
-         "llm.cloud_health", "llm.cloud_models"}
+         "llm.cloud_health", "llm.cloud_models", "session.report"}
 
 Authorizer = Callable[[int, int, str], bool]
 Emit = Callable[[str, dict], None]
@@ -608,6 +612,40 @@ def cloud_health() -> dict:
 
 
 # ---------------------------------------------------------------- Confinement AppArmor
+SESSION_LOG_DIR = Path(os.environ.get("DJERBA_SESSION_LOG_DIR", "/var/log/djerba"))
+SESSION_LOG_MAX = 1024 * 1024
+SESSION_REPORTS_PER_HOUR = 30
+_session_reports: dict[int, list[float]] = {}
+
+
+def session_report(uid: int, desktop: str, component: str, detail: str) -> dict:
+    """Défaillance d'une session graphique : /var/log/djerba/<bureau>-crash.log (root:adm, 0640).
+
+    Le journal n'est pas inscriptible par les sessions : seul le démon root y écrit, pour
+    un appelant de confiance, avec un débit borné (30 rapports par heure et par utilisateur)."""
+    now = time.time()
+    recent = [moment for moment in _session_reports.get(uid, []) if now - moment < 3600]
+    if len(recent) >= SESSION_REPORTS_PER_HOUR:
+        return {"success": False, "message": "trop de rapports : ignoré"}
+    _session_reports[uid] = [*recent, now]
+    path = SESSION_LOG_DIR / f"{desktop}-crash.log"
+    text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", detail)[-8000:]
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    body = "\n".join(f"  {line}" for line in text.splitlines() if line.strip())
+    SESSION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    if path.exists() and path.stat().st_size > SESSION_LOG_MAX:
+        os.replace(path, path.with_name(path.name + ".1"))
+    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o640)
+    with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
+        handle.write(f"{stamp} uid={uid} composant={component}\n{body}\n")
+    if os.geteuid() == 0:
+        try:
+            os.chown(path, 0, grp.getgrnam("adm").gr_gid)
+        except (KeyError, OSError):
+            pass
+    return {"success": True, "message": f"consigné dans {path}"}
+
+
 def apparmor_load(uid: int, kind: str, name: str, network: bool) -> dict:
     """Profil du code généré par l'IA pour l'utilisateur uid : le dossier confiné est
     calculé ici (dossier personnel de uid), jamais fourni par l'appelant ; le réseau
@@ -785,6 +823,8 @@ class Dispatcher:
                 return {"models": llm.cloud_models(settings["endpoint"], settings["key"])}
             except llm.LLMError as exc:
                 raise ipc.RPCError(ipc.TOOL_FAILED, str(exc)) from exc
+        if method == "session.report":
+            return session_report(uid, str(params["desktop"]), str(params["component"]), str(params["detail"]))
         if method == "audit.tail":
             self.require(pid, uid, ACTION_AUDIT)
             return {"entries": audit.tail(min(int(params.get("lines", 200)), 2000))}

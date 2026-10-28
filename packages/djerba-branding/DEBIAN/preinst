@@ -1,11 +1,18 @@
 #!/bin/sh
 # Djerba OS — djerba-branding : déroutage de /usr/lib/os-release (base-files).
-# Les conffiles (/etc/issue…) ne sont jamais déroutés (Charte Debian 10.7.4).
+# Les conffiles (/etc/issue, /etc/xdg/kcm-about-distrorc…) ne sont jamais
+# déroutés (Charte Debian 10.7.4) : dpkg les gère mal.
 set -e
 
 divert() {
     dpkg-divert --package djerba-branding --add --rename --divert "$1.debian" "$1" >/dev/null
 }
+
+# Jusqu'à la version 2026.10.30, djerba-branding livrait /etc/xdg/kcm-about-distrorc,
+# fichier de desktop-base : l'installation de desktop-base échouait (« trying to
+# overwrite »). Le conffile est retiré proprement (un conffile obsolète resterait
+# attribué au paquet et le conflit persisterait).
+dpkg-maintscript-helper rm_conffile /etc/xdg/kcm-about-distrorc "@VERSION@~" djerba-branding -- "$@"
 
 case "$1" in
     install|upgrade)

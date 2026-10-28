@@ -95,7 +95,9 @@ check "Noyau Debian ${ARCH}" sq_has "/boot/vmlinuz-[0-9][^ ]*-${ARCH}"
 check "Préemption complète au démarrage (preempt=full)" grep -q "preempt=full" "${WORK}/grub.cfg"
 check "Identité Djerba OS (os-release)" sh -c "unsquashfs -cat '${SQUASHFS}' /usr/lib/os-release | grep -qx 'ID=djerba'"
 check "/etc/os-release régénéré par djerba-branding" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/os-release | grep -q '^PRETTY_NAME=\"Djerba OS'"
-check "Logo Djerba pour « À propos »" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/xdg/kcm-about-distrorc | grep -q 'LogoPath=/usr/share/pixmaps/djerba-os.png'"
+check "Logo Djerba pour « À propos »" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/xdg/djerba/kcm-about-distrorc | grep -q 'LogoPath=/usr/share/pixmaps/djerba-os.png'"
+check "/etc/xdg/kcm-about-distrorc laissé à desktop-base (aucun conflit dpkg)" sh -c "! grep -qE ' squashfs-root/etc/xdg/kcm-about-distrorc( |\$)' '${WORK}/rootfs.list'"
+check "XDG_CONFIG_DIRS de Plasma : /etc/xdg/djerba prioritaire" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/xdg/plasma-workspace/env/djerba-xdg.sh | grep -q '/etc/xdg/djerba:'"
 check "Icône djerba-os (hicolor)" sq_has "/usr/share/icons/hicolor/scalable/apps/djerba-os.svg"
 check "live-boot" sq_has "/usr/share/initramfs-tools/scripts/live"
 check "user-setup (création de l'utilisateur live)" sq_has "/usr/lib/user-setup/user-setup-apply"
@@ -148,6 +150,11 @@ check "Agent IA : menu Djerba de Dolphin" sq_has "/usr/share/kio/servicemenus/dj
 check "Agent IA : menu Djerba de Nautilus" sq_has "/usr/share/nautilus-python/extensions/djerba_ai_nautilus.py"
 check "Agent IA : greffon Gedit" sq_has "/usr/share/djerba-ai/integrations/gedit/djerba.plugin"
 check "Agent IA : détection d'intrusion (service)" sq_has "/usr/lib/systemd/system/djerba-ai-ids.service"
+check "Paquets : réparation de dpkg (outil, minuterie, veille de session)" sh -c "grep -q ' squashfs-root/usr/libexec/djerba-dpkg-repair\$' '${WORK}/rootfs.list' && grep -q ' squashfs-root/usr/lib/systemd/system/djerba-dpkg-repair.timer\$' '${WORK}/rootfs.list' && grep -q ' squashfs-root/etc/xdg/autostart/djerba-dpkg-watch.desktop\$' '${WORK}/rootfs.list'"
+check "Paquets : crochet APT de réparation (DPkg::Post-Invoke)" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/apt/apt.conf.d/80djerba-dpkg-repair | grep -q 'djerba-dpkg-repair --schedule'"
+check "Paquets : action polkit de réparation" sh -c "unsquashfs -cat '${SQUASHFS}' /usr/share/polkit-1/actions/org.djerba.tools.policy | grep -q 'org.djerba.dpkg-repair'"
+check "GNOME : rapport de plantage (OnFailure de GNOME Shell)" sh -c "unsquashfs -cat '${SQUASHFS}' '/usr/lib/systemd/user/org.gnome.Shell@wayland.service.d/djerba-crash-report.conf' | grep -q 'OnFailure=djerba-gnome-crash.service'"
+check "djerba-branding : Replaces/Breaks/Conflicts desktop-base" sh -c "unsquashfs -cat '${SQUASHFS}' /var/lib/dpkg/status | sed -n '/^Package: djerba-branding\$/,/^\$/p' | grep -q '^Replaces: desktop-base'"
 check "Installateur : bureau GNOME proposé" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/calamares/modules/netinstall.conf | grep -q 'gnome-desktop'"
 check "Agent IA : ptrace restreint (yama)" sh -c "unsquashfs -cat '${SQUASHFS}' /usr/lib/sysctl.d/60-djerba-ai.conf | grep -q '^kernel.yama.ptrace_scope = 1'"
 check "Démarrage automatique de l'assistant" sq_has "/etc/xdg/autostart/djerba-welcome.desktop"
@@ -237,6 +244,8 @@ try: s = socket.socket(socket.AF_INET)
 except PermissionError: sys.exit(0)
 sys.exit(1)'
     check "Agent IA : détection d'intrusion activée" in_chroot systemctl is-enabled djerba-ai-ids.service
+    check "Paquets : minuterie de réparation de dpkg activée" in_chroot systemctl is-enabled djerba-dpkg-repair.timer
+    check "Paquets : dpkg cohérent dans l'image (dpkg --audit vide)" sh -c "test -z \"\$(chroot '${WORK}/root' dpkg --audit)\""
     check "Agent IA : AppArmor (apparmor_parser, aa-exec)" in_chroot sh -c 'command -v apparmor_parser && command -v aa-exec'
     check "Agent IA : profils AppArmor générés valides" in_chroot python3 -c 'from djerba_ai.security import apparmor as a; ok, d = a.check_syntax(a.render("plugin", "essai", "/home/x/.local/share/djerba/plugins")); assert ok, d'
     check "Agent IA : dossier des exécutions isolées (0711)" sh -c "[ \"\$(chroot '${WORK}/root' stat -c '%a' /var/lib/djerba-ai-runs)\" = 711 ]"

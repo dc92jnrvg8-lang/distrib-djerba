@@ -1,0 +1,49 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""djerba-dpkg-repair — état de dpkg et réparation non bloquante (Djerba OS).
+
+  --check [--json]    état (sans privilège)
+  --auto              root : répare seulement si l'état est incohérent (minuterie, postinst)
+  --schedule          root : crochet APT, programme --auto hors transaction si nécessaire
+  --repair [--json]   root : réparation (dpkg --configure -a, apt-get -f install)
+  --watch             session : notification « Réparer » si dpkg reste incohérent
+"""
+
+import json
+import os
+import sys
+
+from djerba_ai.core import dpkgstate
+
+
+def main(argv: list[str]) -> int:
+    as_json = "--json" in argv
+    if "--watch" in argv:
+        try:
+            dpkgstate.watch()
+        except KeyboardInterrupt:
+            pass
+        return 0
+    if "--schedule" in argv:
+        try:
+            dpkgstate.schedule()
+        except Exception as exc:  # noqa: BLE001 - un crochet APT ne doit jamais faire échouer apt
+            print(f"djerba-dpkg-repair : {exc}", file=sys.stderr)
+        return 0
+    if "--auto" in argv or "--repair" in argv:
+        if os.geteuid() != 0:
+            print("djerba-dpkg-repair : doit s'exécuter en root (pkexec)", file=sys.stderr)
+            return 1
+        report = dpkgstate.auto() if "--auto" in argv else dpkgstate.repair()
+        print(json.dumps(report, ensure_ascii=False) if as_json else report["message"])
+        return 0 if report.get("repaired") or "--auto" in argv else 2
+    if "--check" in argv:
+        state = dpkgstate.check()
+        print(json.dumps(state, ensure_ascii=False) if as_json else state["message"])
+        return 0 if state["healthy"] else 1
+    print(__doc__.strip())
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

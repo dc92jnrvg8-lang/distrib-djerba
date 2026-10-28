@@ -1,0 +1,4 @@
+// Djerba OS — après chaque passage de dpkg (Discover, apt, mises à jour automatiques),
+// même en échec : si dpkg reste incohérent (transaction interrompue, conflit de
+// fichiers), une réparation est programmée hors transaction, sans bloquer APT.
+DPkg::Post-Invoke { "if [ -d /run/systemd/system ] && [ -x /usr/libexec/djerba-dpkg-repair ]; then /usr/libexec/djerba-dpkg-repair --schedule >/dev/null 2>&1 || true; fi"; };

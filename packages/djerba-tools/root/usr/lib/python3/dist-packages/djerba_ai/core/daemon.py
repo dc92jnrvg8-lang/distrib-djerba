@@ -150,13 +150,12 @@ def main() -> int:
 
     # Bureau courant (KDE Plasma ou GNOME) : raccourcis et intégrations rétablis à
     # chaque session, y compris après un changement de bureau.
-    try:
-        from djerba_ai.ui.adapter import sync
-        report = sync(config)
-        print(f"djerba-ai : bureau {report['desktop']}" + (" (changement de bureau)" if report["switched"] else "")
-              + "".join(f" ; {item}" for item in report["integrations"]), flush=True)
-    except Exception as exc:  # noqa: BLE001 - l'intégration au bureau ne doit jamais arrêter le démon
-        print(f"djerba-ai : intégration au bureau : {exc}", flush=True)
+    # Mode dégradé silencieux : une étape en échec est consignée (gnome-crash.log…) et ignorée.
+    from djerba_ai.ui.adapter import safe_sync
+    report = safe_sync(config)
+    print(f"djerba-ai : bureau {report['desktop']}" + (" (changement de bureau)" if report.get("switched") else "")
+          + (" (mode dégradé)" if report.get("degraded") else "")
+          + "".join(f" ; {item}" for item in report.get("integrations", [])), flush=True)
     bus = ContextBus(float(config.get("context.interval")), bool(config.get("context.window_titles"))).start()
     exporter = None
     if config.get("telemetry.enabled"):

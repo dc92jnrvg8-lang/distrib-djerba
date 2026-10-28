@@ -14,6 +14,7 @@ modification silencieuse en chemin.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 import unicodedata
@@ -100,6 +101,89 @@ class ChatResult(BaseModel):
             else:
                 calls.append(call)
         return calls
+
+
+# ---------------------------------------------------------------- Requête Ollama /api/chat
+class OllamaFunctionCall(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    name: Annotated[StrictStr, Field(pattern=TOOL_NAME)]
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("arguments", mode="before")
+    @classmethod
+    def _arguments(cls, value: Any) -> Any:
+        # Certains modèles renvoient les arguments sérialisés : Ollama attend un objet.
+        if isinstance(value, str):
+            try:
+                value = json.loads(value or "{}")
+            except ValueError:
+                return {}
+        return value if isinstance(value, dict) else {}
+
+
+class OllamaToolCall(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    function: OllamaFunctionCall
+
+
+class OllamaMessage(BaseModel):
+    """Message tel qu'Ollama l'accepte : champs internes (untrusted…) retirés."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    role: Literal["system", "user", "assistant", "tool"]
+    content: StrictStr = ""
+    images: list[StrictStr] | None = None
+    tool_calls: list[OllamaToolCall] | None = None
+    tool_name: StrictStr | None = None
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _content(cls, value: Any) -> Any:
+        return "" if value is None else value
+
+
+class OllamaFunctionSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: Annotated[StrictStr, Field(pattern=TOOL_NAME)]
+    description: StrictStr = ""
+    parameters: dict[str, Any] = Field(default_factory=lambda: {"type": "object", "properties": {}})
+
+    @field_validator("parameters")
+    @classmethod
+    def _object(cls, value: dict) -> dict:
+        if value.get("type") != "object" or not isinstance(value.get("properties", {}), dict):
+            raise ValueError("les paramètres d'un outil doivent être un objet JSON Schema")
+        return value
+
+
+class OllamaToolSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    type: Literal["function"] = "function"
+    function: OllamaFunctionSpec
+
+
+class OllamaChatRequest(BaseModel):
+    """Corps de POST /api/chat, validé avant l'envoi : un corps malformé peut faire
+    fermer la connexion par le serveur sans réponse (panique côté moteur)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    model: Annotated[StrictStr, Field(min_length=1, max_length=200)]
+    messages: list[OllamaMessage] = Field(min_length=1, max_length=2000)
+    #: toujours explicite (Ollama diffuse par défaut)
+    stream: StrictBool
+    tools: list[OllamaToolSpec] | None = None
+    think: StrictBool | None = None
+    keep_alive: StrictStr | StrictInt | None = None
+    options: dict[str, Any] = Field(default_factory=dict)
+
+    def wire(self) -> dict:
+        return self.model_dump(exclude_none=True)
 
 
 class Capabilities(BaseModel):
@@ -211,6 +295,12 @@ class ApparmorParams(Strict):
     network: StrictBool = False
 
 
+class SessionReportParams(Strict):
+    desktop: Literal["gnome", "kde", "generic"]
+    component: Annotated[StrictStr, Field(pattern=r"^[a-z0-9][a-z0-9_.@-]{0,63}$")]
+    detail: Annotated[StrictStr, Field(min_length=1, max_length=16000)]
+
+
 RPC_PARAMS: dict[str, type[Strict]] = {
     "sys.ping": NoParams,
     "sys.metrics": NoParams,
@@ -233,6 +323,7 @@ RPC_PARAMS: dict[str, type[Strict]] = {
     "security.status": NoParams,
     "security.unblock": UnblockParams,
     "security.apparmor_load": ApparmorParams,
+    "session.report": SessionReportParams,
 }
 
 

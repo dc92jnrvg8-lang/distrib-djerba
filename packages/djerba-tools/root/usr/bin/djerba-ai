@@ -23,6 +23,9 @@ Usage :
     djerba-ai doctor                  diagnostic : moteur d'IA, démon root, outils manquants
     djerba-ai run-app SLUG [--live]   lance une application du Studio
     djerba-ai daemon                  démon utilisateur (service djerba-ai.service)
+    djerba-ai session-report gnome [unité]
+                                      rapport de plantage de la session GNOME
+                                      (/var/log/djerba/gnome-crash.log), lancé par systemd
 """
 
 from __future__ import annotations
@@ -185,6 +188,9 @@ def main() -> int:
     if command == "daemon":
         from djerba_ai.core.daemon import main as daemon_main
         return daemon_main()
+    if command == "session-report" and len(argv) >= 2 and argv[1] == "gnome":
+        from djerba_ai.ui.session_guard import collect_gnome
+        return collect_gnome(argv[2] if len(argv) > 2 else "")
     print(__doc__, file=sys.stderr)
     return 2
 

@@ -1,0 +1,15 @@
+# Djerba OS — rapport de plantage de la session GNOME (GNOME Shell ou
+# gnome-session en échec) : extrait du journal consigné dans
+# ~/.local/state/djerba-ai/gnome-crash.log et, par le démon root,
+# /var/log/djerba/gnome-crash.log. Déclenché par OnFailure= (voir les
+# compléments org.gnome.Shell@*.service.d/ et gnome-session-failed.target.d/).
+[Unit]
+Description=Djerba : rapport de plantage de la session GNOME
+DefaultDependencies=no
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/djerba-ai session-report gnome ${MONITOR_UNIT}
+TimeoutStartSec=60

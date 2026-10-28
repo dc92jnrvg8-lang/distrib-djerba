@@ -293,5 +293,14 @@ apps:
     selected: false
     preinstalled: false
     apt:
-      packages: [gnome-shell, gnome-session, gnome-control-center, gnome-console, gnome-text-editor, nautilus,
-                 python3-nautilus, gedit, gnome-shell-extension-prefs, xdg-desktop-portal-gnome]
+      # Session complète : gnome-session (Wayland), gnome-session-xsession (Xorg), Xwayland,
+      # bus D-Bus de session systemd (dbus-user-session, exigé par gnome-session), démons de réglages.
+      packages: [gnome-session, gnome-session-xsession, gnome-shell, gnome-settings-daemon, mutter, xwayland,
+                 dbus-user-session, gnome-keyring, gsettings-desktop-schemas, gnome-control-center,
+                 gnome-console, gnome-text-editor, nautilus, python3-nautilus, gedit,
+                 gnome-shell-extension-prefs, xdg-desktop-portal-gnome]
+      # SDDM reste le gestionnaire de connexion : gdm3 (recommandé par gnome-shell) n'est pas installé.
+      exclude: [gdm3]
+    # Session réellement utilisable depuis SDDM : fichiers de session, binaires, schémas GSettings.
+    verify: [/usr/share/wayland-sessions/gnome.desktop, /usr/bin/gnome-session, /usr/bin/gnome-shell,
+             /usr/share/glib-2.0/schemas/org.gnome.shell.gschema.xml, /usr/bin/Xwayland]

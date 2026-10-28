@@ -6,6 +6,8 @@ undivert() {
     dpkg-divert --package djerba-branding --remove --rename --divert "$1.debian" "$1" >/dev/null
 }
 
+dpkg-maintscript-helper rm_conffile /etc/xdg/kcm-about-distrorc "@VERSION@~" djerba-branding -- "$@"
+
 case "$1" in
     remove|abort-install|disappear)
         undivert /usr/lib/os-release

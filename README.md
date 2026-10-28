@@ -100,9 +100,29 @@ identité livrée **par des paquets Debian** construits dans ce dépôt :
   selon la Charte Debian 10.7.4, ils sont réécrits par un hook), logo et
   icônes, fonds d'écran, thèmes globaux Plasma, Plymouth, SDDM, GRUB
   (`/etc/default/grub.d/djerba.cfg`), page « À propos de ce système »
-  (`kcm-about-distrorc`).
+  (`/etc/xdg/djerba/kcm-about-distrorc`, placé en tête de `XDG_CONFIG_DIRS`
+  par `/etc/xdg/plasma-workspace/env/djerba-xdg.sh`, pour la seule session
+  Plasma). `/etc/xdg/kcm-about-distrorc` reste à `desktop-base` : aucun
+  conflit de fichiers quand Discover ou GNOME tirent ce paquet Debian
+  (`Replaces: desktop-base`, `Breaks`/`Conflicts: desktop-base (<< 13.0.4)` ;
+  l'ancien conffile est retiré par `dpkg-maintscript-helper rm_conffile`).
 * **`djerba-tools`** : assistant d'accueil, gestionnaire d'applications, mode
   anonyme, mode discret, mode jeu, actions polkit et services systemd.
+
+**dpkg toujours réparable.** Une transaction interrompue (coupure, conflit
+de fichiers, script en échec) bloquait Discover sur un écran vide.
+`djerba-dpkg-repair` détecte l'incohérence sans privilège (`dpkg --audit`,
+`/var/lib/dpkg/updates`, en ignorant les transactions en cours relevées dans
+`/proc/locks`) et répare en root, hors transaction : `dpkg --configure -a`,
+`apt-get -f install` ; un conflit avec un fichier d'un paquet Djerba est
+résolu par `--force-overwrite` sur la seule archive concernée (jamais entre
+paquets tiers). Déclencheurs : crochet APT `DPkg::Post-Invoke` (exécuté même
+après un échec, réparation programmée par `systemd-run` sans bloquer APT),
+postinst de `djerba-branding`, minuterie `djerba-dpkg-repair.timer` (2 min
+après le démarrage puis toutes les 6 h), et `djerba-apps` avant/après chaque
+installation. Dans la session (KDE comme GNOME), une notification
+« Réparer » apparaît si l'état reste incohérent (pkexec, action polkit
+`org.djerba.dpkg-repair`). Journal : `/var/log/djerba/dpkg-repair.log`.
 
 Résultat : « À propos de ce système », GRUB, la console, `neofetch`/`fastfetch`
 et les outils système affichent **Djerba OS**, aussi bien en live qu'après
@@ -257,7 +277,7 @@ depuis une barre flottante ou une application complète.
 | Élément | Rôle |
 |---|---|
 | **Anneau d'action** (`Super+Espace`) | HUD flottant (KDE comme GNOME) : actions contextuelles disposées en anneau autour d'un champ de saisie, selon l'application au premier plan (navigateur, fichiers, terminal, éditeur, jeu…), complétées par les suggestions de l'agent (validées par schéma, titre de fenêtre traité comme donnée non fiable) ; réponse en continu et confirmations sur place ; modèle préchargé dès l'ouverture |
-| **Multi-bureau** (`ui/adapter.py`) | une seule interface, deux implémentations natives : **KDE Plasma** (script KWin pour la fenêtre active, KGlobalAccel, kdeglobals) et **GNOME Shell 46+** (extension `djerba@djerba-os.org` pour Mutter, raccourcis GSettings — Super+Espace libéré du changement de disposition —, thème `color-scheme`) ; détection à chaque session, réglages et raccourcis rétablis après un changement de bureau. GNOME est proposé à l'installation (catalogue, « Bureaux supplémentaires ») |
+| **Multi-bureau** (`ui/adapter.py`) | une seule interface, deux implémentations natives : **KDE Plasma** (script KWin pour la fenêtre active, KGlobalAccel, kdeglobals) et **GNOME Shell 46+** (extension `djerba@djerba-os.org` pour Mutter, raccourcis GSettings — Super+Espace libéré du changement de disposition —, thème `color-scheme`) ; détection à chaque session, réglages et raccourcis rétablis après un changement de bureau. GNOME est proposé à l'installation (catalogue, « Bureaux supplémentaires ») : session complète (`gnome-session`, `gnome-session-xsession`, Xwayland, `dbus-user-session`, `gnome-settings-daemon`…) vérifiée après installation (fichiers de session, schémas GSettings), sans `gdm3` (SDDM reste le gestionnaire de connexion). **Mode dégradé silencieux** : chaque étape d'intégration (détection, extension, raccourcis, greffons) est isolée ; un échec est consigné (`~/.local/state/djerba-ai/gnome-crash.log` et, par le démon root, `/var/log/djerba/gnome-crash.log`) et n'interrompt jamais la session ; l'extension GNOME contient ses erreurs, et un plantage de GNOME Shell ou de gnome-session (`OnFailure=`) produit un rapport avec l'extrait du journal |
 | **Applications** | menu « Djerba » de **Dolphin** (menu de service) et de **Nautilus** (python3-nautilus) sur les fichiers ; outils externes de **Kate** et greffon **Gedit** (Ctrl+Alt+E/K/T) sur la sélection, transmise par l'entrée standard |
 | **Presse-papiers** (`Meta+Maj+C`) | expliquer, résumer, traduire, corriger le texte copié, ou vérifier une commande |
 | **Tableau de bord** | flux de pensées de l'agent (poignée de main, garde anti-injection, capacités choisies, actions et niveau de risque, résultats, bascules de moteur, réflexion des modèles qui l'exposent), télémétrie vivante (bus de contexte, latences, mémoire de l'agent), **validations explicites** des actions à haut risque (saisie de « CONFIRMER »), contrôle de l'audit et du bac à sable |
@@ -288,6 +308,24 @@ pastille de connexion en temps réel) ou par l'agent (`brain_switch`) :
 Si le cerveau distant ne répond pas, ou pas dans les **5 secondes**, Djerba
 bascule **de façon transparente** sur le modèle local et vous prévient
 (notification Plasma, pastille orange).
+
+**Transport Ollama** (`core/llm.py`). Connexions HTTP **persistantes**
+(keep-alive, réserve partagée entre requêtes ; **HTTP/2** négocié par ALPN
+avec `httpx`/`h2` sur un point d'accès TLS — `tailscale serve`, proxy
+inverse —, Ollama lui-même parlant HTTP/1.1 en clair), délais séparés :
+**connexion 5 s**, **60 s au plus entre deux fragments** du flux (le premier
+fragment, qui attend le chargement du modèle en mémoire, garde son propre
+délai). Une connexion fermée sans réponse (« Remote end closed connection
+without response » : connexion persistante périmée, moteur redémarré, relais
+Tailscale coupé) est **rejouée 3 fois avec attente exponentielle** sur une
+connexion neuve, sans jamais dupliquer de jetons ; si le moteur ferme encore,
+une requête minimale (sans outils ni réflexion) est tentée. Le corps
+`/api/chat` est **validé par Pydantic** avant l'envoi (`OllamaChatRequest` :
+`messages` non vide aux rôles connus, `stream` toujours explicite, outils au
+format JSON Schema, champs internes retirés). Si Ollama n'écoute pas sur la
+boucle locale (`OLLAMA_HOST` lié à l'adresse Tailscale ou du réseau local),
+l'adresse joignable est trouvée (`::1`, `tailscale ip -4`, adresses globales)
+et mémorisée ; les embeddings passent par le même transport.
 
 **Auto-évolution.** Quand aucune capacité ne convient (même après
 `tools_search`), Djerba écrit un module Python (`BaseTool`) **et ses tests
@@ -596,6 +634,9 @@ de verre. Il est décliné en SVG et PNG (48 → 256 px) pour l'icône du menu,
 | Djerba (IA) en « mode simplifié » | Modèles et réglages → Installer Ollama, puis télécharger un modèle ; `djerba-ai doctor` |
 | Un correctif de Djerba pose problème | Auto-réparation → « Annuler le correctif », ou `djerba-ai run patch_rollback '{"name": "djerba-…"}'` |
 | L'assistant ne s'ouvre plus | `djerba-welcome`, ou `Autostart=true` dans `~/.config/djerba-welcomerc` |
+| Discover bloqué, « dpkg was interrupted », « trying to overwrite » | `djerba-dpkg-repair --check`, puis `pkexec /usr/libexec/djerba-dpkg-repair --repair` (journal : `/var/log/djerba/dpkg-repair.log`) |
+| « moteur injoignable … Remote end closed connection » | `djerba-ai doctor` ; le client rejoue 3 fois (attente exponentielle) puis tente une requête minimale ; si Ollama écoute sur l'adresse Tailscale ou du réseau local (`OLLAMA_HOST`), l'adresse est trouvée automatiquement |
+| Session GNOME qui revient à l'écran de connexion | `sudo djerba-dpkg-repair --repair` (installation GNOME interrompue), puis `/var/log/djerba/gnome-crash.log` et `~/.local/state/djerba-ai/gnome-crash.log` |
 
 ---
 

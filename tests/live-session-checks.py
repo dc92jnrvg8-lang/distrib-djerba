@@ -154,6 +154,14 @@ OFFLINE_CHECKS = [
      "> ~/.local/share/djerba/plugins/sonde.py && python3 -c 'import os; from djerba_ai.tools import load_plugins; "
      "t, e = load_plugins([\"sonde\"]); r = t[\"plugin.sonde\"].run({}); print(r); "
      "assert r[\"message\"] == \"bloque\" and r[\"data\"][\"pid\"] != os.getpid(), r'", 90),
+    ("Paquets : dpkg cohérent, minuterie de réparation et veille de session actives",
+     "djerba-dpkg-repair --check && systemctl is-enabled --quiet djerba-dpkg-repair.timer "
+     "&& for i in $(seq 60); do pgrep -u 1000 -f 'djerba-dpkg-repair --watch' >/dev/null && break; sleep 1; done; "
+     "pgrep -u 1000 -f 'djerba-dpkg-repair --watch' >/dev/null", 90),
+    ("Identité Plasma : /etc/xdg/djerba prioritaire (kcm-about-distrorc sans conflit avec desktop-base)",
+     "tr '\\0' '\\n' < /proc/$(pgrep -u 1000 -x plasmashell | head -n 1)/environ "
+     "| grep -q '^XDG_CONFIG_DIRS=/etc/xdg/djerba:' && test -f /etc/xdg/djerba/kcm-about-distrorc "
+     "&& ! dpkg -S /etc/xdg/kcm-about-distrorc 2>/dev/null | grep -q djerba", 30),
     ("Store : catalogue JSON",
      "djerba-apps list --json | python3 -c 'import json,sys; assert len(json.load(sys.stdin)[\"apps\"]) >= 10'", 60),
     ("Mode discret : bascule Windows 11 puis restauration à l'identique",
@@ -197,6 +205,22 @@ NETWORK_CHECKS = [
     ("Aucun refus AppArmor pour Tor (hors profil non chargé du live)",
      "d=$(sudo journalctl -b -k --no-pager | grep 'apparmor=\"DENIED\".*system_tor' "
      "| grep -v 'info=\"label not found\"' || true); printf '%s\\n' \"$d\" | tail -n 5; test -z \"$d\"", 30),
+    # Scénario du rapport : GNOME installé depuis le catalogue tire desktop-base (gdm3,
+    # gnome-control-center), qui revendique /etc/xdg/kcm-about-distrorc.
+    ("Bureau GNOME : installation complète sans conflit dpkg ni gdm3",
+     "sudo djerba-apps install gnome-desktop && sudo apt-get clean "
+     "&& dpkg-query -W -f='${Status}' desktop-base gnome-shell gnome-session xwayland | grep -c 'ok installed' "
+     "| grep -qx 4 && test -z \"$(dpkg --audit)\" && ! dpkg -s gdm3 >/dev/null 2>&1 "
+     "&& djerba-dpkg-repair --check && test -f /usr/share/wayland-sessions/gnome.desktop "
+     "&& grep -q 'LogoPath=/usr/share/pixmaps/djerba-os.png' /etc/xdg/djerba/kcm-about-distrorc", 1800),
+    ("Bureau GNOME : GNOME Shell démarre et charge l'extension Djerba sans erreur",
+     "rm -f /tmp/gs.log /tmp/ext.txt; timeout 150 dbus-run-session -- sh -c '"
+     "gnome-shell --headless --wayland --virtual-monitor 1280x800 >/tmp/gs.log 2>&1 & pid=$!; "
+     "for i in $(seq 60); do gnome-extensions list >/dev/null 2>&1 && break; sleep 1; done; "
+     "gnome-extensions enable djerba@djerba-os.org; sleep 8; gnome-extensions info djerba@djerba-os.org "
+     ">/tmp/ext.txt 2>&1; kill -0 $pid && kill $pid'; cat /tmp/ext.txt; "
+     "grep -q 'State: ACTIVE' /tmp/ext.txt && ! grep -i 'djerba' /tmp/gs.log | grep -iq 'error' "
+     "|| { tail -n 40 /tmp/gs.log; false; }", 240),
 ]
 
 

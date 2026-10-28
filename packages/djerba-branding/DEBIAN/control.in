@@ -6,6 +6,9 @@ Section: misc
 Priority: optional
 Depends: base-files, grub-common
 Recommends: plymouth, sddm, plasma-workspace
+Replaces: desktop-base
+Breaks: desktop-base (<< 13.0.4)
+Conflicts: desktop-base (<< 13.0.4)
 Description: identité de la distribution Djerba OS
  Nom et version du système (/usr/lib/os-release), logo et
  informations affichés dans « À propos de ce système », thème GRUB du
@@ -13,4 +16,6 @@ Description: identité de la distribution Djerba OS
  globaux Plasma « Djerba », « Djerba Horizon » et « Discret ».
  .
  /usr/lib/os-release de base-files est dérouté avec dpkg-divert et restauré à
- la désinstallation du paquet.
+ la désinstallation du paquet. /etc/xdg/kcm-about-distrorc reste à
+ desktop-base : l'identité Plasma est lue dans /etc/xdg/djerba (prioritaire
+ dans XDG_CONFIG_DIRS), sans conflit de fichiers avec desktop-base.

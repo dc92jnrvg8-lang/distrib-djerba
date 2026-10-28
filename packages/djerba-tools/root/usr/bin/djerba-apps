@@ -86,6 +86,10 @@ class App:
     architectures: list[str]
     notice: str = ""
     apt_packages: list[str] = field(default_factory=list)
+    #: paquets jamais tirés par les recommandations (ex. gdm3 : SDDM reste le gestionnaire de connexion)
+    apt_exclude: list[str] = field(default_factory=list)
+    #: fichiers attendus après l'installation (session de bureau complète, etc.)
+    verify: list[str] = field(default_factory=list)
     foreign_architectures: list[str] = field(default_factory=list)
     debconf: list[str] = field(default_factory=list)
     flatpak: str = ""
@@ -126,6 +130,9 @@ def load_catalog(path: Path = CATALOG) -> tuple[list[dict], list[App]]:
             raise CatalogError(f"{app_id} : identifiant Flatpak invalide {flatpak!r}")
         if apt and not apt.get("packages"):
             raise CatalogError(f"{app_id} : liste de paquets APT vide")
+        for package in list(apt.get("packages") or []) + list(apt.get("exclude") or []):
+            if not isinstance(package, str) or not re.fullmatch(r"[a-z0-9][a-z0-9+.-]+(:[a-z0-9]+)?", package):
+                raise CatalogError(f"{app_id} : nom de paquet invalide {package!r}")
         architectures = set(entry.get("architectures") or []) | set(apt.get("foreign_architectures") or [])
         if architectures - KNOWN_ARCHITECTURES:
             raise CatalogError(f"{app_id} : architecture inconnue {sorted(architectures - KNOWN_ARCHITECTURES)}")
@@ -140,6 +147,8 @@ def load_catalog(path: Path = CATALOG) -> tuple[list[dict], list[App]]:
             architectures=list(entry.get("architectures") or []),
             notice=entry.get("notice", ""),
             apt_packages=list(apt.get("packages") or []),
+            apt_exclude=list(apt.get("exclude") or []),
+            verify=[str(path) for path in entry.get("verify") or [] if str(path).startswith("/")],
             foreign_architectures=list(apt.get("foreign_architectures") or []),
             debconf=list(apt.get("debconf") or []),
             flatpak=flatpak,
@@ -366,9 +375,37 @@ class Installer:
             if subprocess.run(["debconf-set-selections"], input=selections, text=True,
                               check=False).returncode != 0:
                 return False
+        self.heal_dpkg()
         if not self._apt_update():
             return False
-        return retry(["apt-get", "install", *APT_OPTIONS, *app.apt_packages], env=APT_ENV, apt_status=True)
+        # « paquet- » : APT n'installe pas ce paquet (recommandation ignorée) ; seulement
+        # s'il est absent, pour ne jamais retirer un choix antérieur de l'utilisateur.
+        excluded = [f"{package}-" for package in app.apt_exclude if not apt_installed(package)]
+        ok = retry(["apt-get", "install", *APT_OPTIONS, *app.apt_packages, *excluded], env=APT_ENV,
+                   apt_status=True)
+        missing = [path for path in app.verify if not os.path.exists(path)] if ok else []
+        if missing:
+            self.reporter.emit("log", app=self.reporter.current,
+                               message=f"Installation incomplète : {', '.join(missing)} absent(s)")
+            ok = False
+        if not ok:
+            # Un échec ne doit jamais laisser dpkg incohérent (Discover bloqué, session cassée).
+            self.heal_dpkg()
+        return ok
+
+    def heal_dpkg(self) -> None:
+        """Ramène dpkg à un état cohérent avant/après une installation (transaction interrompue)."""
+        try:
+            from djerba_ai.core import dpkgstate
+        except ImportError:
+            return
+        state = dpkgstate.check()
+        if state["healthy"]:
+            return
+        self.reporter.emit("log", app=self.reporter.current,
+                           message=f"Réparation du gestionnaire de paquets : {state['message']}")
+        report = dpkgstate.repair(wait=600)
+        self.reporter.emit("log", app=self.reporter.current, message=report["message"])
 
     def install_flatpak(self, app: App) -> bool:
         if not shutil.which("flatpak"):

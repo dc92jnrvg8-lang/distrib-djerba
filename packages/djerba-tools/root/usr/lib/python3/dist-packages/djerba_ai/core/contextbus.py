@@ -178,7 +178,11 @@ class WindowBridge:
             # Source de la fenêtre active selon le bureau (KWin : script ; GNOME : extension Mutter),
             # activée par des processus distincts (aucun appel synchrone depuis ce processus).
             from djerba_ai.ui.adapter import detect
-            self.status = detect().start_window_source()
+            from djerba_ai.ui.session_guard import guarded
+            adapter = guarded("adapter.detect", detect, default=None)
+            self.status = (guarded("window-source", adapter.start_window_source,
+                                   default="source de la fenêtre active en échec (mode dégradé)")
+                           if adapter else "bureau non détecté (mode dégradé)")
         except dbus.exceptions.DBusException as exc:
             self.status = f"D-Bus indisponible ({exc.get_dbus_name()})"
         return self

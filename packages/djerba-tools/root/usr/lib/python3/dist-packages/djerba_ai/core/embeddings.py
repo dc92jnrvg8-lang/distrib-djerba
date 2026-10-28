@@ -14,11 +14,9 @@ from __future__ import annotations
 
 import array
 import hashlib
-import json
 import math
 import re
 import unicodedata
-import urllib.request
 
 HASH_DIMS = 512
 HASH_MODEL = f"hash-{HASH_DIMS}"
@@ -51,17 +49,16 @@ def hashed(text: str) -> list[float]:
 
 def ollama_embed(endpoint: str, model: str, texts: list[str], timeout: float = 30) -> list[list[float]] | None:
     """Embeddings par Ollama (None si le modèle ou le service est indisponible)."""
+    from djerba_ai.core.llm import LLMError, LocalOllamaProvider
+    # Même transport que le dialogue : connexion persistante, reprises, adresse de repli.
+    provider = LocalOllamaProvider(endpoint, model)
     try:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        request = urllib.request.Request(f"{endpoint.rstrip('/')}/api/embed",
-                                         data=json.dumps({"model": model, "input": texts}).encode(),
-                                         headers={"Content-Type": "application/json"})
-        with opener.open(request, timeout=timeout) as response:
-            vectors = json.load(response).get("embeddings")
+        with provider._send("POST", "/api/embed", {"model": model, "input": texts}, timeout=timeout) as response:
+            vectors = response.json().get("embeddings")
         if not vectors or len(vectors) != len(texts):
             return None
         return [_normalize([float(value) for value in vector]) for vector in vectors]
-    except (OSError, ValueError):
+    except (LLMError, OSError, ValueError):
         return None
 
 

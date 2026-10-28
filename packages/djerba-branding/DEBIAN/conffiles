@@ -1,2 +1,3 @@
-/etc/xdg/kcm-about-distrorc
+/etc/xdg/djerba/kcm-about-distrorc
 /etc/default/grub.d/djerba.cfg
+/etc/xdg/djerba/kickoffrc

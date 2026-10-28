@@ -1551,5 +1551,508 @@ class InterfaceTests(unittest.TestCase):
                                 env=environment)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+class FlakyOllama(http.server.BaseHTTPRequestHandler):
+    """Ollama en HTTP/1.1 (keep-alive) qui peut fermer la connexion sans répondre,
+    comme l'erreur « Remote end closed connection without response »."""
+
+    protocol_version = "HTTP/1.1"
+    drops = 0            # requêtes /api/chat fermées sans réponse
+    drop_tools = False   # toute requête avec outils ou réflexion est fermée sans réponse
+    stall_after_first = 0.0
+    peers: list = []
+    bodies: list = []
+
+    def log_message(self, *_args) -> None:
+        pass
+
+    def setup(self) -> None:
+        super().setup()
+        type(self).peers.append(self.client_address)
+
+    def _send(self, payload: bytes, content_type: str = "application/json") -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_GET(self) -> None:
+        self._send(b'{"version": "0.0-test"}')
+
+    def do_POST(self) -> None:
+        cls = type(self)
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        cls.bodies.append(body)
+        if cls.drops > 0 or (cls.drop_tools and ("tools" in body or "think" in body)):
+            cls.drops = max(0, cls.drops - 1)
+            self.close_connection = True  # fermeture sans ligne d'état
+            return
+        if cls.stall_after_first:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            line = json.dumps({"message": {"role": "assistant", "content": "début "}, "done": False}).encode() + b"\n"
+            self.wfile.write(f"{len(line):x}\r\n".encode() + line + b"\r\n")
+            self.wfile.flush()
+            time.sleep(cls.stall_after_first)
+            self.close_connection = True
+            return
+        lines = [{"message": {"role": "assistant", "content": "Réponse "}, "done": False},
+                 {"message": {"role": "assistant", "content": "stable."}, "done": True}]
+        self._send("\n".join(json.dumps(line) for line in lines).encode(), "application/x-ndjson")
+
+
+def flaky(**attributes) -> tuple[type, str]:
+    handler = type("Flaky", (FlakyOllama,), {"peers": [], "bodies": [], **attributes})
+    return handler, serve(handler)
+
+
+TOOL = {"type": "function", "function": {"name": "os_info", "description": "Système",
+                                         "parameters": {"type": "object", "properties": {}}}}
+
+
+class OllamaTransportTests(unittest.TestCase):
+    def provider(self, endpoint: str) -> "llm.LocalOllamaProvider":
+        provider = llm.LocalOllamaProvider(endpoint, "test:1b")
+        provider.backoff = 0.05
+        return provider
+
+    def test_remote_disconnected_is_retried_with_backoff(self) -> None:
+        handler, url = flaky(drops=2)
+        reply = self.provider(url).chat([{"role": "user", "content": "bonjour"}])
+        self.assertEqual(reply["content"], "Réponse stable.")
+        self.assertEqual(len(handler.bodies), 3)  # deux fermetures sans réponse, puis succès
+
+    def test_persistent_disconnection_reports_three_attempts(self) -> None:
+        handler, url = flaky(drops=99)
+        with self.assertRaises(llm.Unreachable) as caught:
+            self.provider(url).chat([{"role": "user", "content": "bonjour"}])
+        self.assertTrue(caught.exception.disconnected)
+        self.assertIn("3 tentatives", str(caught.exception))
+        self.assertEqual(len(handler.bodies), 3)
+
+    def test_engine_dropping_tool_requests_gets_minimal_request(self) -> None:
+        handler, url = flaky(drop_tools=True)
+        provider = self.provider(url)
+        provider.think = True
+        reply = provider.chat([{"role": "user", "content": "bonjour"}], tools=[TOOL])
+        self.assertEqual(reply["content"], "Réponse stable.")
+        self.assertIn("tools", handler.bodies[0])
+        self.assertTrue(handler.bodies[0]["think"])
+        self.assertNotIn("tools", handler.bodies[-1])
+        self.assertNotIn("think", handler.bodies[-1])
+
+    def test_keep_alive_reuses_one_connection(self) -> None:
+        handler, url = flaky()
+        provider = self.provider(url)
+        self.assertTrue(provider.available())
+        self.assertTrue(provider.available())
+        provider.chat([{"role": "user", "content": "bonjour"}])
+        self.assertEqual(len(set(handler.peers)), 1, handler.peers)
+
+    def test_stalled_stream_times_out_between_chunks(self) -> None:
+        _handler, url = flaky(stall_after_first=3)
+        provider = self.provider(url)
+        provider.read_timeout = 0.5
+        tokens: list[str] = []
+        started = time.monotonic()
+        with self.assertRaises(llm.ProviderTimeout):
+            provider.chat([{"role": "user", "content": "bonjour"}], on_token=tokens.append)
+        self.assertEqual(tokens, ["début "])
+        self.assertLess(time.monotonic() - started, 2.5)
+
+    def test_connection_refused_relocates_to_reachable_address(self) -> None:
+        _handler, url = flaky()
+        configured = f"http://127.0.0.1:{closed_port()}"
+        original = llm.local_candidates
+        llm.local_candidates = lambda port, host: [f"http://127.0.0.1:{closed_port()}", url]
+        try:
+            provider = self.provider(configured)
+            reply = provider.chat([{"role": "user", "content": "bonjour"}])
+            self.assertEqual(reply["content"], "Réponse stable.")
+            self.assertEqual(provider.endpoint, url)
+            self.assertEqual(llm.LocalOllamaProvider(configured, "test:1b").endpoint, url)  # mémorisé
+        finally:
+            llm.local_candidates = original
+            llm.LocalOllamaProvider.resolved.clear()
+
+    def test_remote_tailnet_provider_never_relocates(self) -> None:
+        remote = llm.RemoteTailscaleProvider("127.0.0.1", closed_port(), "qwen", timeout=1)
+        self.assertFalse(remote.fallback_hosts)
+        self.assertIsNone(remote.relocate() if remote.fallback_hosts else None)
+
+    def test_chat_payload_is_strictly_validated(self) -> None:
+        provider = self.provider("http://127.0.0.1:1")
+        payload = provider.chat_payload([{"role": "user", "content": "x", "untrusted": True, "tool_call_id": "c1"},
+                                         {"role": "assistant", "content": None,
+                                          "tool_calls": [{"function": {"name": "os_info", "arguments": "{}"}}]}],
+                                        [TOOL])
+        self.assertIs(payload["stream"], True)
+        self.assertEqual(payload["messages"][0], {"role": "user", "content": "x"})
+        self.assertEqual(payload["messages"][1]["tool_calls"][0]["function"]["arguments"], {})
+        self.assertEqual(payload["tools"][0]["function"]["name"], "os_info")
+        self.assertNotIn("think", payload)
+        for messages, tools in (([{"role": "pirate", "content": "x"}], None),
+                                ([], None),
+                                ([{"role": "user", "content": "x"}],
+                                 [{"type": "function", "function": {"name": "x", "parameters": {"type": "string"}}}]),
+                                ([{"role": "user", "content": "x"}], [{"type": "function", "function": {"name": "1"}}])):
+            with self.assertRaises(llm.LLMError):
+                provider.chat_payload(messages, tools)
+        with self.assertRaises(llm.LLMError):
+            llm.LocalOllamaProvider("http://127.0.0.1:1", "").chat_payload([{"role": "user", "content": "x"}])
+
+    def test_embeddings_share_the_transport(self) -> None:
+        class Embed(FlakyOllama):
+            peers: list = []
+            bodies: list = []
+
+            def do_POST(self) -> None:
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                type(self).bodies.append(body)
+                self._send(json.dumps({"embeddings": [[1.0, 0.0]] * len(body["input"])}).encode())
+
+        url = serve(Embed)
+        self.assertEqual(embeddings.ollama_embed(url, "nomic", ["a", "b"]), [[1.0, 0.0], [1.0, 0.0]])
+        self.assertIsNone(embeddings.ollama_embed(f"http://127.0.0.1:{closed_port()}", "nomic", ["a"]))
+
+
+DPKG_CONFLICT_EN = """Unpacking desktop-base (13.0.4) ...
+dpkg: error processing archive /var/cache/apt/archives/desktop-base_13.0.4_all.deb (--unpack):
+ trying to overwrite '/etc/xdg/kcm-about-distrorc', which is also in package djerba-branding (2026.10.30)
+Errors were encountered while processing:
+ /var/cache/apt/archives/desktop-base_13.0.4_all.deb
+"""
+DPKG_CONFLICT_FR = """dpkg: erreur de traitement de l'archive /var/cache/apt/archives/foo_1.0_all.deb (--unpack) :
+ tentative de remplacement de « /usr/share/foo/bar », qui appartient aussi au paquet bar-common 2.1
+"""
+
+
+class DpkgStateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from djerba_ai.core import dpkgstate
+        self.dpkgstate = dpkgstate
+        self.saved = (dpkgstate.DPKG_DIR, dpkgstate.PROC_LOCKS, dpkgstate.LOG)
+        self.base = Path(tempfile.mkdtemp())
+        dpkgstate.DPKG_DIR = self.base / "dpkg"
+        (dpkgstate.DPKG_DIR / "updates").mkdir(parents=True)
+        dpkgstate.PROC_LOCKS = self.base / "locks"
+        dpkgstate.PROC_LOCKS.write_text("")
+        dpkgstate.LOG = self.base / "dpkg-repair.log"
+
+    def tearDown(self) -> None:
+        self.dpkgstate.DPKG_DIR, self.dpkgstate.PROC_LOCKS, self.dpkgstate.LOG = self.saved
+
+    def test_conflict_messages_parsed(self) -> None:
+        self.assertEqual(self.dpkgstate.conflicts(DPKG_CONFLICT_EN),
+                         [{"archive": "/var/cache/apt/archives/desktop-base_13.0.4_all.deb",
+                           "path": "/etc/xdg/kcm-about-distrorc", "owner": "djerba-branding"}])
+        self.assertEqual(self.dpkgstate.conflicts(DPKG_CONFLICT_FR)[0]["owner"], "bar-common")
+        self.assertEqual(self.dpkgstate.conflicts("rien à signaler"), [])
+
+    def test_running_transaction_is_not_reported(self) -> None:
+        lock = self.dpkgstate.DPKG_DIR / "lock-frontend"
+        lock.write_text("")
+        info = lock.stat()
+        self.assertFalse(self.dpkgstate.busy())
+        self.dpkgstate.PROC_LOCKS.write_text(
+            f"1: POSIX  ADVISORY  WRITE 4242 {os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}:{info.st_ino}"
+            " 0 EOF\n")
+        self.assertTrue(self.dpkgstate.busy())
+        (self.dpkgstate.DPKG_DIR / "updates" / "0001").write_text("")
+        state = self.dpkgstate.check(lambda *_a, **_k: subprocess.CompletedProcess([], 0, "", ""))
+        self.assertTrue(state["healthy"] and state["busy"])  # transaction en cours : jamais signalée
+
+    def test_inconsistent_state_detected(self) -> None:
+        (self.dpkgstate.DPKG_DIR / "updates" / "0001").write_text("")
+        audit_output = ("The following packages are only half configured, probably due to problems\n"
+                        "configuring them the first time.\n gnome-shell          graphical shell\n")
+        state = self.dpkgstate.check(lambda *_a, **_k: subprocess.CompletedProcess([], 0, audit_output, ""))
+        self.assertFalse(state["healthy"])
+        self.assertTrue(state["interrupted"])
+        self.assertEqual(state["packages"], ["gnome-shell"])
+
+    def scripted_runner(self, conflict: str):
+        calls: list[list[str]] = []
+        archive = self.base / "desktop-base_13.0.4_all.deb"
+        archive.write_text("deb")
+        broken = {"value": True}
+
+        def runner(argv, timeout=0):
+            calls.append(list(argv))
+            if argv[:2] == ["dpkg", "--audit"]:
+                return subprocess.CompletedProcess(argv, 0, " desktop-base   x\n" if broken["value"] else "", "")
+            if argv[0] == "apt-get" and not any("--force-overwrite" in " ".join(c) for c in calls):
+                return subprocess.CompletedProcess(argv, 100, "", conflict.replace(
+                    "/var/cache/apt/archives/desktop-base_13.0.4_all.deb", str(archive)))
+            if "--force-overwrite" in argv:
+                broken["value"] = False
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return runner, calls, archive
+
+    def test_repair_forces_only_conflicts_with_djerba_packages(self) -> None:
+        runner, calls, archive = self.scripted_runner(DPKG_CONFLICT_EN)
+        report = self.dpkgstate.repair(runner, wait=1)
+        self.assertTrue(report["repaired"], report)
+        self.assertEqual(report["forced"], [str(archive)])
+        self.assertIn(["dpkg", "--force-confdef", "--force-confold", "--configure", "-a"], calls)
+        self.assertTrue(any(c[-2:] == ["-i", str(archive)] and "--force-overwrite" in c for c in calls))
+        self.assertIn("réparé", self.dpkgstate.LOG.read_text())
+
+        runner, calls, _archive = self.scripted_runner(DPKG_CONFLICT_EN.replace("djerba-branding", "plasma-foo"))
+        report = self.dpkgstate.repair(runner, wait=1)
+        self.assertFalse(report["repaired"])
+        self.assertEqual(report["forced"], [])
+        self.assertFalse(any("--force-overwrite" in c for c in calls))
+        self.assertIn("paquets tiers", report["message"])
+
+    @unittest.skipUnless(os.geteuid() == 0, "root requis (crochet APT)")
+    def test_apt_hook_schedules_repair_only_when_inconsistent(self) -> None:
+        calls: list = []
+        audit_output = {"text": ""}
+
+        def runner(argv, timeout=0):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, audit_output["text"] if argv[0] == "dpkg" else "", "")
+        saved = self.dpkgstate.SYSTEMD_RUNNING
+        self.dpkgstate.SYSTEMD_RUNNING = self.base
+        try:
+            self.assertFalse(self.dpkgstate.schedule(runner=runner))
+            audit_output["text"] = " djerba-branding   identité\n"
+            self.assertTrue(self.dpkgstate.schedule(runner=runner))
+        finally:
+            self.dpkgstate.SYSTEMD_RUNNING = saved
+        run = calls[-1]
+        self.assertEqual(run[0], "systemd-run")
+        self.assertIn("--no-block", run)
+        self.assertEqual(run[-2:], ["/usr/libexec/djerba-dpkg-repair", "--auto"])
+        hook = (PACKAGE_ROOT / "etc" / "apt" / "apt.conf.d" / "80djerba-dpkg-repair").read_text()
+        self.assertIn("DPkg::Post-Invoke", hook)
+        self.assertIn("--schedule >/dev/null 2>&1 || true", hook)  # ne fait jamais échouer APT
+
+    def test_auto_mode_leaves_healthy_system_alone(self) -> None:
+        calls: list = []
+
+        def runner(argv, timeout=0):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        self.assertFalse(self.dpkgstate.auto(runner)["repaired"])
+        self.assertEqual(calls, [["dpkg", "--audit"]])
+
+    @unittest.skipUnless(os.geteuid() == 0 and shutil.which("dpkg-deb") and shutil.which("dpkg-maintscript-helper"),
+                         "dpkg réel requis (conteneur Debian, root)")
+    def test_real_dpkg_conflict_with_desktop_base_is_resolved(self) -> None:
+        """Reproduit l'erreur signalée puis vérifie le correctif avec les vrais scripts du paquet."""
+        branding = ROOT / "packages" / "djerba-branding"
+        work = self.base / "work"
+        target = work / "root"
+        admin = target / "var" / "lib" / "dpkg"
+        for sub in ("updates", "info", "triggers"):
+            (admin / sub).mkdir(parents=True)
+        (admin / "status").write_text("")
+        (target / "usr" / "lib").mkdir(parents=True)
+        (target / "usr" / "lib" / "os-release").write_text("NAME=Debian\n")
+        dpkg = ["dpkg", f"--root={target}", "--force-script-chrootless", "--force-not-root", "--log=/dev/null"]
+        environment = dict(os.environ, LC_ALL="C.UTF-8")
+
+        def build(name: str, version: str, files: list[str], conffiles: list[str], extra: str = "",
+                  scripts: dict | None = None) -> Path:
+            stage = work / f"{name}-{version}"
+            (stage / "DEBIAN").mkdir(parents=True)
+            (stage / "DEBIAN" / "control").write_text(
+                f"Package: {name}\nVersion: {version}\nArchitecture: all\nMaintainer: t <t@t.invalid>\n"
+                f"{extra}Description: test\n")
+            (stage / "DEBIAN" / "conffiles").write_text("".join(f"{path}\n" for path in conffiles))
+            for script, text in (scripts or {}).items():
+                (stage / "DEBIAN" / script).write_text(text.replace("@VERSION@", version))
+                (stage / "DEBIAN" / script).chmod(0o755)
+            for path in files:
+                (stage / path.lstrip("/")).parent.mkdir(parents=True, exist_ok=True)
+                (stage / path.lstrip("/")).write_text(f"{name} {version}\n")
+            deb = work / f"{name}_{version}_all.deb"
+            subprocess.run(["dpkg-deb", "-Zxz", "--root-owner-group", "-b", str(stage), str(deb)],
+                           check=True, capture_output=True)
+            return deb
+
+        def run(*args: str) -> subprocess.CompletedProcess:
+            return subprocess.run([*dpkg, *args], capture_output=True, text=True, env=environ)
+
+        environ = environment
+        old_file = "/etc/xdg/kcm-about-distrorc"
+        new_file = "/etc/xdg/djerba/kcm-about-distrorc"
+        old = build("djerba-branding", "2026.10.30", [old_file], [old_file])
+        base = build("desktop-base", "13.0.4", [old_file], [old_file])
+        control = (branding / "DEBIAN" / "control.in").read_text()
+        relations = "".join(line + "\n" for line in control.splitlines()
+                            if line.startswith(("Replaces:", "Breaks:", "Conflicts:")))
+        self.assertIn("Replaces: desktop-base", relations)
+        self.assertIn("Breaks: desktop-base (<< 13.0.4)", relations)
+        self.assertIn("Conflicts: desktop-base (<< 13.0.4)", relations)
+        postinst = "#!/bin/sh\nset -e\n" + "".join(
+            line + "\n" for line in (branding / "DEBIAN" / "postinst").read_text().splitlines()
+            if line.startswith("dpkg-maintscript-helper"))
+        new = build("djerba-branding", "2026.10.31", [new_file], [new_file], relations,
+                    {"preinst": (branding / "DEBIAN" / "preinst").read_text(),
+                     "postrm": (branding / "DEBIAN" / "postrm").read_text(), "postinst": postinst})
+
+        self.assertEqual(run("-i", str(old)).returncode, 0)
+        failed = run("-i", str(base))
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertEqual(self.dpkgstate.conflicts(failed.stdout + failed.stderr)[0]["owner"], "djerba-branding")
+
+        upgraded = run("-i", str(new))
+        self.assertEqual(upgraded.returncode, 0, upgraded.stdout + upgraded.stderr)
+        installed = run("-i", str(base))
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        owners = run("-S", old_file, new_file).stdout
+        self.assertIn(f"desktop-base: {old_file}", owners)
+        self.assertIn(f"djerba-branding: {new_file}", owners)
+        self.assertFalse((target / "etc" / "xdg" / "kcm-about-distrorc.dpkg-remove").exists())
+        self.assertEqual(run("--audit").stdout.strip(), "")
+
+        # État incohérent (paquet décompressé, jamais configuré) : détecté puis réparé.
+        pending = build("gnome-shell", "48.7", ["/usr/share/gnome-shell/marker"], [])
+        self.assertEqual(run("--unpack", str(pending)).returncode, 0)
+        self.dpkgstate.DPKG_DIR = admin
+
+        def rooted(argv, timeout=0):
+            if argv[0] == "apt-get":
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            return subprocess.run([argv[0], *dpkg[1:], *argv[1:]], capture_output=True, text=True, env=environ)
+        self.assertEqual(self.dpkgstate.check(rooted)["packages"], ["gnome-shell"])
+        self.assertTrue(self.dpkgstate.repair(rooted, wait=1)["repaired"])
+        self.assertTrue(self.dpkgstate.check(rooted)["healthy"])
+
+
+class SessionSafetyTests(unittest.TestCase):
+    """Multi-bureau : une intégration défaillante ne fait jamais tomber la session."""
+
+    def test_failing_gnome_steps_degrade_silently(self) -> None:
+        from djerba_ai.ui import adapter, session_guard
+
+        class Broken(adapter.GnomeAdapter):
+            def install_integrations(self):
+                raise RuntimeError("gsettings: schéma org.gnome.gedit.plugins absent")
+
+            def apply_shortcut(self, name, sequence):
+                if name == "spotlight":
+                    raise OSError("gnome-extensions a planté")
+                return {"name": name, "applied": True, "message": "ok"}
+
+        class Settings(dict):
+            def get(self, key, default=None):
+                return {"shortcuts.spotlight": "Meta+Space", "shortcuts.clipboard": "Meta+Shift+C"}.get(key, default)
+
+        log = session_guard.STATE / "gnome-crash.log"
+        log.unlink(missing_ok=True)
+        report = adapter.sync(Settings(), Broken())
+        self.assertTrue(report["degraded"])
+        self.assertEqual(report["integrations"], [])
+        self.assertEqual([item["applied"] for item in report["shortcuts"]], [False, True])
+        text = log.read_text()
+        self.assertIn("composant=adapter.integrations", text)
+        self.assertIn("gnome-extensions a planté", text)
+
+    def test_safe_sync_never_raises(self) -> None:
+        from djerba_ai.ui import adapter
+        original = adapter.detect
+        adapter.detect = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("D-Bus mort"))
+        try:
+            report = adapter.safe_sync(FakeConfig())
+        finally:
+            adapter.detect = original
+        self.assertEqual(report["desktop"], "generic")
+
+    def test_window_source_failure_keeps_context_bus_alive(self) -> None:
+        from djerba_ai.ui import session_guard
+        status = session_guard.guarded("window-source", lambda: 1 / 0, default="dégradé", desktop="gnome")
+        self.assertEqual(status, "dégradé")
+        self.assertIn("ZeroDivisionError", (session_guard.STATE / "gnome-crash.log").read_text())
+
+    def test_root_daemon_writes_gnome_crash_log(self) -> None:
+        directory = Path(tempfile.mkdtemp()) / "log"
+        original = sysd.SESSION_LOG_DIR
+        sysd.SESSION_LOG_DIR = directory
+        sysd._session_reports.clear()
+        try:
+            dispatcher = sysd.Dispatcher(authorizer=lambda *_: True, verifier=TRUSTED)
+            result = dispatcher.dispatch("session.report", {"desktop": "gnome", "component": "org.gnome.Shell@wayland",
+                                                            "detail": "JS ERROR: boom\x1b[31m\nsegfault"}, 1, 1000)
+            self.assertTrue(result["success"])
+            path = directory / "gnome-crash.log"
+            text = path.read_text()
+            self.assertIn("uid=1000 composant=org.gnome.Shell@wayland", text)
+            self.assertIn("segfault", text)
+            self.assertNotIn("\x1b", text)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o640)
+            for bad in ({"desktop": "windows", "component": "x", "detail": "y"},
+                        {"desktop": "gnome", "component": "../etc", "detail": "y"},
+                        {"desktop": "gnome", "component": "x", "detail": ""}):
+                with self.assertRaises(ipc.RPCError):
+                    parse_rpc({"jsonrpc": "2.0", "id": 1, "method": "session.report", "params": bad})
+            for _ in range(sysd.SESSION_REPORTS_PER_HOUR):
+                dispatcher.dispatch("session.report", {"desktop": "gnome", "component": "x", "detail": "y"}, 1, 1001)
+            self.assertFalse(dispatcher.dispatch("session.report", {"desktop": "gnome", "component": "x",
+                                                                    "detail": "y"}, 1, 1001)["success"])
+            refused = sysd.Dispatcher(authorizer=lambda *_: True, verifier=lambda *_: (False, "inconnu"))
+            with self.assertRaises(ipc.RPCError):
+                refused.dispatch("session.report", {"desktop": "gnome", "component": "x", "detail": "y"}, 1, 1000)
+        finally:
+            sysd.SESSION_LOG_DIR = original
+
+    def test_gnome_extension_and_session_hooks(self) -> None:
+        extension = PACKAGE_ROOT / "usr" / "share" / "gnome-shell" / "extensions" / "djerba@djerba-os.org"
+        metadata = json.loads((extension / "metadata.json").read_text())
+        self.assertIn("48", metadata["shell-version"])  # GNOME Shell 48 de Debian 13
+        source = (extension / "extension.js").read_text()
+        for method in ("enable() {", "disable() {", "_report() {"):
+            body = source.split(method, 1)[1].split("\n    }\n", 1)[0]
+            self.assertIn("try {", body, method)
+        user_units = PACKAGE_ROOT / "usr" / "lib" / "systemd" / "user"
+        for unit in ("org.gnome.Shell@wayland.service.d", "org.gnome.Shell@x11.service.d"):
+            self.assertIn("OnFailure=djerba-gnome-crash.service", (user_units / unit / "djerba-crash-report.conf")
+                          .read_text())
+        self.assertIn("session-report gnome", (user_units / "djerba-gnome-crash.service").read_text())
+
+    def test_gnome_catalog_entry_is_complete_without_gdm(self) -> None:
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader("djerba_apps", str(PACKAGE_ROOT / "usr" / "bin" / "djerba-apps"))
+        spec = importlib.util.spec_from_loader("djerba_apps", loader)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["djerba_apps"] = module  # dataclasses résout le module par son nom
+        loader.exec_module(module)
+        _categories, apps = module.load_catalog(PACKAGE_ROOT / "usr" / "share" / "djerba" / "apps.yaml")
+        gnome = next(app for app in apps if app.id == "gnome-desktop")
+        for package in ("gnome-session", "gnome-shell", "xwayland", "dbus-user-session", "gnome-settings-daemon"):
+            self.assertIn(package, gnome.apt_packages)
+        self.assertEqual(gnome.apt_exclude, ["gdm3"])
+        self.assertIn("/usr/share/wayland-sessions/gnome.desktop", gnome.verify)
+        broken = Path(tempfile.mkdtemp()) / "apps.yaml"
+        broken.write_text((PACKAGE_ROOT / "usr" / "share" / "djerba" / "apps.yaml").read_text()
+                          .replace("exclude: [gdm3]", "exclude: ['gdm3; rm -rf /']"))
+        with self.assertRaises(module.CatalogError):
+            module.load_catalog(broken)
+
+
+class BrandingPackageTests(unittest.TestCase):
+    def test_desktop_base_file_no_longer_claimed(self) -> None:
+        branding = ROOT / "packages" / "djerba-branding"
+        self.assertFalse((branding / "root" / "etc" / "xdg" / "kcm-about-distrorc").exists())
+        self.assertTrue((branding / "root" / "etc" / "xdg" / "djerba" / "kcm-about-distrorc").exists())
+        self.assertNotIn("/etc/xdg/kcm-about-distrorc\n", (branding / "DEBIAN" / "conffiles").read_text())
+        env = (branding / "root" / "etc" / "xdg" / "plasma-workspace" / "env" / "djerba-xdg.sh").read_text()
+        result = subprocess.run(["sh", "-c", f"{env}\nprintf %s \"$XDG_CONFIG_DIRS\""], capture_output=True,
+                                text=True, env={"PATH": os.environ["PATH"]})
+        self.assertEqual(result.stdout, "/etc/xdg/djerba:/etc/xdg")
+        twice = subprocess.run(["sh", "-c", f"{env}\n{env}\nprintf %s \"$XDG_CONFIG_DIRS\""], capture_output=True,
+                               text=True, env={"PATH": os.environ["PATH"]})
+        self.assertEqual(twice.stdout, "/etc/xdg/djerba:/etc/xdg")
+        for script in ("preinst", "postinst", "postrm"):
+            self.assertIn("rm_conffile /etc/xdg/kcm-about-distrorc", (branding / "DEBIAN" / script).read_text())
+        self.assertIn("djerba-dpkg-repair --auto", (branding / "DEBIAN" / "postinst").read_text())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

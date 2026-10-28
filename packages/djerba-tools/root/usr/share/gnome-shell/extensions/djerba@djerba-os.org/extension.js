@@ -18,45 +18,66 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 const BUS_NAME = 'org.djerba.ai.Context';
 
 export default class DjerbaExtension extends Extension {
+    // Toute erreur est contenue : l'extension passe en mode dégradé (journalisé), jamais
+    // GNOME Shell ni Mutter. Les erreurs « Djerba » du journal sont reprises dans
+    // /var/log/djerba/gnome-crash.log par le rapport de session de l'agent.
     enable() {
-        this._focusId = global.display.connect('notify::focus-window', () => this._report());
-        this._button = new PanelMenu.Button(0.0, 'Djerba', true);
-        this._button.add_child(new St.Icon({icon_name: 'djerba-ai', style_class: 'system-status-icon',
-                                            fallback_icon_name: 'system-search-symbolic'}));
-        this._button.connect('button-press-event', () => {
-            try {
-                Gio.Subprocess.new(['djerba-ai', '--hud'], Gio.SubprocessFlags.NONE);
-            } catch (error) {
-                console.error(`Djerba : ${error.message}`);
-            }
-        });
-        Main.panel.addToStatusArea(this.uuid, this._button);
+        try {
+            this._focusId = global.display.connect('notify::focus-window', () => this._report());
+        } catch (error) {
+            this._focusId = null;
+            console.error(`Djerba : fenêtre active indisponible (mode dégradé) : ${error}`);
+        }
+        try {
+            this._button = new PanelMenu.Button(0.0, 'Djerba', true);
+            this._button.add_child(new St.Icon({icon_name: 'djerba-ai', style_class: 'system-status-icon',
+                                                fallback_icon_name: 'system-search-symbolic'}));
+            this._button.connect('button-press-event', () => {
+                try {
+                    Gio.Subprocess.new(['djerba-ai', '--hud'], Gio.SubprocessFlags.NONE);
+                } catch (error) {
+                    console.error(`Djerba : ${error.message}`);
+                }
+            });
+            Main.panel.addToStatusArea(this.uuid, this._button);
+        } catch (error) {
+            this._button?.destroy();
+            this._button = null;
+            console.error(`Djerba : bouton de la barre supérieure indisponible (mode dégradé) : ${error}`);
+        }
         this._report();
     }
 
     disable() {
-        if (this._focusId) {
-            global.display.disconnect(this._focusId);
-            this._focusId = null;
+        try {
+            if (this._focusId)
+                global.display.disconnect(this._focusId);
+        } catch (error) {
+            console.error(`Djerba : ${error}`);
         }
+        this._focusId = null;
         this._button?.destroy();
         this._button = null;
     }
 
     _report() {
-        const window = global.display.focus_window;
-        const parameters = new GLib.Variant('(ssi)', [
-            window ? window.get_title() ?? '' : '',
-            window ? window.get_wm_class() ?? '' : '',
-            window ? window.get_pid() : 0,
-        ]);
-        Gio.DBus.session.call(BUS_NAME, '/Context', BUS_NAME, 'ActiveWindow', parameters, null,
-            Gio.DBusCallFlags.NO_AUTO_START, 1000, null, (connection, result) => {
-                try {
-                    connection.call_finish(result);
-                } catch {
-                    // démon de l'agent absent : rien à signaler
-                }
-            });
+        try {
+            const window = global.display.focus_window;
+            const parameters = new GLib.Variant('(ssi)', [
+                window ? window.get_title() ?? '' : '',
+                window ? window.get_wm_class() ?? '' : '',
+                window ? window.get_pid() : 0,
+            ]);
+            Gio.DBus.session.call(BUS_NAME, '/Context', BUS_NAME, 'ActiveWindow', parameters, null,
+                Gio.DBusCallFlags.NO_AUTO_START, 1000, null, (connection, result) => {
+                    try {
+                        connection.call_finish(result);
+                    } catch {
+                        // démon de l'agent absent : rien à signaler
+                    }
+                });
+        } catch (error) {
+            console.error(`Djerba : fenêtre active non transmise : ${error}`);
+        }
     }
 }
