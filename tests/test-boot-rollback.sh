@@ -41,11 +41,8 @@ mkdir -p "${OUT}"
 [[ "$(id -u)" == 0 ]] || { echo "[rollback] à exécuter en root (image de construction)" >&2; exit 2; }
 
 detach() {
-    # Partitions device-mapper du repli, puis tous les loops de l'image.
+    # Tous les loops de l'image (disque entier et, en repli, un par partition).
     local device
-    for device in djerba-rollback-p1 djerba-rollback-p2; do
-        if dmsetup info "${device}" >/dev/null 2>&1; then dmsetup remove "${device}"; fi
-    done
     while read -r device; do
         if [[ -n "${device}" ]]; then losetup -d "${device}"; fi
     done < <(losetup -j "${IMAGE}" -O NAME -n 2>/dev/null)
@@ -72,20 +69,17 @@ truncate -s 6G "${IMAGE}"
 printf 'label: gpt\nsize=256MiB, type=uefi, name=ESP\ntype=linux, name=racine\n' | sfdisk -q "${IMAGE}"
 LOOP="$(losetup -P --show -f "${IMAGE}")"
 udevadm settle 2>/dev/null || sleep 2
+LOOP_PARTITIONS=0
 ESP_DEV="${LOOP}p1"
 ROOT_DEV="${LOOP}p2"
 if [[ ! -e "/sys/class/block/$(basename "${LOOP}")p1" ]]; then
-    # Noyau sans balayage des partitions des périphériques loop (certains conteneurs) : chaque partition
-    # exposée par device-mapper (cible linéaire au décalage lu dans la table GPT). Pas un loop à décalage :
-    # GRUB (10_linux) remplace une racine /dev/loopN par son fichier et ne génère alors aucune entrée.
+    # Noyau sans balayage des partitions des périphériques loop (certains conteneurs) : un loop par
+    # partition, au décalage lu dans la table GPT (mêmes octets, mêmes systèmes de fichiers).
     PARTS=()
-    index=0
     while read -r start sectors; do
-        index=$((index + 1))
-        dmsetup create "djerba-rollback-p${index}" --table "0 ${sectors} linear ${LOOP} ${start}"
-        PARTS+=("/dev/mapper/djerba-rollback-p${index}")
+        PARTS+=("$(losetup --show -f -o $((start * 512)) --sizelimit $((sectors * 512)) "${IMAGE}")")
     done < <(partx -g -o START,SECTORS "${LOOP}")
-    dmsetup mknodes
+    LOOP_PARTITIONS=1
     ESP_DEV="${PARTS[0]}"
     ROOT_DEV="${PARTS[1]}"
 else
@@ -231,7 +225,14 @@ if [[ -n "${ESP_STAGING}" ]]; then
     mcopy -s -o -i "${ESP_DEV}" "${ESP_STAGING}"/* ::/
     mdir -/ -i "${ESP_DEV}" ::/EFI/BOOT | grep -qi "BOOTX64" || { echo "[rollback] ESP sans BOOTX64.EFI" >&2; exit 1; }
 fi
+if [[ ${LOOP_PARTITIONS} -eq 1 ]]; then
+    # Racine sur un loop entier : 10_linux de GRUB l'écarte (« loop-mounted from files ») ; on lui donne le
+    # périphérique qu'aura la VM (lu après la détection ; root= reste l'UUID détecté). Retiré ensuite.
+    mkdir -p "${TARGET}/etc/default/grub.d"
+    echo 'GRUB_DEVICE=/dev/vda2' >"${TARGET}/etc/default/grub.d/99-djerba-test.cfg"
+fi
 chroot "${TARGET}" update-grub >>"${OUT}/rollback-grub.log" 2>&1 || { cat "${OUT}/rollback-grub.log"; exit 1; }
+rm -f "${TARGET}/etc/default/grub.d/99-djerba-test.cfg"
 if ! grep -q "subvol=/@\|subvol=@" "${TARGET}/boot/grub/grub.cfg"; then
     echo "[rollback] grub.cfg sans racine Btrfs @ ; diagnostic de 10_linux :" >&2
     # shellcheck disable=SC2016  # développé dans le chroot
