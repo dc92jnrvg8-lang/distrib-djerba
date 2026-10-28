@@ -270,6 +270,32 @@ def engine_health(engine: dict, secret: str, timeout: float = 10) -> dict:
         return {"ok": False, "detail": str(exc)}
 
 
+HISTORY_MAX = 32 * 1024 * 1024
+
+
+def jarvis_history(engine: dict, secret: str, timeout: float = 60) -> dict:
+    """Historique exporté par Jarvis (contrat §4, ``GET /v1/history``), lu par le démon root : le jeton
+    ne quitte jamais root, seul l'historique est rendu à la session."""
+    if engine.get("kind") != "jarvis":
+        raise EngineError("import d'historique : moteur Jarvis attendu")
+    endpoint = str(engine.get("endpoint", "")).rstrip("/")
+    try:
+        with llm._request(f"{endpoint}/v1/history", timeout=timeout,
+                          headers={"Authorization": f"Bearer {secret}"}) as response:
+            body = response.read(HISTORY_MAX + 1)
+    except llm.LLMError as exc:
+        raise EngineError(f"historique de Jarvis indisponible : {exc}") from exc
+    if len(body) > HISTORY_MAX:
+        raise EngineError("historique de Jarvis trop volumineux (32 Mio au plus)")
+    try:
+        data = json.loads(body)
+    except ValueError as exc:
+        raise EngineError("historique de Jarvis illisible (JSON attendu)") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("conversations"), list):
+        raise EngineError("historique de Jarvis : liste « conversations » attendue")
+    return {"conversations": data["conversations"]}
+
+
 def pair_jarvis(address: str, code: str, client: str = "") -> dict:
     """Appairage (contrat Jarvis) : échange du code à 6 chiffres affiché par Jarvis contre un jeton."""
     if not private_address(address):

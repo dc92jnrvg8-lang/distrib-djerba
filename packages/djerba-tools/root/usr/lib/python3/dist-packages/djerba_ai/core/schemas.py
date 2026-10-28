@@ -212,6 +212,8 @@ class SessionState(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     conversation: int
+    #: clé unique de la conversation (un identifiant numérique supprimé peut être réutilisé par SQLite)
+    key: str = ""
     messages: list[dict] = Field(default_factory=list)
     active_tools: list[str] = Field(default_factory=list)
     provider: str = ""
@@ -440,6 +442,11 @@ class TxSinceParams(Strict):
     since: Annotated[StrictStr, Field(pattern=SINCE)]
 
 
+class TxSessionParams(Strict):
+    #: clé de conversation (historique, phase 4) ou ancien identifiant numérique
+    session: Annotated[StrictStr, Field(pattern=r"^([0-9a-f]{32}|\d{1,12})$")]
+
+
 RPC_PARAMS: dict[str, type[Strict]] = {
     "sys.ping": NoParams,
     "sys.metrics": NoParams,
@@ -467,6 +474,8 @@ RPC_PARAMS: dict[str, type[Strict]] = {
     "tx.show": TxIdParams,
     "tx.undo": TxUndoParams,
     "tx.undo_since": TxSinceParams,
+    "tx.undo_session": TxSessionParams,
+    "engines.jarvis_history": EngineIdParams,
     "policy.check": PolicyCheckParams,
     "policy.status": NoParams,
     "policy.set_mode": PolicyModeParams,

@@ -335,6 +335,22 @@ class Journal:
                 "message": f"{len(results)} transaction(s) annulée(s)"
                            + (f", {len(errors)} impossible(s)" if errors else "")}
 
+    def undo_session(self, session: str, uid: int) -> dict:
+        """Annule, du plus récent au plus ancien, les transactions d'une conversation (session) — celles
+        de l'appelant seulement : une conversation n'engage que l'utilisateur qui l'a tenue."""
+        with self._connect() as connection:
+            rows = connection.execute("SELECT id FROM transactions WHERE session = ? AND uid = ? AND state = ? "
+                                      "ORDER BY rowid DESC", (session, uid, APPLIED)).fetchall()
+        results, errors = [], []
+        for row in rows:
+            try:
+                results.append(self.undo(row["id"], uid=uid))
+            except TransactionError as exc:
+                errors.append(f"{row['id']} : {exc}")
+        return {"undone": [item["id"] for item in results], "errors": errors,
+                "message": f"{len(results)} action(s) de la conversation annulée(s)"
+                           + (f", {len(errors)} impossible(s)" if errors else "")}
+
     def prune(self, keep: int = KEEP, days: int = KEEP_DAYS) -> None:
         """Sauvegardes conservées : les ``keep`` dernières transactions et au plus ``days`` jours."""
         limit = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(time.time() - days * 86400))

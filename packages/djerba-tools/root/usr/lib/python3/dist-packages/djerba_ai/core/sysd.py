@@ -959,6 +959,14 @@ class Dispatcher:
         if method in ("engines.save", "engines.remove", "engines.set_profile", "engines.pair_jarvis"):
             self.require(pid, uid, ACTION_CONFIGURE)
             return self.guarded(method, params, pid, uid, lambda: engines_change(method, params))
+        if method == "engines.jarvis_history":
+            self.require(pid, uid, ACTION_CLOUD)
+            from djerba_ai.core import engines as engine_registry
+            try:
+                engine, secret = engine_registry.EngineStore().get(str(params["id"]))
+                return engine_registry.jarvis_history(engine, secret)
+            except engine_registry.EngineError as exc:
+                raise ipc.RPCError(ipc.TOOL_FAILED, str(exc)) from exc
         if method in ("llm.engine_chat", "llm.engine_health"):
             self.require(pid, uid, ACTION_CLOUD)
             from djerba_ai.core import engines as engine_registry
@@ -1024,13 +1032,16 @@ class Dispatcher:
                 return found
             since = str(params["since"]).replace(" ", "T") if params.get("since") else None
             return {"transactions": self.journal().list(int(params.get("limit", 50)), since)}
-        if method in ("tx.undo", "tx.undo_since"):
+        if method in ("tx.undo", "tx.undo_since", "tx.undo_session"):
             self.require(pid, uid, ACTION_UNDO)
             from djerba_ai.core.transactions import TransactionError
             try:
                 if method == "tx.undo":
                     report = self.journal().undo(str(params["id"]), uid=uid, force=bool(params.get("force")))
                     return {"success": report["state"] != "annulation partielle", **report}
+                if method == "tx.undo_session":
+                    result = self.journal().undo_session(str(params["session"]), uid)
+                    return {"success": not result["errors"], **result}
                 result = self.journal().undo_since(str(params["since"]).replace(" ", "T"), uid=uid)
                 return {"success": not result["errors"], **result}
             except TransactionError as exc:
