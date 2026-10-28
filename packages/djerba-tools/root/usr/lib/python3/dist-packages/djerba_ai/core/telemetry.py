@@ -43,6 +43,7 @@ HELP = {
     "djerba_context_age_seconds": ("gauge", "Âge du dernier instantané du bus de contexte"),
     "djerba_sysd_requests_total": ("counter", "Requêtes reçues par le démon root"),
     "djerba_sysd_denied_total": ("counter", "Requêtes refusées par le démon root"),
+    "djerba_policy_refusals_total": ("counter", "Actions refusées par la politique d'autonomie"),
     "djerba_sysd_latency_seconds": ("histogram", "Durée de traitement d'une requête du démon root"),
     "djerba_up": ("gauge", "Le démon de télémétrie répond"),
 }

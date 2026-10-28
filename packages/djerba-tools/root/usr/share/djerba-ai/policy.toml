@@ -1,0 +1,155 @@
+# Djerba OS — politique d'autonomie de l'agent (lue par le démon root djerba-ai-sysd).
+#
+# Livrée par le paquet djerba-tools, en lecture seule : aucune méthode du démon
+# ne l'écrit et son chemin est interdit à tous les outils. Elle est identique
+# pour tous les moteurs d'IA (local, Tailscale, Jarvis, API en ligne).
+#
+# Niveaux (par réversibilité) :
+#   0  lecture, diagnostic, recherche : libre
+#   1  réversible et local (service, caches, paquet, réglage de l'utilisateur) :
+#      autonome, transaction annulable
+#   2  système sensible (/etc, noyau, GRUB, pare-feu, pilotes, code déployé) :
+#      autonome, transaction + vérification + rollback auto + notification
+#   3  irréversible (données de l'utilisateur, instantanés, effacement) :
+#      jamais en autonomie ; mode « total » seulement, avec authentification
+#
+# Outils absents des listes : niveau 0 s'ils lisent, 2 s'ils modifient le
+# système en root (règle prudente pour tout nouvel outil root).
+version = 1
+
+[niveaux]
+# --- niveau 3 : irréversible
+secure_delete = 3
+os_path_delete = 3
+memory_forget = 3
+app_delete = 3
+snapshot_delete = 3
+
+# --- niveau 2 : système sensible
+apt_full_upgrade = 2
+apt_autoremove = 2
+btrfs_balance = 2
+service_disable = 2
+os_pkg_purge = 2
+os_sys_chmod = 2
+os_sys_chown = 2
+os_sys_file_write = 2
+grub_timeout = 2
+grub_update = 2
+initramfs_update = 2
+hostname_set = 2
+sddm_autologin = 2
+mac_randomize = 2
+mac_restore = 2
+ufw_allow_port = 2
+ufw_delete_rule = 2
+ufw_deny_port = 2
+ufw_disable = 2
+ufw_enable = 2
+anonsurf_start = 2
+anonsurf_stop = 2
+multilib_enable = 2
+swappiness_set = 2
+self_update = 2
+patch_deploy = 2
+patch_rollback = 2
+apparmor_load = 2
+poweroff = 2
+reboot = 2
+
+# --- niveau 1 : réversible et local (root)
+apps_install = 1
+apps_remove = 1
+apps_retry_pending = 1
+apt_install = 1
+apt_remove = 1
+apt_clean = 1
+apt_fix_broken = 1
+apt_update = 1
+dpkg_configure_pending = 1
+flatpak_install = 1
+flatpak_remove = 1
+flatpak_unused = 1
+flatpak_update = 1
+heroic_install = 1
+lutris_install = 1
+steam_install = 1
+wine_install = 1
+btrfs_scrub_start = 1
+fstrim_all = 1
+journal_vacuum = 1
+service_enable = 1
+service_restart = 1
+os_pkg_install = 1
+os_pkg_remove = 1
+os_pkg_update = 1
+drop_caches = 1
+cpupower_governor = 1
+anonsurf_new_identity = 1
+antivirus_update = 1
+dns_flush = 1
+timezone_set = 1
+
+# --- niveau 1 : réversible et local (utilisateur)
+settings_set = 1
+brain_switch = 1
+model_pull = 1
+model_set = 1
+ollama_install = 1
+venv_install = 1
+plugin_enable = 1
+plugin_disable = 1
+app_revert = 1
+os_file_write = 1
+os_path_move = 1
+os_chmod = 1
+os_dir_create = 1
+os_path_copy = 1
+user_cache_clean = 1
+kill_process = 1
+renice_process = 1
+cgroup_cpu_weight = 1
+power_profile_set = 1
+kwin_compositor = 1
+kwin_effects = 1
+kwin_tearing = 1
+mangohud_toggle = 1
+fps_limit = 1
+game_optimizer = 1
+theme_apply = 1
+colorscheme_apply = 1
+wallpaper_set = 1
+dark_mode = 1
+night_light = 1
+screen_mode = 1
+screen_scale = 1
+screen_vrr = 1
+volume_set = 1
+mute_toggle = 1
+audio_default = 1
+keyboard_layout = 1
+undercover_on = 1
+undercover_off = 1
+default_browser_set = 1
+bluetooth_connect = 1
+bluetooth_disconnect = 1
+bluetooth_pair = 1
+bluetooth_power = 1
+rfkill_unblock = 1
+wifi_connect = 1
+suspend = 1
+proton_install_ge = 1
+transaction_undo = 1
+
+[racines]
+# Seuls endroits où les outils d'écriture root (os_sys_file_write, os_sys_chown,
+# os_sys_chmod) peuvent agir (après résolution des liens symboliques).
+ecriture_root = ["/etc", "/usr/local", "/opt", "/srv"]
+
+[plafonds]
+# Actions de niveau ≥ 1 par session et par minute.
+par_minute = 20
+# Actions de niveau ≥ 1 en tout, par fenêtre de dix minutes.
+par_dix_minutes = 60
+# Même action (outil + paramètres identiques) au plus N fois par heure.
+repetitions = 3

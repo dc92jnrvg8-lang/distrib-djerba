@@ -76,6 +76,10 @@ SCHEMA: dict[str, dict[str, Any]] = {
                            "pattern": r"^(https://[^\s\x00]{3,300}|http://(127\.0\.0\.1|localhost)(:\d{1,5})?(/[^\s\x00]*)?)?$"},
     "llm.cloud.model": {"type": "string", "default": "gpt-4o-mini", "pattern": MODEL},
     "llm.cloud.api_key": {"type": "string", "default": "", "secret": True, "pattern": r"^[\x21-\x7e]{0,400}$"},
+    # Politique d'autonomie (core/policy.py) : modifiable seulement par policy.set_mode / policy.set_caps
+    # (authentification administrateur), jamais par config.set ni par l'agent.
+    "policy.mode": {"type": "string", "default": "autonome", "enum": ["prudent", "autonome", "total"]},
+    "policy.engine_caps": {"type": "list", "default": [], "pattern": r"^[a-z][a-z0-9_-]{0,30}:[0-3]$"},
     # Agent
     "agent.autonomy": {"type": "string", "default": "ask", "enum": ["ask", "safe"]},
     "agent.web_search": {"type": "boolean", "default": True},
