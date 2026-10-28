@@ -101,8 +101,9 @@ identité livrée **par des paquets Debian** construits dans ce dépôt :
   icônes, fonds d'écran, thèmes globaux Plasma, Plymouth, SDDM, GRUB
   (`/etc/default/grub.d/djerba.cfg`), page « À propos de ce système »
   (`/etc/xdg/djerba/kcm-about-distrorc`, placé en tête de `XDG_CONFIG_DIRS`
-  par `/etc/xdg/plasma-workspace/env/djerba-xdg.sh`, pour la seule session
-  Plasma). `/etc/xdg/kcm-about-distrorc` reste à `desktop-base` : aucun
+  par `/etc/xdg/plasma-workspace/env/djerba-xdg.sh` et
+  `/usr/lib/environment.d/60-djerba-xdg.conf` ; ce dossier ne contient que des
+  fichiers de configuration KDE, sans effet sur GNOME). `/etc/xdg/kcm-about-distrorc` reste à `desktop-base` : aucun
   conflit de fichiers quand Discover ou GNOME tirent ce paquet Debian
   (`Replaces: desktop-base`, `Breaks`/`Conflicts: desktop-base (<< 13.0.4)` ;
   l'ancien conffile est retiré par `dpkg-maintscript-helper rm_conffile`).

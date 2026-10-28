@@ -97,6 +97,7 @@ check "Identité Djerba OS (os-release)" sh -c "unsquashfs -cat '${SQUASHFS}' /u
 check "/etc/os-release régénéré par djerba-branding" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/os-release | grep -q '^PRETTY_NAME=\"Djerba OS'"
 check "Logo Djerba pour « À propos »" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/xdg/djerba/kcm-about-distrorc | grep -q 'LogoPath=/usr/share/pixmaps/djerba-os.png'"
 check "/etc/xdg/kcm-about-distrorc laissé à desktop-base (aucun conflit dpkg)" sh -c "! grep -qE ' squashfs-root/etc/xdg/kcm-about-distrorc( |\$)' '${WORK}/rootfs.list'"
+check "XDG_CONFIG_DIRS des services de session (environment.d)" sh -c "unsquashfs -cat '${SQUASHFS}' /usr/lib/environment.d/60-djerba-xdg.conf | grep -q '^XDG_CONFIG_DIRS=/etc/xdg/djerba:'"
 check "XDG_CONFIG_DIRS de Plasma : /etc/xdg/djerba prioritaire" sh -c "unsquashfs -cat '${SQUASHFS}' /etc/xdg/plasma-workspace/env/djerba-xdg.sh | grep -q '/etc/xdg/djerba:'"
 check "Icône djerba-os (hicolor)" sq_has "/usr/share/icons/hicolor/scalable/apps/djerba-os.svg"
 check "live-boot" sq_has "/usr/share/initramfs-tools/scripts/live"
