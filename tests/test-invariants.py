@@ -381,13 +381,22 @@ class InvariantTests(Fixture):
     def test_invariant_15_garde_des_gardes(self) -> None:
         guard = ROOT / "tests" / "check-guards.py"
         self.assertTrue(guard.is_file(), "aucun contrôle des gardes")
-        work = Path(tempfile.mkdtemp())
-        # Dépôt monté dans un conteneur (autre propriétaire) : déclaré sûr pour ces seules commandes.
-        safe = ["git", "-c", "safe.directory=*"]
-        subprocess.run([*safe, "clone", "-q", "--depth", "1", f"file://{ROOT}", str(work / "depot")], check=True)
-        depot = work / "depot"
-        subprocess.run([*safe, "-C", str(depot), "config", "user.email", "t@t"], check=True)
-        subprocess.run([*safe, "-C", str(depot), "config", "user.name", "t"], check=True)
+        # Dépôt jetable avec les seuls fichiers surveillés par la garde : indépendant de l'état git de la
+        # copie de travail (copie superficielle ou d'un autre propriétaire dans la CI).
+        import shutil
+        depot = Path(tempfile.mkdtemp()) / "depot"
+        for relative in ("tests", ".github/CODEOWNERS", "packages/djerba-tools/root/usr/share/djerba-ai",
+                         "packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/core/policy.py",
+                         "packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/core/config.py"):
+            source, target = ROOT / relative, depot / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_dir():
+                shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__", "out"))
+            else:
+                shutil.copy2(source, target)
+        safe = ["git", "-c", "safe.directory=*", "-c", "user.email=t@t", "-c", "user.name=t"]
+        for command in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "base"]):
+            subprocess.run([*safe, "-C", str(depot), *command], check=True)
 
         def verdict(change) -> int:
             subprocess.run([*safe, "-C", str(depot), "reset", "-q", "--hard"], check=True)
