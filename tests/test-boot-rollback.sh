@@ -224,8 +224,13 @@ if [[ -n "${ESP_STAGING}" ]]; then
     mdir -/ -i "${ESP_DEV}" ::/EFI/BOOT | grep -qi "BOOTX64" || { echo "[rollback] ESP sans BOOTX64.EFI" >&2; exit 1; }
 fi
 chroot "${TARGET}" update-grub >>"${OUT}/rollback-grub.log" 2>&1 || { cat "${OUT}/rollback-grub.log"; exit 1; }
-grep -q "subvol=/@\|subvol=@" "${TARGET}/boot/grub/grub.cfg" \
-    || { echo "[rollback] grub.cfg sans racine Btrfs @" >&2; exit 1; }
+if ! grep -q "subvol=/@\|subvol=@" "${TARGET}/boot/grub/grub.cfg"; then
+    echo "[rollback] grub.cfg sans racine Btrfs @ ; diagnostic de 10_linux :" >&2
+    # shellcheck disable=SC2016  # développé dans le chroot
+    chroot "${TARGET}" sh -c 'GRUB_DEVICE="$(grub-probe --target=device /)"; echo "périphérique : ${GRUB_DEVICE}";
+        grub-probe --target=fs_uuid / ; sh -x /etc/grub.d/10_linux' 2>&1 | tail -n 40 >&2
+    exit 1
+fi
 if grep -q "djerba-last-good" "${TARGET}/boot/grub/grub.cfg"; then
     echo "[rollback] entrée de restauration présente avant tout démarrage réussi" >&2
     exit 1
