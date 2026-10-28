@@ -61,6 +61,9 @@ class BaseTool(ABC):
     requires_root: bool = False
     #: action à faire confirmer par l'utilisateur (suppression, redémarrage…)
     dangerous: bool = False
+    #: outil root qui modifie le système : exécuté dans une transaction annulable
+    #: (sauvegarde préalable, vérification, undo) ; False pour la lecture seule
+    mutates: bool = True
     #: {"nom": {"type": "string"|"integer"|"boolean", "description": …,
     #:          "enum": […], "pattern": …, "minimum": …, "maximum": …, "default": …}}
     parameters: dict[str, dict[str, Any]] = {}
@@ -237,14 +240,14 @@ class CommandTool(BaseTool):
 def command_tool(name: str, category: str, description: str, argv: list[str], *,
                  parameters: dict | None = None, required: tuple[str, ...] = (),
                  requires_root: bool = False, dangerous: bool = False, keywords: tuple[str, ...] = (),
-                 binaries: tuple[str, ...] | None = None, timeout: int = 120, done: str = "Terminé.",
+                 mutates: bool = True, binaries: tuple[str, ...] | None = None, timeout: int = 120, done: str = "Terminé.",
                  success_codes: tuple[int, ...] = (0,), env: dict | None = None,
                  parser: Callable[[str], Any] | None = None) -> type[CommandTool]:
     """Fabrique une classe d'outil à partir d'une commande (catalogues déclaratifs)."""
     attributes = {
         "name": name, "category": category, "description": description, "argv": tuple(argv),
         "parameters": parameters or {}, "required": required, "requires_root": requires_root,
-        "dangerous": dangerous, "keywords": keywords, "timeout": timeout, "done": done,
+        "dangerous": dangerous, "keywords": keywords, "timeout": timeout, "done": done, "mutates": mutates,
         "success_codes": success_codes, "env": env or {},
         "binaries": binaries if binaries is not None else (argv[0],),
         "parser": staticmethod(parser) if parser else None,
@@ -264,12 +267,12 @@ class FunctionTool(BaseTool):
 
 def function_tool(name: str, category: str, description: str, handler: Callable[[dict, bool], Result], *,
                   parameters: dict | None = None, required: tuple[str, ...] = (),
-                  requires_root: bool = False, dangerous: bool = False,
+                  requires_root: bool = False, dangerous: bool = False, mutates: bool = True,
                   keywords: tuple[str, ...] = (), binaries: tuple[str, ...] = ()) -> type[FunctionTool]:
     attributes = {
         "name": name, "category": category, "description": description, "handler": staticmethod(handler),
         "parameters": parameters or {}, "required": required, "requires_root": requires_root,
-        "dangerous": dangerous, "keywords": keywords, "binaries": binaries,
+        "dangerous": dangerous, "keywords": keywords, "binaries": binaries, "mutates": mutates,
     }
     class_name = "".join(part.capitalize() for part in re.split(r"[_.]", name)) + "Tool"
     return type(class_name, (FunctionTool,), attributes)
