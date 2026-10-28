@@ -112,7 +112,7 @@ mkdir -p "${TARGET}/boot/efi"
 # partition FAT par mtools ; la VM, elle, monte la vraie ESP.
 ESP_STAGING=""
 if mount "${ESP_DEV}" "${TARGET}/boot/efi" 2>/dev/null; then :; else
-    ESP_STAGING="${WORK}/esp"
+    ESP_STAGING="${TOP}/esp-preparation"  # sur un vrai périphérique bloc (grub-install le sonde)
     mkdir -p "${ESP_STAGING}"
     mount --bind "${ESP_STAGING}" "${TARGET}/boot/efi"
     log "pilote FAT absent sur l'hôte : ESP copiée par mtools"
@@ -209,6 +209,9 @@ chroot "${TARGET}" grub-install --target=x86_64-efi --efi-directory=/boot/efi --
 if [[ -n "${ESP_STAGING}" ]]; then
     mcopy -s -o -i "${ESP_DEV}" "${ESP_STAGING}"/* ::/
     mdir -/ -i "${ESP_DEV}" ::/EFI/BOOT | grep -qi "BOOTX64" || { echo "[rollback] ESP sans BOOTX64.EFI" >&2; exit 1; }
+    umount "${TARGET}/boot/efi"
+    rm -rf "${ESP_STAGING}"
+    mount --bind "${WORK}" "${TARGET}/boot/efi"  # point de montage pour la suite (démonté avant QEMU)
 fi
 chroot "${TARGET}" update-grub >>"${OUT}/rollback-grub.log" 2>&1 || { cat "${OUT}/rollback-grub.log"; exit 1; }
 grep -q "subvol=/@\|subvol=@" "${TARGET}/boot/grub/grub.cfg" \
