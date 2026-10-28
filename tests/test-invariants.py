@@ -382,13 +382,15 @@ class InvariantTests(Fixture):
         guard = ROOT / "tests" / "check-guards.py"
         self.assertTrue(guard.is_file(), "aucun contrôle des gardes")
         work = Path(tempfile.mkdtemp())
-        subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{ROOT}", str(work / "depot")], check=True)
+        # Dépôt monté dans un conteneur (autre propriétaire) : déclaré sûr pour ces seules commandes.
+        safe = ["git", "-c", "safe.directory=*"]
+        subprocess.run([*safe, "clone", "-q", "--depth", "1", f"file://{ROOT}", str(work / "depot")], check=True)
         depot = work / "depot"
-        subprocess.run(["git", "-C", str(depot), "config", "user.email", "t@t"], check=True)
-        subprocess.run(["git", "-C", str(depot), "config", "user.name", "t"], check=True)
+        subprocess.run([*safe, "-C", str(depot), "config", "user.email", "t@t"], check=True)
+        subprocess.run([*safe, "-C", str(depot), "config", "user.name", "t"], check=True)
 
         def verdict(change) -> int:
-            subprocess.run(["git", "-C", str(depot), "reset", "-q", "--hard"], check=True)
+            subprocess.run([*safe, "-C", str(depot), "reset", "-q", "--hard"], check=True)
             change(depot)
             return subprocess.run([sys.executable, str(depot / "tests" / "check-guards.py"), "--depot", str(depot)],
                                   capture_output=True, text=True).returncode

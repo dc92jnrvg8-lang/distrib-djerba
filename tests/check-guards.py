@@ -48,7 +48,8 @@ class Depot:
         self.path, self.base = path, base
 
     def git(self, *args: str) -> str:
-        return subprocess.run(["git", "-C", str(self.path), *args], capture_output=True, text=True,
+        return subprocess.run(["git", "-c", "safe.directory=*", "-C", str(self.path), *args], capture_output=True,
+                              text=True,
                               check=True).stdout
 
     def old(self, relative: str) -> str | None:
