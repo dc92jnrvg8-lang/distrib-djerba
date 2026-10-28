@@ -150,6 +150,7 @@ class InvariantTests(Fixture):
                         "même autorisée, une demande portant une origine d'agent est refusée")
         for name in ("engine_use", "brain_switch"):
             self.assertIsNone(registry().get(name), f"{name} doit être réservé à l'humain (absent de l'agent)")
+        self.daemon()  # réglage ordinaire : par le démon root, comme en vrai
         self.assertTrue(settings_set.run({"key": "agent.web_search", "value": "true"}).get("success"),
                         "les réglages non protégés restent modifiables")
 

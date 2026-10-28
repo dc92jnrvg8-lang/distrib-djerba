@@ -388,9 +388,13 @@ def _settings_get(_params: dict, _verbose: bool) -> dict:
 
 
 def _settings_set(params: dict, _verbose: bool) -> dict:
-    from djerba_ai.core.config import SCHEMA, ConfigError
+    from djerba_ai.core.config import SCHEMA, ConfigError, protected
     if SCHEMA.get(params["key"], {}).get("secret"):
         return fail("une clé d'API se saisit dans Réglages → Cerveau, jamais dans la conversation")
+    if protected(params["key"]):
+        # Un outil n'est jamais l'humain : réglage de politique ou de sécurité (invariant 01).
+        return fail(f"{params['key']} est un réglage protégé : seul vous pouvez le changer, dans les Réglages de "
+                    "Djerba (authentification administrateur)")
     try:
         value = _config().set(params["key"], params["value"])
     except ConfigError as exc:
