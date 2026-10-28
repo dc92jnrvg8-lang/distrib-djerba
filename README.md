@@ -124,6 +124,17 @@ démarrage réussi (`@djerba-last-good`, Btrfs + UEFI) ;
 `djerba-ai rollback --make-permanent` conserve l'état restauré. Détails :
 `docs/DOCUMENTATION-TECHNIQUE.md` §15 bis, plan : `docs/PLAN-AUTONOMIE.md`.
 
+**L'agent demande, le système décide.** Une politique déterministe, dans le
+démon root et identique pour tous les moteurs d'IA, classe chaque action
+(0 lecture, 1 réversible, 2 système sensible, 3 irréversible). En mode
+« autonome » (par défaut), Djerba répare et règle seul jusqu'au niveau 2 —
+tout est sauvegardé et annulable — mais ne touche jamais aux chemins
+protégés (amorçage, comptes, sudo, polkit, son propre code, ses journaux) et
+n'agit jamais de façon irréversible. Un contenu non fiable (page web,
+fichier, réponse d'un moteur distant) plafonne la tâche au niveau 1.
+`djerba-ai policy`, `djerba-ai pause` / `resume` ; changer de mode
+(« prudent », « autonome », « total ») demande le mot de passe administrateur.
+
 **dpkg toujours réparable.** Une transaction interrompue (coupure, conflit
 de fichiers, script en échec) bloquait Discover sur un écran vide.
 `djerba-dpkg-repair` détecte l'incohérence sans privilège (`dpkg --audit`,

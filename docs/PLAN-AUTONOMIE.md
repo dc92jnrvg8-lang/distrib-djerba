@@ -8,8 +8,8 @@ conteneur Debian 13, CI x86_64 et arm64).
 
 | Phase | Sujet | État |
 |---|---|---|
-| 1 | Réversibilité : transactions, instantanés, undo, rollback auto et au boot | terminée (CI à confirmer) |
-| 2 | Moteur de politique dans `sysd` (niveaux 0–3, modes, disjoncteur) | à faire |
+| 1 | Réversibilité : transactions, instantanés, undo, rollback auto et au boot | **terminée** |
+| 2 | Moteur de politique dans `sysd` (niveaux 0–3, modes, disjoncteur) | terminée (CI à confirmer) |
 | 3 | Couche unifiée de fournisseurs (Ollama, Tailscale, Jarvis, API cloud), parité | à faire |
 | 4 | Historique par IA, mémoire, continuité | à faire |
 | 5 | Studio unifié : plugins, applications, extensions | à faire |
@@ -91,7 +91,7 @@ conteneur Debian 13, CI x86_64 et arm64).
       sur Btrfs réel.
 - [x] Lints et 113 tests de l'agent verts en local ; contrôle en session live
       (fuseau horaire modifié par root, puis `djerba-ai undo` → identique).
-- [ ] CI verte (x86_64 et arm64).
+- [x] CI verte (x86_64 et arm64) : 113 tests de l'agent, 47/47 contrôles en session live.
 
 ### Décisions
 
@@ -167,10 +167,39 @@ conteneur Debian 13, CI x86_64 et arm64).
 
 ### Critères de réussite
 
-- [ ] Table de décision testée (niveaux × modes × tainted × moteur).
-- [ ] Chemins interdits refusés pour tous les outils d'écriture, y compris
+- [x] Table de décision testée (niveaux × modes × tainted × moteur).
+- [x] Chemins interdits refusés pour tous les outils d'écriture, y compris
       par traversée (`..`, liens symboliques).
-- [ ] Page web piégée (contenu non fiable) → aucune action de niveau ≥ 2.
-- [ ] Boucle (même correction 3 fois) arrêtée ; disjoncteur effectif.
-- [ ] Changement de mode impossible sans authentification administrateur.
-- [ ] Même décision pour tous les moteurs à profil égal (test de parité).
+- [x] Contenu piégé lu par l'agent → demande d'écriture système refusée par
+      le démon root (test de bout en bout, aucune transaction exécutée).
+- [x] Boucle (même action 3 fois en 1 h) arrêtée ; débits ; disjoncteur.
+- [x] Changement de mode impossible sans authentification administrateur ;
+      `config.set` refuse `policy.*`.
+- [x] Même décision pour tous les moteurs à plafond égal (test de parité).
+- [x] Lints et 120 tests verts en local ; contrôles ISO et session live
+      (pause → action refusée → reprise).
+- [ ] CI verte (x86_64 et arm64).
+
+### Décisions
+
+* La politique (niveaux, racines, plafonds) est un **fichier du paquet**,
+  versionné et testé contre le registre ; les **interdits** sont dans le
+  code : aucune configuration ne peut les lever.
+* Confirmation du mode « prudent » **hors bande** (fenêtre polkit, mot de
+  passe de l'utilisateur) : ni le modèle ni une page piégée ne peuvent la
+  simuler. Les confirmations intégrées au chat sont supprimées.
+* Outil root inconnu → niveau 2 (prudence par défaut) ; démon injoignable →
+  agent plafonné au niveau 1.
+* Le niveau 3 n'est jamais autonome ; en mode « total », il exige
+  l'authentification administrateur **à chaque fois** (`auth_admin` sans
+  mémorisation).
+
+### Limites restantes
+
+* Le niveau 3 en mode « total » n'a pas encore de sauvegarde automatique
+  des données de l'utilisateur (déplacement vers la corbeille prévu avec
+  l'historique, phase 4).
+* Les profils de capacité par moteur (plafonds calculés automatiquement)
+  viendront avec la phase 3 ; aujourd'hui, `policy.set_caps` les fixe.
+* L'interface de la politique (refus, disjoncteur) est minimale : la refonte
+  est prévue en phase 8.

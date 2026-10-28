@@ -249,7 +249,7 @@ Scripts de maintenance :
 
 | Commande | Langage | Fonction |
 |---|---|---|
-| `djerba-ai` | Python | Agent IA (voir §8). Usage : `djerba-ai [--page chat|system|selfheal|studio|tools|settings]`, `--hud`, `--spotlight`, `--ask "…"`, `--ask-file ACTION F…`, `--ask-selection C NOM` (stdin), `--clipboard`, `--tray`, `ask "…"` (terminal), `tools [recherche]`, `run OUTIL ['{json}'] [--verbose]`, `health`, `doctor`, `run-app SLUG [--live]`, `daemon`, `transactions [N]`, `undo ID [--force]`, `undo --since DATE`, `rollback --make-permanent`, `session-report gnome [unité]`. |
+| `djerba-ai` | Python | Agent IA (voir §8). Usage : `djerba-ai [--page chat|system|selfheal|studio|tools|settings]`, `--hud`, `--spotlight`, `--ask "…"`, `--ask-file ACTION F…`, `--ask-selection C NOM` (stdin), `--clipboard`, `--tray`, `ask "…"` (terminal), `tools [recherche]`, `run OUTIL ['{json}'] [--verbose]`, `health`, `doctor`, `run-app SLUG [--live]`, `daemon`, `policy [prudent|autonome|total]`, `pause [raison]`, `resume`, `transactions [N]`, `undo ID [--force]`, `undo --since DATE`, `rollback --make-permanent`, `session-report gnome [unité]`. |
 | `djerba-apps` | Python | Catalogue d'applications (`/usr/share/djerba/apps.yaml`) : `list [--json]`, `install ID…`, `remove ID…`, `apply-selection FICHIER [--installer]`, `apply-pending [--wait-network S]`, `status [--json]`, progression JSON (`--json-progress`, événements start/progress/log/finish/waiting/error/complete). Verrou global, multiarch i386, debconf, Flatpak (Flathub), `APT::Install-Recommends=true`, `DPkg::Lock::Timeout=600`, **exclusions** (`apt.exclude` → `paquet-`), **vérification post-installation** (`verify:`), **réparation de dpkg** avant/après installation. État : `/var/lib/djerba/apps/{pending,last-run}.json`, `/run/djerba-apps/status.json`. |
 | `djerba-anonsurf` | Bash | Mode anonyme : `start|stop|restart|toggle|status|change|myip [--json] [--verbose]`. Coupe-circuit nftables d'abord (table `inet djerba_anonsurf`), TCP → TransPort 9040, DNS → DNSPort 5353, LAN/DHCP autorisés, IPv6/UDP/ICMP Internet rejetés ; annulation complète si Tor ne s'amorce pas ; `change` = NEWNYM. Service `djerba-anonsurf-tor.service`, torrc `/etc/tor/djerba-anonsurf.torrc` (profil AppArmor de Tor respecté). |
 | `djerba-undercover` | Bash | Mode discret : `on|off|toggle|status [--style 10|11] [--json] [--verbose]`. Sauvegarde puis restauration exacte des fichiers Plasma (kdeglobals, kwinrc, plasmarc, plasmashellrc, appletsrc, kcminputrc, ksplashrc, kscreenlockerrc, GTK…) en arrêtant proprement plasmashell. N'écrit que dans `~/.config`. |
@@ -375,6 +375,7 @@ Flux d'une demande :
 | **`dpkgstate.py`** | Santé de dpkg (voir §15). | `check`, `repair`, `auto`, `schedule`, `watch`, `conflicts`, `busy` |
 | **`transactions.py`** | Journal de transactions du démon root (voir §15 bis) : sauvegarde avant action, relevé des chemins touchés, sondes avant/après, **rollback automatique** sur régression ou échec partiel, undo, undo depuis une date, conflits, rétention. | `Journal`, `Origin`, `TransactionError` |
 | **`snapshots.py`** | Sauvegardes : `BtrfsBackend` (instantanés, `btrfs send --no-data` → chemins exacts), `FilesBackend` (copie de /etc, /usr/local, /boot + manifeste) ; restauration commune ; `tree_digest`. | `detect`, `restore`, `parse_dump`, `Changes` |
+| **`policy.py`** | **Moteur de politique** (démon root) : niveaux 0–3, interdits en dur, listes blanches, modes, contenu non fiable, plafonds par moteur, débit, boucles, disjoncteur ; `check()` côté agent (repli local prudent). Voir §13 bis. | `Policy`, `Rules`, `Decision`, `Origin`, `check` |
 | **`probes.py`** | Sondes de santé déterministes (unités en échec, dpkg, NetworkManager, route, résolveur, unités ciblées) et détection de régression. | `collect`, `regressions` |
 | **`bootguard.py`** | Rollback au démarrage : clone `@djerba-last-good`, compteur GRUB sur l'ESP, entrée de restauration, rendre définitif. | `BootGuard`, `main` |
 
@@ -453,7 +454,9 @@ Fichier root 0600, écrit uniquement par le démon root (`config.set`) ; vue pub
 | `llm.tailscale.host` / `.port` / `.model` | `""` / `11434` / `qwen2.5:32b` | Ollama distant (MagicDNS ou 100.x) |
 | `llm.cloud.service` / `.endpoint` / `.model` | `openai` / `""` / `gpt-4o-mini` | API compatible OpenAI |
 | `llm.cloud.api_key` | `""` (**secret**, jamais exposé) | Clé d'API |
-| `agent.autonomy` | `ask` | Politique de confirmation |
+| `policy.mode` | `autonome` | Mode d'autonomie (`prudent`, `autonome`, `total`) — **seulement** par `policy.set_mode` (administrateur) |
+| `policy.engine_caps` | `[]` | Plafond de niveau par type de moteur (`cloud:1`…) — **seulement** par `policy.set_caps` |
+| `agent.autonomy` | `ask` | Ancien réglage (remplacé par `policy.mode`, conservé pour compatibilité) |
 | `agent.web_search`, `agent.self_heal`, `agent.auto_extend`, `agent.auto_update_model` | `true` | Fonctions de l'agent |
 | `agent.maintenance_hour` | `12` | Maintenance quotidienne |
 | `agent.plugins_approved` | `[]` | Capacités générées approuvées |
@@ -492,6 +495,10 @@ Fichier root 0600, écrit uniquement par le démon root (`config.set`) ; vue pub
 | **`session.report {desktop, component, detail}`** | — (appelant de confiance, 30/h/uid) | Écrit `/var/log/djerba/<bureau>-crash.log` (root:adm 0640, rotation 1 Mio) |
 | `tx.list {limit, since}` / `tx.show {id}` | `org.djerba.ai.audit` | Journal de transactions |
 | `tx.undo {id, force}` / `tx.undo_since {since}` | `org.djerba.ai.undo` | Annulation depuis la sauvegarde |
+| `policy.check {tool, params, origin, commit}` | — (+ `org.djerba.ai.confirm` / `critical` si requis) | Décision de la politique pour un outil de l'utilisateur |
+| `policy.status` | — | Mode, pause, plafonds, derniers refus |
+| `policy.set_mode {mode}` / `policy.set_caps {caps}` / `policy.resume` | `org.djerba.ai.policy` (auth_admin) | Changement de la politique, reprise après pause |
+| `policy.pause {reason}` | `org.djerba.ai.undo` | Disjoncteur : plus aucune action de niveau ≥ 1 |
 
 Les méthodes qui modifient le système (`sys.exec_tool` d'un outil `mutates`, correctifs, `sys.install_ollama`, `sys.venv_install`, `config.set`, `security.apparmor_load`) acceptent un champ facultatif `origin {engine, session}` et s'exécutent **dans une transaction** (§15 bis).
 
@@ -511,6 +518,18 @@ Les méthodes qui modifient le système (`sys.exec_tool` d'un outil `mutates`, c
 | Fuite hors Tor (mode anonyme) | Coupe-circuit nftables appliqué avant Tor, IPv6/UDP bloqués, annulation si Tor échoue |
 
 ---
+
+## 13 bis. Politique d'autonomie (phase 2)
+
+* **L'agent demande, le démon décide** : `core/policy.py` s'exécute dans `djerba-ai-sysd`. Les outils root sont contrôlés à l'exécution (`sys.exec_tool`), les méthodes qui modifient le système aussi (`METHOD_TOOLS` : correctifs, Ollama, venv, réglages, AppArmor) ; les outils de l'utilisateur sont soumis par l'agent à `policy.check` (sans démon : décision locale plafonnée au niveau 1). Le modèle ne fait que **proposer** des appels.
+* **Politique versionnée** `/usr/share/djerba-ai/policy.toml` (livrée par le paquet, lecture seule, chemin interdit à tous les outils) : niveau de chaque outil, racines de l'écriture root (`/etc`, `/usr/local`, `/opt`, `/srv`), plafonds (20 actions/min par session, 60 en 10 min, même action 3 fois/h au plus). Un test vérifie que chaque outil root qui modifie le système a un niveau explicite et qu'aucun nom inconnu n'y figure.
+* **Niveaux** : 0 lecture (libre) ; 1 réversible et local (autonome, transaction) ; 2 système sensible (autonome, transaction, vérification, rollback, notification après coup) ; 3 irréversible (`secure_delete`, `os_path_delete`, `memory_forget`, `app_delete`, `snapshot_delete` : refusé sauf mode « total », authentification administrateur à chaque fois). Outil root inconnu → niveau 2.
+* **Interdits en dur** (code, tous modes, après résolution des liens et de `..`) : `/boot`, ESP, GRUB, Secure Boot (`/etc/secureboot`, `/var/lib/shim-signed`), `/etc/shadow`, `/etc/gshadow`, sudo, polkit, PAM, `/etc/security`, `/etc/djerba`, `/etc/apparmor.d`, code et politique de l'agent, démon root, journaux (audit, transactions), `/.snapshots`, `/proc`, `/sys`, `/dev`.
+* **Modes** (`policy.mode`) : « prudent » (confirmation **hors bande** par polkit `org.djerba.ai.confirm`, mot de passe de l'utilisateur, pour tout niveau ≥ 1), « autonome » (défaut : aucune confirmation jusqu'au niveau 2), « total » (niveau 3 possible, `org.djerba.ai.critical`). Changement : `policy.set_mode` (`org.djerba.ai.policy`, auth_admin) — `config.set` refuse toute clé `policy.*`.
+* **Contenu non fiable** (`origin.tainted`, posé par l'agent quand la garde anti-injection détecte une sortie d'outil, une page web, un fichier ou une réponse de moteur suspecte) : niveau plafonné à 1 jusqu'à la fin de la tâche.
+* **Plafond par moteur** (`policy.engine_caps`, ex. `cloud:1`) : même décision pour tous les moteurs à plafond égal.
+* **Disjoncteur** : `djerba-ai pause [raison]` (`/var/lib/djerba-ai/paused`), `djerba-ai resume` (administrateur) ; boucles (même action répétée) et débits bornés.
+* **Traçabilité** : chaque refus est inscrit au journal d'audit (`refus politique`, niveau, mode, moteur, session, contenu non fiable), compté (`djerba_policy_refusals_total`) et listé par `djerba-ai policy`.
 
 ## 14. Multi-bureau (KDE Plasma / GNOME)
 
@@ -588,7 +607,7 @@ Module `core/dpkgstate.py`, exécutable `/usr/libexec/djerba-dpkg-repair`.
 * `djerba-gnome-crash.service` + compléments `org.gnome.Shell@wayland.service.d/`, `org.gnome.Shell@x11.service.d/`, `gnome-session-failed.target.d/`.
 * `djerba-ghost-*` (transitoires) — Ghost Runner ; `djerba-app-*` (scopes) — applications du Studio.
 
-**Actions polkit** : `org.djerba.ai.{exec,patch,deploy,setup,configure,cloud,audit,extend,undo}`, `org.djerba.apps`, `org.djerba.anonsurf`, `org.djerba.dpkg-repair`, `org.djerba.boot-rollback`, `org.djerba.installer`.
+**Actions polkit** : `org.djerba.ai.{exec,patch,deploy,setup,configure,cloud,audit,extend,undo,confirm,critical,policy}`, `org.djerba.apps`, `org.djerba.anonsurf`, `org.djerba.dpkg-repair`, `org.djerba.boot-rollback`, `org.djerba.installer`.
 
 **Autostart** : `djerba-welcome` (KDE), `djerba-ai-tray` (KDE), `djerba-dpkg-watch` (tous bureaux).
 

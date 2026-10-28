@@ -171,6 +171,11 @@ OFFLINE_CHECKS = [
      "&& id=$(sudo djerba-ai transactions 1 | awk 'END {print $1}') && sudo djerba-ai undo \"$id\" "
      "&& test \"$(readlink /etc/localtime)\" = \"$before\" "
      "&& sudo djerba-ai transactions 1 | grep -q 'annulée'", 180),
+    ("Politique : mode autonome par défaut ; disjoncteur effectif puis reprise",
+     "djerba-ai policy | grep -q '^Mode : autonome' && sudo djerba-ai pause 'contrôle CI' "
+     "&& sudo djerba-ai run timezone_set '{\"zone\": \"Pacific/Tahiti\"}' | grep -q 'agent en pause' "
+     "&& sudo djerba-ai resume && sudo djerba-ai policy | grep -q 'refus' "
+     "&& ! sudo djerba-ai policy | grep -q 'EN PAUSE'", 120),
     ("Store : catalogue JSON",
      "djerba-apps list --json | python3 -c 'import json,sys; assert len(json.load(sys.stdin)[\"apps\"]) >= 10'", 60),
     ("Mode discret : bascule Windows 11 puis restauration à l'identique",
