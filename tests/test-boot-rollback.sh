@@ -112,7 +112,7 @@ mkdir -p "${TARGET}/boot/efi"
 # partition FAT par mtools ; la VM, elle, monte la vraie ESP.
 ESP_STAGING=""
 if mount "${ESP_DEV}" "${TARGET}/boot/efi" 2>/dev/null; then :; else
-    ESP_STAGING="${TOP}/esp-preparation"  # sur un vrai périphérique bloc (grub-install le sonde)
+    ESP_STAGING="${WORK}/esp"
     mkdir -p "${ESP_STAGING}"
     mount --bind "${ESP_STAGING}" "${TARGET}/boot/efi"
     log "pilote FAT absent sur l'hôte : ESP copiée par mtools"
@@ -204,14 +204,24 @@ EOF
 chroot "${TARGET}" systemctl enable djerba-test-etape.service >/dev/null 2>&1
 chroot "${TARGET}" systemctl mask getty@tty1.service serial-getty@ttyS0.service >/dev/null 2>&1 || true
 
-chroot "${TARGET}" grub-install --target=x86_64-efi --efi-directory=/boot/efi --boot-directory=/boot \
-    --removable --no-nvram >"${OUT}/rollback-grub.log" 2>&1 || { cat "${OUT}/rollback-grub.log"; exit 1; }
+if [[ -z "${ESP_STAGING}" ]]; then
+    chroot "${TARGET}" grub-install --target=x86_64-efi --efi-directory=/boot/efi --boot-directory=/boot \
+        --removable --no-nvram >"${OUT}/rollback-grub.log" 2>&1 || { cat "${OUT}/rollback-grub.log"; exit 1; }
+else
+    # Ce que fait « grub-install --removable » (qui exige une ESP FAT montée) : modules sous /boot/grub,
+    # image EFI amorçable dans EFI/BOOT/BOOTX64.EFI qui trouve /boot/grub par l'UUID du Btrfs.
+    mkdir -p "${TARGET}/boot/grub/x86_64-efi" "${ESP_STAGING}/EFI/BOOT"
+    cp "${TARGET}"/usr/lib/grub/x86_64-efi/*.mod "${TARGET}"/usr/lib/grub/x86_64-efi/*.lst \
+        "${TARGET}/boot/grub/x86_64-efi/"
+    # shellcheck disable=SC2016  # $root est une variable de GRUB, pas du shell
+    printf 'search.fs_uuid %s root\nset prefix=($root)/@/boot/grub\n' "${ROOT_UUID}" >"${TARGET}/tmp/load.cfg"
+    chroot "${TARGET}" grub-mkimage -O x86_64-efi -o /boot/efi/EFI/BOOT/BOOTX64.EFI -c /tmp/load.cfg \
+        -p /@/boot/grub part_gpt btrfs fat search search_fs_uuid normal configfile \
+        >"${OUT}/rollback-grub.log" 2>&1 || { cat "${OUT}/rollback-grub.log"; exit 1; }
+fi
 if [[ -n "${ESP_STAGING}" ]]; then
     mcopy -s -o -i "${ESP_DEV}" "${ESP_STAGING}"/* ::/
     mdir -/ -i "${ESP_DEV}" ::/EFI/BOOT | grep -qi "BOOTX64" || { echo "[rollback] ESP sans BOOTX64.EFI" >&2; exit 1; }
-    umount "${TARGET}/boot/efi"
-    rm -rf "${ESP_STAGING}"
-    mount --bind "${WORK}" "${TARGET}/boot/efi"  # point de montage pour la suite (démonté avant QEMU)
 fi
 chroot "${TARGET}" update-grub >>"${OUT}/rollback-grub.log" 2>&1 || { cat "${OUT}/rollback-grub.log"; exit 1; }
 grep -q "subvol=/@\|subvol=@" "${TARGET}/boot/grub/grub.cfg" \
