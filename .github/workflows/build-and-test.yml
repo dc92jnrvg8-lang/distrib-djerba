@@ -164,6 +164,16 @@ jobs:
             -e DJERBA_QEMU_TIMEOUT="${{ matrix.qemu_timeout }}" "${DOCKER_IMAGE}" \
             ./tests/test-iso-qemu.sh "artifacts/djerba-os-${{ steps.version.outputs.version }}-${{ matrix.debarch }}.iso"
 
+      # Rollback au démarrage, en vrai : système Debian 13 installé (GPT, ESP, Btrfs @, GRUB EFI,
+      # noyau) avec les fichiers de rollback du paquet djerba-tools ; deux démarrages ratés, puis
+      # retour automatique au dernier démarrage réussi (@djerba-last-good). Console série en artefact.
+      - name: Rollback au démarrage (QEMU, système installé)
+        if: matrix.debarch == 'amd64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --privileged -v "${PWD}:/build" -w /build "${DOCKER_IMAGE}" ./tests/test-boot-rollback.sh
+
       # Session live réelle (KVM) : DNS, HTTPS, Firefox, mode anonyme via Tor,
       # mode discret, mode jeu, store, agent IA (démon root activé par socket).
       - name: Live session tests (réseau, Tor, agent IA)
