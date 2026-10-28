@@ -92,7 +92,6 @@ timezone_set = 1
 
 # --- niveau 1 : réversible et local (utilisateur)
 settings_set = 1
-brain_switch = 1
 model_pull = 1
 model_set = 1
 ollama_install = 1
@@ -145,10 +144,8 @@ engine_save = 1
 engine_remove = 1
 engine_profile = 1
 jarvis_pair = 1
-engine_use = 1
 history_export = 1
 history_undo = 1
-memory_mode = 1
 history_import = 1
 
 [racines]

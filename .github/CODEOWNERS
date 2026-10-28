@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Djerba OS — relecture humaine obligatoire du socle de confiance (TCB) et des gardes.
+# Activer « Require review from Code Owners » sur les branches protégées.
+# Retirer une règle est détecté par tests/check-guards.py.
+
+# Démon root, politique, identité, journal, sauvegardes, amorçage
+/packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/core/sysd.py         @dc92jnrvg8-lang
+/packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/core/policy.py       @dc92jnrvg8-lang
+/packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/core/provenance.py   @dc92jnrvg8-lang
+/packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/core/schemas.py      @dc92jnrvg8-lang
+/packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/core/trust.py        @dc92jnrvg8-lang
+/packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/core/audit.py        @dc92jnrvg8-lang
+/packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/core/transactions.py @dc92jnrvg8-lang
+/packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/core/snapshots.py    @dc92jnrvg8-lang
+/packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/core/probes.py       @dc92jnrvg8-lang
+/packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/core/bootguard.py    @dc92jnrvg8-lang
+/packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/core/crypto.py       @dc92jnrvg8-lang
+/packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/core/config.py       @dc92jnrvg8-lang
+/packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/core/engines.py      @dc92jnrvg8-lang
+/packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/core/mcp.py          @dc92jnrvg8-lang
+/packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/core/sandbox.py      @dc92jnrvg8-lang
+/packages/djerba-tools/root/usr/share/djerba-ai/                                         @dc92jnrvg8-lang
+/packages/djerba-tools/root/usr/share/polkit-1/                                          @dc92jnrvg8-lang
+/packages/djerba-tools/root/usr/lib/systemd/system/                                      @dc92jnrvg8-lang
+/packages/djerba-tools/root/usr/libexec/                                                 @dc92jnrvg8-lang
+/packages/djerba-tools/root/etc/grub.d/                                                  @dc92jnrvg8-lang
+/packages/djerba-tools/DEBIAN/                                                           @dc92jnrvg8-lang
+/config/includes.chroot/etc/polkit-1/                                                    @dc92jnrvg8-lang
+/config/includes.chroot/etc/sudoers.d/                                                   @dc92jnrvg8-lang
+
+# Gardes : tests, invariants, CI
+/tests/                                                                                  @dc92jnrvg8-lang
+/docs/INVARIANTS.md                                                                      @dc92jnrvg8-lang
+/.github/                                                                                @dc92jnrvg8-lang

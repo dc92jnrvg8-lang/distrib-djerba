@@ -1,0 +1,8 @@
+# Dérogations relues à la garde des gardes (tests/check-guards.py), une par ligne :
+#   <type> <nom> -- <raison>
+# type : test, saut, niveau, plafond, racine, interdit, protege, invariant, codeowners, exception
+# Fichier protégé par CODEOWNERS : chaque ligne est justifiée dans la PR qui l'ajoute.
+niveau brain_switch -- outil retiré de l'agent : changer de moteur est réservé à l'humain (invariant 01)
+niveau engine_use -- outil retiré de l'agent : changer de moteur est réservé à l'humain (invariant 01)
+niveau memory_mode -- outil retiré de l'agent : isolation de la mémoire réglée par l'humain (invariant 01)
+exception llm.local.model -- modèle Ollama local : choix sans effet sur la sécurité ni sur les coûts (model_set, mise à jour automatique)

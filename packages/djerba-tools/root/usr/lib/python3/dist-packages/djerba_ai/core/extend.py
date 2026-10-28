@@ -11,9 +11,10 @@
 3. Trois tentatives au plus, chacune avec le détail de l'échec précédent
    (sortie de Pytest comprise) ; ensuite, abandon propre.
 4. Validé, le module est enregistré dans ~/.local/share/djerba/plugins/ (tests
-   dans plugins/tests/), activé si agent.auto_extend, et l'agent le charge à
-   chaud. Ses dépendances vont dans le venv interne (PEP 668). Une capacité
-   générée reste soumise à confirmation avant chaque exécution.
+   dans plugins/tests/). Il n'est **jamais activé par l'agent** : l'activation
+   (réglage protégé agent.plugins_approved) est un choix humain authentifié,
+   dans le Studio ; l'agent le charge ensuite à chaud. Ses dépendances vont
+   dans le venv interne (PEP 668).
 """
 
 from __future__ import annotations
@@ -138,13 +139,13 @@ def create_capability(name: str, instruction: str, config: Config | None = None,
             return {"success": False, "message": f"dépendances non installées dans le venv interne : {exc}"}
     from djerba_ai.security.netpolicy import request_profile
     request_profile("plugin", name, config)  # profil AppArmor généré, sans réseau par défaut
-    enabled = bool(config.get("agent.auto_extend"))
-    if enabled:
-        approved = set(config.get("agent.plugins_approved")) | {name}
-        config.set("agent.plugins_approved", sorted(approved))
+    # Invariant 01 : une capacité écrite par l'agent ne s'active jamais d'elle-même ; l'activation
+    # (agent.plugins_approved, réglage protégé) est un choix humain authentifié (Studio).
+    enabled = name in set(config.get("agent.plugins_approved"))
     return {"success": True, "attempts": attempt, "tools": [f"plugin.{tool}" for tool in result.get("tools", [])],
             "enabled": enabled, "path": str(path), "checks": result.get("checks", []),
             "tests_passed": result.get("tests_passed", 0),
             "message": (f"Nouvelle capacité « {name} » : {result.get('tests_passed', 0)} test(s) Pytest réussi(s) "
                         f"dans le bac à sable (tentative {attempt}/{allowed}) ; "
-                        + ("intégrée à chaud." if enabled else "enregistrée ; activez-la dans le Studio."))}
+                        + ("intégrée à chaud." if enabled else "enregistrée ; à activer par vous dans le Studio "
+                                                               "(authentification administrateur)."))}

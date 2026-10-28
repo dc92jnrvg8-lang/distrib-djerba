@@ -99,7 +99,7 @@ from typing import Any, Callable
 
 from djerba_ai import __version__
 from djerba_ai.core import audit, ipc, llm, sandbox, telemetry, trust
-from djerba_ai.core.config import CLOUD_ENDPOINTS, SCHEMA, ConfigError, Store, public_view
+from djerba_ai.core.config import CLOUD_ENDPOINTS, SCHEMA, ConfigError, Store, protected, public_view
 from djerba_ai.core.config import validate as validate_setting
 from djerba_ai.core.schemas import parse_rpc
 
@@ -791,6 +791,13 @@ class Dispatcher:
             self._registry = registry()
         return self._registry
 
+    def human_only(self, params: dict, pid: int, uid: int) -> None:
+        """Invariant 01 : réservé à l'humain authentifié. Une demande qui porte une origine d'agent (moteur,
+        session) est refusée même autorisée ; sinon authentification administrateur (polkit, sans rétention)."""
+        if params.get("origin"):
+            raise ipc.RPCError(ipc.NOT_AUTHORIZED, "réservé à l'humain : l'agent ne peut pas modifier ce réglage")
+        self.require(pid, uid, ACTION_POLICY)
+
     def require(self, pid: int, uid: int, action: str) -> None:
         if not self.authorizer(pid, uid, action):
             raise ipc.RPCError(ipc.NOT_AUTHORIZED, "autorisation refusée")
@@ -925,11 +932,14 @@ class Dispatcher:
         if method == "config.get":
             return public_view(Store().load())
         if method == "config.set":
-            self.require(pid, uid, ACTION_CONFIGURE)
             key = str(params.get("key", ""))
             if key.startswith("policy."):
                 raise ipc.RPCError(ipc.NOT_AUTHORIZED, "la politique ne se modifie que par policy.set_mode ou "
                                                        "policy.set_caps (authentification administrateur)")
+            if protected(key):
+                self.human_only(params, pid, uid)
+            else:
+                self.require(pid, uid, ACTION_CONFIGURE)
             try:
                 validate_setting(key, params.get("value"))
             except ConfigError as exc:
@@ -957,7 +967,7 @@ class Dispatcher:
             from djerba_ai.core.engines import EngineStore
             return {"engines": EngineStore().list()}
         if method in ("engines.save", "engines.remove", "engines.set_profile", "engines.pair_jarvis"):
-            self.require(pid, uid, ACTION_CONFIGURE)
+            self.human_only(params, pid, uid)  # où partent les conversations : choix humain
             return self.guarded(method, params, pid, uid, lambda: engines_change(method, params))
         if method == "engines.jarvis_history":
             self.require(pid, uid, ACTION_CLOUD)
@@ -988,7 +998,7 @@ class Dispatcher:
             from djerba_ai.core.mcp import ClientStore
             store = ClientStore()
             if method == "mcp.pair_begin":
-                self.require(pid, uid, ACTION_CONFIGURE)
+                self.human_only(params, pid, uid)
                 return {"success": True, **store.begin(str(params["name"]), int(params.get("cap", 2)))}
             if method == "mcp.pair_complete":
                 return store.complete(str(params["code"]), str(params.get("name", ""))) or {}
@@ -997,7 +1007,7 @@ class Dispatcher:
             if method == "mcp.list":
                 self.require(pid, uid, ACTION_AUDIT)
                 return {"clients": store.list()}
-            self.require(pid, uid, ACTION_CONFIGURE)
+            self.human_only(params, pid, uid)
             found = store.revoke(str(params["client"]))
             return {"success": found, "message": f"accès de {params['client']} révoqué" if found else "inconnu"}
         if method == "policy.check":

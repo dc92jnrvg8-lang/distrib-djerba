@@ -871,8 +871,12 @@ class ExtendTests(unittest.TestCase):
         self.assertTrue(any("1 failed" in message["content"] for message in client.seen))  # retour d'échec
         plugins = Path(os.environ["XDG_DATA_HOME"]) / "djerba" / "plugins"
         self.assertTrue((plugins / "tests" / "test_texte_inverse.py").exists())
-        self.assertIn("texte_inverse", Config().get("agent.plugins_approved"))
+        # Invariant 01 : jamais activée par l'agent ; activation humaine, puis intégration à chaud.
+        self.assertFalse(result["enabled"])
+        self.assertNotIn("texte_inverse", Config().get("agent.plugins_approved"))
         agent = Agent(Config(), registry(), Memory(Path(tempfile.mkdtemp()) / "m.db"))
+        self.assertNotIn("plugin.texte_inverse", agent.reload_plugins())
+        Config().set("agent.plugins_approved", ["texte_inverse"])  # l'humain, depuis le Studio
         self.assertIn("plugin.texte_inverse", agent.reload_plugins())
         tool = agent.registry.get("plugin.texte_inverse")
         self.assertTrue(tool.dangerous)
