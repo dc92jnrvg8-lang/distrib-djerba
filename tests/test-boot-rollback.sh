@@ -119,7 +119,7 @@ if mount "${ESP_DEV}" "${TARGET}/boot/efi" 2>/dev/null; then :; else
     mount --bind "${ESP_STAGING}" "${TARGET}/boot/efi"
     log "pilote FAT absent sur l'hôte : ESP copiée par mtools"
 fi
-for fs in dev dev/pts proc sys run; do
+for fs in dev dev/pts proc sys; do
     mkdir -p "${TARGET}/${fs}"
     mount --bind "/${fs}" "${TARGET}/${fs}"
 done
@@ -245,8 +245,13 @@ if grep -q "djerba-last-good" "${TARGET}/boot/grub/grub.cfg"; then
     exit 1
 fi
 
-for mountpoint in "${TARGET}/boot/efi" "${TARGET}/dev/pts" "${TARGET}/dev" "${TARGET}/proc" "${TARGET}/sys" \
-                  "${TARGET}/run" "${TARGET}" "${TOP}"; do
+# Pseudo-systèmes de l'hôte : démontage différé (hors de l'image) ; ESP et Btrfs : démontage complet
+# obligatoire avant que QEMU n'écrive sur le disque.
+for mountpoint in "${TARGET}/dev/pts" "${TARGET}/dev" "${TARGET}/proc" "${TARGET}/sys"; do
+    umount -l "${mountpoint}"
+done
+sync
+for mountpoint in "${TARGET}/boot/efi" "${TARGET}" "${TOP}"; do
     umount "${mountpoint}"
 done
 detach
