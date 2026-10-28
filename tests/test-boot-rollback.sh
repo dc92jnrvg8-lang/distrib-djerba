@@ -261,9 +261,18 @@ for mountpoint in "${TARGET}/dev/pts" "${TARGET}/dev" "${TARGET}/proc" "${TARGET
     umount -l "${mountpoint}"
 done
 sync
-for mountpoint in "${TARGET}/boot/efi" "${TARGET}" "${TOP}"; do
-    umount "${mountpoint}"
-done
+busy() {
+    echo "[rollback] $1 occupé ; sous-montages et fichiers ouverts :" >&2
+    findmnt -R "$1" >&2 || true
+    for item in /proc/[0-9]*/{cwd,root,exe} /proc/[0-9]*/fd/*; do
+        target="$(readlink "${item}" 2>/dev/null)" || continue
+        case "${target}" in "$1"*) echo "  ${item} -> ${target}" >&2 ;; esac
+    done
+    exit 1
+}
+umount "${TARGET}/boot/efi" || busy "${TARGET}/boot/efi"
+umount -R "${TARGET}" || busy "${TARGET}"
+umount "${TOP}" || busy "${TOP}"
 detach
 
 # ---------------------------------------------------------------- Démarrages dans QEMU
