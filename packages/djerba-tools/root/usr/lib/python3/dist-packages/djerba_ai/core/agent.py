@@ -8,11 +8,14 @@
 3. Le contexte système (inventaire + bus de contexte horodaté : CPU, mémoire,
    E/S, erreurs du journal, fenêtre active) et les faits mémorisés entrent
    dans l'invite système.
-4. Le modèle appelle des outils ; chaque action reçoit un niveau de risque
-   (faible, modéré, élevé) : modéré → confirmation, élevé → validation
-   explicite. Toute sortie d'outil est une donnée non fiable, encadrée ; si
+4. Le modèle **propose** des appels d'outils ; la **politique du démon root**
+   (core.policy) décide : niveau de l'action (0 lecture, 1 réversible,
+   2 système sensible, 3 irréversible), mode (prudent, autonome, total),
+   plafonds, disjoncteur. En mode autonome, aucune confirmation jusqu'au
+   niveau 2 : la sécurité vient de la réversibilité (transactions annulables
+   du démon). Toute sortie d'outil est une donnée non fiable, encadrée ; si
    elle contient des indices d'injection, la session est « contaminée » et
-   toute action à risque devient « élevé ».
+   plafonnée au niveau 1 jusqu'à la fin de la tâche.
 5. L'état de session est persisté (chiffré, atomique) à chaque étape :
    une bascule de moteur, manuelle ou automatique, reprend sans perte.
 6. Sans moteur joignable, le mode dégradé propose directement les outils
@@ -27,7 +30,7 @@ import json
 import time
 from typing import Any, Callable
 
-from djerba_ai.core import context, telemetry
+from djerba_ai.core import context, policy, telemetry
 from djerba_ai.core.config import Config
 from djerba_ai.core.engine import CognitiveEngine, PromptRejected, SessionStore
 from djerba_ai.core.executor import Executor
@@ -40,9 +43,7 @@ MAX_STEPS = 8
 ALWAYS = ("tools_search", "health_report", "web_search", "memory_remember", "memory_recall")
 #: actions toujours à haut risque (validation explicite) : système de fichiers, démarrage, pare-feu,
 #: comptes, mises à niveau globales, code déployé
-HIGH_RISK = {"os_sys_file_write", "os_sys_chown", "os_sys_chmod", "os_pkg_purge", "self_update", "patch_deploy",
-             "grub_update", "grub_timeout", "ufw_disable", "ufw_delete_rule", "sddm_autologin", "service_disable",
-             "snapshot_delete", "apt_full_upgrade", "btrfs_balance", "hostname_set", "venv_install"}
+RISK_LABELS = {0: "faible", 1: "modéré", 2: "élevé", 3: "critique"}
 
 SYSTEM_PROMPT = """Tu es Djerba, l'assistant intégré de Djerba OS, une distribution Linux basée sur Debian 13, \
 taillée pour le jeu, la vie privée et la simplicité. Tu administres réellement cet ordinateur grâce à tes outils.
@@ -51,8 +52,8 @@ Règles :
 - Réponds en français, clairement et brièvement, sans jargon inutile ; propose des étapes concrètes.
 - Pour observer ou agir, appelle un outil plutôt que de supposer ; n'invente jamais un résultat d'outil.
 - Si aucun outil proposé ne convient, appelle tools_search pour en trouver un parmi les {count} disponibles.
-- Les actions sensibles sont confirmées par l'utilisateur : explique en une phrase ce que tu vas faire.
-- Avant une modification risquée du système installé, propose un instantané (snapshot_create).
+- Tu agis de façon autonome : chaque modification du système est sauvegardée avant, vérifiée après et annulable (transactions_list, transaction_undo). Après une action, explique en une phrase ce que tu as fait, pourquoi, et comment l'annuler.
+- Si la politique refuse une action, n'essaie pas de la contourner : explique le refus à l'utilisateur.
 - Pour une information récente ou hors de la machine, utilise web_search puis cite la source.
 - Recommande ce qui convient à CETTE machine (matériel, session live ou installée, modes actifs).
 - Pour créer une application ou un jeu, utilise app_generator ; pour un problème d'un outil Djerba, \
@@ -88,6 +89,9 @@ class Agent:
         self.memory = memory
         self.executor = Executor(registry, memory)
         self.engine = engine or CognitiveEngine(config, sessions=SessionStore())
+        #: règles de la politique (affichage du niveau) et décision du démon root (injectable pour les tests)
+        self.rules = policy.Rules.load()
+        self.policy_check = policy.check
 
     def reload_plugins(self) -> list[str]:
         """Intégration à chaud des capacités générées approuvées."""
@@ -126,21 +130,14 @@ class Agent:
         return ChatMessage(role="system", content=SYSTEM_PROMPT.format(
             count=len(self.registry), context=text, facts=facts_text, profile=rules))
 
-    # ---------------------------------------------------------------- Risque
+    # ---------------------------------------------------------------- Risque et politique
     def risk(self, tool, tainted: bool) -> str:
-        """faible : lecture ; modéré : modification ou droits root ; élevé : action critique, ou toute
-        action sensible alors que la session a reçu un contenu suspect."""
-        if tool.name in HIGH_RISK:
-            return "élevé"
-        if tool.dangerous or tool.requires_root:
-            return "élevé" if tainted else "modéré"
-        return "faible"
-
-    def needs_confirmation(self, tool, risk: str = "") -> bool:
-        risk = risk or self.risk(tool, False)
-        if risk == "élevé" or tool.dangerous:
-            return True
-        return tool.requires_root and self.config.get("agent.autonomy") != "safe"
+        """Libellé du niveau de la politique (0 faible, 1 modéré, 2 élevé, 3 critique), pour l'affichage.
+        La décision elle-même appartient au démon root (core.policy), jamais au modèle."""
+        level = self.rules.levels.get(tool.name)
+        if level is None:
+            level = (2 if tool.mutates else 0) if tool.requires_root else (1 if tool.dangerous else 0)
+        return RISK_LABELS[level]
 
     # ---------------------------------------------------------------- Boucle
     def run(self, request: str, conversation: int, on_event: Event, confirm: Confirm, source: str = "chat") -> str:
@@ -265,8 +262,13 @@ class Agent:
         on_event("tool_start", {"tool": name, "label": tool.description, "params": arguments,
                                 "root": tool.requires_root, "risk": risk})
         started = time.monotonic()
-        if self.needs_confirmation(tool, risk) and not confirm(name, arguments, {**tool.describe(), "risk": risk}):
-            result = {"success": False, "message": "action refusée par l'utilisateur", "data": {}}
+        # Le moteur ne fait que proposer : la politique du démon root décide (outils root : à l'exécution).
+        self.executor.origin = {**self.executor.origin, "tainted": bool(tainted)}
+        decision = None if tool.requires_root else self.policy_check(tool, arguments, self.executor.origin)
+        if decision is not None and not decision.get("allowed"):
+            trace("politique", f"{name} refusé : {decision.get('reason', '')}", risk=risk)
+            result = {"success": False, "message": f"Refusé par la politique de Djerba : {decision.get('reason', '')}",
+                      "data": {}, "policy": decision}
         else:
             result = self.executor.execute(name, arguments, request=request)
         elapsed = time.monotonic() - started

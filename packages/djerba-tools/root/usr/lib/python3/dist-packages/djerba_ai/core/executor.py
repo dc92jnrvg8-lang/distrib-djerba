@@ -36,7 +36,8 @@ class Executor:
                 request_params: dict[str, Any] = {"name": name, "params": cleaned, "verbose": verbose}
                 if self.origin:
                     request_params["origin"] = {"engine": str(self.origin.get("engine", ""))[:80],
-                                                "session": str(self.origin.get("session", ""))[:80]}
+                                                "session": str(self.origin.get("session", ""))[:80],
+                                                "tainted": bool(self.origin.get("tainted", False))}
                 result = ipc.call("sys.exec_tool", request_params)
             except ipc.RPCError as exc:
                 result = fail("autorisation refusée" if exc.code == ipc.NOT_AUTHORIZED else str(exc))

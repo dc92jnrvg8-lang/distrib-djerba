@@ -27,6 +27,10 @@ Usage :
     djerba-ai undo ID [--force]       annule une modification (restauration depuis la sauvegarde)
     djerba-ai undo --since DATE       annule tout depuis DATE (AAAA-MM-JJ[THH:MM]), du plus récent
                                       au plus ancien
+    djerba-ai pause [raison]          disjoncteur : l'agent n'effectue plus aucune modification
+    djerba-ai resume                  reprise (authentification administrateur)
+    djerba-ai policy [prudent|autonome|total]
+                                      état de la politique, ou changement de mode (administrateur)
     djerba-ai rollback --make-permanent
                                       conserve le système restauré au démarrage (après deux
                                       démarrages ratés, GRUB revient au dernier bon état)
@@ -171,6 +175,34 @@ def undo(argv: list[str]) -> int:
     return 0 if result.get("success") else 1
 
 
+def policy_command(argv: list[str]) -> int:
+    from djerba_ai.core import ipc
+    command = argv[0] if argv else "policy"
+    try:
+        if command == "pause":
+            result = ipc.call("policy.pause", {"reason": " ".join(argv[1:])[:200]}, timeout=60)
+        elif command == "resume":
+            result = ipc.call("policy.resume", {}, timeout=330)
+        elif len(argv) > 1 and argv[1] in ("prudent", "autonome", "total"):
+            result = ipc.call("policy.set_mode", {"mode": argv[1]}, timeout=330)
+        else:
+            status = ipc.call("policy.status", {}, timeout=60)
+            print(f"Mode : {status['mode']}" + (f" — EN PAUSE depuis {status['paused']['since']}"
+                                                if status.get("paused") else ""))
+            print(f"Plafonds : {status['limits']['par_minute']} actions/min par session, "
+                  f"{status['limits']['par_dix_minutes']} en 10 min, même action {status['limits']['repetitions']}"
+                  " fois/h au plus")
+            for refusal in status.get("refusals", [])[-10:]:
+                print(f"  refus {refusal['time'][:16]} {refusal['tool']} (niveau {refusal['level']}) : "
+                      f"{refusal['reason']}")
+            return 0
+    except ipc.RPCError as exc:
+        print(f"Impossible : {exc}", file=sys.stderr)
+        return 1
+    print(result.get("message", ""))
+    return 0 if result.get("success") else 1
+
+
 def health() -> int:
     from djerba_ai.core.health import report
     result = report()
@@ -229,6 +261,8 @@ def main() -> int:
         return transactions(int(argv[1]) if len(argv) > 1 and argv[1].isdigit() else 30)
     if command == "undo":
         return undo(argv[1:])
+    if command in ("pause", "resume", "policy"):
+        return policy_command(argv)
     if command == "rollback" and "--make-permanent" in argv:
         os.execvp("pkexec", ["pkexec", "/usr/libexec/djerba-boot", "make-permanent"])
     if command == "doctor":

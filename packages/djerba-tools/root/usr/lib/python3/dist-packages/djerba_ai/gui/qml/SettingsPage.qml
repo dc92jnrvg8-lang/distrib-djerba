@@ -276,12 +276,23 @@ Glass {
 
             // ------------------------------------------------ Agent
             Section { text: "Agent" }
+            Row2 {
+                label: "Autonomie"
+                note: page.s["policy.mode"] === "prudent" ? "Prudent : chaque modification est confirmée par votre mot de passe."
+                    : page.s["policy.mode"] === "total" ? "Total : même les actions irréversibles sont possibles (mot de passe administrateur à chaque fois)."
+                    : "Autonome : Djerba répare et règle seul ; tout est sauvegardé avant et annulable."
+                ComboBox {
+                    model: ["Prudent", "Autonome", "Total"]
+                    currentIndex: Math.max(0, ["prudent", "autonome", "total"].indexOf(page.s["policy.mode"] || "autonome"))
+                    onActivated: (index) => backend.setPolicyMode(["prudent", "autonome", "total"][index])
+                    Accessible.name: "Mode d'autonomie de l'agent"
+                }
+            }
             Repeater {
                 model: [
-                    { key: "agent.autonomy", label: "Actions sûres sans confirmation", note: "Les actions sensibles (suppression, administrateur…) restent toujours confirmées." },
                     { key: "agent.web_search", label: "Recherche sur Internet", note: "Djerba peut chercher des informations récentes (DuckDuckGo)." },
                     { key: "agent.self_heal", label: "Auto-réparation", note: "Surveillance du journal et proposition de correctifs." },
-                    { key: "agent.auto_extend", label: "Auto-extension", note: "Si aucune capacité ne convient, Djerba en écrit une, la teste dans le bac à sable (3 essais, 15 s) et l'intègre ; chaque exécution reste confirmée." },
+                    { key: "agent.auto_extend", label: "Auto-extension", note: "Si aucune capacité ne convient, Djerba en écrit une, la teste dans le bac à sable (3 essais, 15 s) et l'intègre, sans droits root et sans réseau sauf autorisation." },
                     { key: "agent.auto_update_model", label: "Mise à jour automatique du modèle local", note: "Une fois par semaine, en arrière-plan." }
                 ]
                 delegate: Row2 {
@@ -289,8 +300,8 @@ Glass {
                     label: modelData.label
                     note: modelData.note
                     Switch2 {
-                        checked: modelData.key === "agent.autonomy" ? page.s["agent.autonomy"] === "safe" : page.s[modelData.key] === true
-                        onToggled: backend.setSetting(modelData.key, modelData.key === "agent.autonomy" ? (checked ? "ask" : "safe") : !checked)
+                        checked: page.s[modelData.key] === true
+                        onToggled: backend.setSetting(modelData.key, !checked)
                     }
                 }
             }

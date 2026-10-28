@@ -826,6 +826,24 @@ class Backend(QObject):
             self.refreshBrains()
 
     @pyqtSlot(str)
+    def setPolicyMode(self, mode: str) -> None:
+        """Mode d'autonomie (prudent, autonome, total) : authentification administrateur (polkit)."""
+        def work():
+            from djerba_ai.core import ipc
+            try:
+                return ipc.call("policy.set_mode", {"mode": mode}, timeout=330)
+            except ipc.RPCError as exc:
+                return {"success": False, "message": str(exc)}
+
+        def done(result) -> None:
+            self.config.load()
+            self.notify.emit(f"Autonomie : mode « {mode} »." if result.get("success") else
+                             f"Mode inchangé : {result.get('message', 'authentification refusée')}")
+            self.settingsChanged.emit()
+
+        self._background(work, done)
+
+    @pyqtSlot(str)
     def setApiKey(self, key: str) -> None:
         """Clé d'API en ligne : transmise au démon root, jamais relue par l'interface."""
         if key.strip() and self._apply_setting("llm.cloud.api_key", key.strip()):
