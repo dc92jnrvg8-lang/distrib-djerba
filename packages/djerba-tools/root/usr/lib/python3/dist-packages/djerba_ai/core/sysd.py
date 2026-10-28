@@ -742,13 +742,14 @@ class Dispatcher:
         except ProvenanceError:
             return Origin(tainted=True)
 
-    def gate(self, tool, arguments: dict, params: dict, pid: int, uid: int, method: str):
+    def gate(self, tool, arguments: dict, params: dict, pid: int, uid: int, method: str, human: bool = False):
         """Décision de la politique (comptée), confirmation hors bande si requise ; refus consignés.
 
         Sans origine d'agent, la demande est présumée non fiable ; au-delà du niveau 1, elle n'aboutit que
         si un humain s'authentifie (polkit administrateur, sans rétention)."""
         from djerba_ai.core.policy import Origin
-        origin = self.origin(params, uid)
+        # human : l'appelant vient de s'authentifier comme administrateur (human_only), sans origine d'agent.
+        origin = Origin("humain", human=True) if human else self.origin(params, uid)
         decision = self.policy().decide(tool, arguments, origin, commit=True)
         if not decision.allowed and origin.presumed and decision.level >= 2 and \
                 self.authorizer(pid, uid, ACTION_POLICY):
@@ -775,10 +776,10 @@ class Dispatcher:
                 "policy": decision.to_dict()}
 
     def guarded(self, method: str, params: dict, pid: int, uid: int, action, tool: str = "",
-                targets: tuple[str, ...] = (), boot: bool = False) -> Any:
+                targets: tuple[str, ...] = (), boot: bool = False, human: bool = False) -> Any:
         """Méthode qui modifie le système : politique, puis transaction annulable."""
         from djerba_ai.core.policy import METHOD_TOOLS
-        decision = self.gate(METHOD_TOOLS.get(method, tool or method), params, params, pid, uid, method)
+        decision = self.gate(METHOD_TOOLS.get(method, tool or method), params, params, pid, uid, method, human)
         if not decision.allowed:
             return self.refused(decision)
         result = self.transact(action, method, params, uid, tool=tool, targets=targets, boot=boot, decision=decision)
@@ -1003,7 +1004,7 @@ class Dispatcher:
             def change() -> dict:
                 _old, new = Store().set(key, params.get("value"))
                 return {"success": True, "key": key, "value": None if secret else new, "message": f"{key} modifié"}
-            return self.guarded(method, params, pid, uid, change)
+            return self.guarded(method, params, pid, uid, change, human=protected(key))
         if method == "llm.cloud_chat":
             self.require(pid, uid, ACTION_CLOUD)
             return cloud_chat(params, emit)
@@ -1022,7 +1023,7 @@ class Dispatcher:
             return {"engines": EngineStore().list()}
         if method in ("engines.save", "engines.remove", "engines.set_profile", "engines.pair_jarvis"):
             self.human_only(params, pid, uid)  # où partent les conversations : choix humain
-            return self.guarded(method, params, pid, uid, lambda: engines_change(method, params))
+            return self.guarded(method, params, pid, uid, lambda: engines_change(method, params), human=True)
         if method == "engines.jarvis_history":
             self.require(pid, uid, ACTION_CLOUD)
             from djerba_ai.core import engines as engine_registry
@@ -1063,7 +1064,7 @@ class Dispatcher:
             store = ClientStore()
             if method == "mcp.pair_begin":
                 self.human_only(params, pid, uid)
-                return {"success": True, **store.begin(str(params["name"]), int(params.get("cap", 2)))}
+                return {"success": True, **store.begin(str(params["name"]), int(params.get("cap", 1)))}
             if method == "mcp.pair_complete":
                 return store.complete(str(params["code"]), str(params.get("name", ""))) or {}
             signed = {key: params[key] for key in ("client", "ts", "nonce", "sig")} if "sig" in params else {}

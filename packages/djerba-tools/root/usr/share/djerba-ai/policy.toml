@@ -138,14 +138,16 @@ rfkill_unblock = 1
 wifi_connect = 1
 suspend = 1
 proton_install_ge = 1
-transaction_undo = 1
-# --- niveau 1 : registre des moteurs d'IA (méthodes du démon root)
-engine_save = 1
-engine_remove = 1
+# --- annulations : défaire un correctif de sécurité est sensible (jamais depuis une session non fiable)
+transaction_undo = 2
+history_undo = 2
+# --- registre des moteurs d'IA (méthodes du démon root, réservées à l'humain authentifié)
+engine_save = 2
+engine_remove = 2
 engine_profile = 1
-jarvis_pair = 1
+jarvis_pair = 2
+# --- historique : export local, import (conversations importées toujours non fiables)
 history_export = 1
-history_undo = 1
 history_import = 1
 
 [racines]

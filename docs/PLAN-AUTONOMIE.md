@@ -349,7 +349,10 @@ conteneur Debian 13, CI x86_64 et arm64).
 ### Critères de réussite
 
 - [x] Migrations v1 (clair) → v2 → v3 testées : aucune perte, sauvegarde
-      préalable créée (déjà chiffrée), base plus récente refusée.
+      préalable créée (déjà chiffrée).
+- [ ] Base plus récente refusée — **case cochée à tort en phase 4** : le code
+      existait, aucun test ne le vérifiait (relevé par l'audit ; test ajouté
+      en phase 4 bis, voir ci-dessous).
 - [x] Historique filtré par moteur ; recherche plein texte et sémantique ;
       épinglage, renommage, export Markdown/JSON, suppression.
 - [x] Reprise d'une conversation avec un autre moteur : résumé adapté à sa
@@ -395,4 +398,77 @@ conteneur Debian 13, CI x86_64 et arm64).
 * Import Jarvis selon le contrat v1 ; format réel inconnu.
 * Interface de l'historique fonctionnelle mais sobre (onglet du Studio) ;
   refonte en phase 8.
+
+## Phase 4 bis — Durcissement avant la phase 5 (PR relue)
+
+Issue de l'audit d'avant phase 5. Référence : `docs/INVARIANTS.md` (33
+invariants, un test réel chacun dans `tests/test-invariants.py`, sans saut ;
+cliquet `tests/invariants-verts.txt` en CI).
+
+### Conception
+
+1. **Phase 0** : `.github/CODEOWNERS` (socle de confiance et gardes) ;
+   `tests/check-guards.py` (garde des gardes : test supprimé, saut ajouté,
+   politique assouplie, interdit ou clé protégée retirés, invariant vert
+   retiré → échec sauf dérogation relue) ; réglages protégés (`policy.*`,
+   `llm.*` sauf le modèle local, `mcp.*`, `security.*`, `sandbox.*`,
+   `telemetry.*`, activation des greffons…) réservés à l'humain authentifié
+   (polkit administrateur, refus de toute origine d'agent) ; `engine_use`,
+   `brain_switch`, `memory_mode` retirés de l'agent ; une capacité générée
+   ne s'active plus seule.
+2. **Provenance et identité établies par root** (`core/provenance.py`) :
+   clé de conversation délivrée par le démon et liée à l'uid ; moteur pris
+   dans la configuration système ; présomption « non fiable » (session
+   inconnue, absence d'origine, toute lecture hors `[provenance] fiables`) ;
+   drapeau persistant par conversation, effacé seulement par un humain
+   authentifié ; import (relais ou fichier) toujours non fiable ; plus de
+   nouvelle destination réseau en session non fiable.
+3. **Plafonds** : 3 pour Ollama local, 1 par défaut pour tout moteur distant
+   (relevé seulement par `policy.set_caps`, administrateur), 1 au plus pour
+   un appelant MCP.
+4. **MCP** : requêtes signées (HMAC), horodatage ±60 s, nonce à usage
+   unique, jeton de 7 jours, rotation, révocation, débit testé, écoute
+   limitée à 100.64.0.0/10 vérifiée.
+5. **Purge réelle** d'une conversation (WAL, VACUUM, sauvegardes, actions,
+   session, coffre DLP, index sémantique).
+6. **Tests négatifs** manquants de la phase 4.
+7. **Revue des entrées ajoutées à `policy.toml`** en phases 3 et 4.
+8. **Test QEMU réel** du rollback au démarrage.
+
+### Entrées de `policy.toml` ajoutées en phases 3 et 4
+
+L'audit annonçait 10 entrées : il y en a **9** (la dixième ligne du diff était
+un commentaire).
+
+| Entrée | Niveau avant | Niveau après | Attendu | Raison |
+|---|---|---|---|---|
+| `engine_save` | 1 | 2 | 2, humain seulement | Choisit où partent les conversations ; méthode réservée à l'humain authentifié (refus de toute origine d'agent). |
+| `engine_remove` | 1 | 2 | 2, humain seulement | Même raison. |
+| `engine_profile` | 1 | 1 | 1, humain seulement | Le profil mesuré ne peut qu'abaisser le plafond. |
+| `jarvis_pair` | 1 | 2 | 2, humain seulement | Crée un accès vers un service distant. |
+| `engine_use` | 1 | retiré | hors agent | Changer de moteur est réservé à l'humain (invariant 01) ; outil retiré de l'agent. |
+| `history_export` | 1 | 1 | 1 | Écrit un fichier dans `~/Documents/Djerba` : local, réversible. |
+| `history_undo` | 1 | 2 | 2 | Défaire des actions peut annuler un correctif de sécurité ; jamais depuis une session non fiable. |
+| `memory_mode` | 1 | retiré | hors agent | L'isolation de la mémoire entre moteurs est un choix humain. |
+| `history_import` | 1 | 1 | 1 | Ajoute des conversations, toujours marquées non fiables. |
+
+Même raisonnement appliqué à `transaction_undo` (1 → 2). Retraits
+consignés dans `tests/garde/derogations.txt`.
+
+### Critères de réussite
+
+- [x] Invariants : document, 33 tests réels, cliquet en CI (12 verts / 33 à
+      ce stade : 01, 06, 09, 10, 11, 15, 19, 26, 28, 30, 31, 32).
+- [x] Phase 0 : CODEOWNERS, garde des gardes, réglages protégés,
+      `llm.cloud.endpoint` refusé à `settings_set`, `engine_use` hors agent.
+- [x] Provenance tenue par root, drapeau persistant ; test : il survit au
+      changement de moteur, à la reprise et à l'import de Jarvis.
+- [x] Plafond 1 par défaut des moteurs distants et de MCP.
+- [x] MCP : expiration, nonce, rotation, débit, plage Tailscale (tests).
+- [x] Purge réelle (test sur les octets de la base, du WAL, des sauvegardes).
+- [x] Tests négatifs : base et sauvegarde plus récentes, imports malformés
+      ou trop gros, identifiant réutilisé.
+- [x] Tableau des entrées de `policy.toml`.
+- [ ] Test QEMU réel du rollback au démarrage.
+- [ ] CI verte (x86_64 et arm64) et PR relue.
 
