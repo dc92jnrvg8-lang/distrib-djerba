@@ -22,7 +22,7 @@
 7. [Paquet `djerba-tools` : outils en ligne de commande](#7-paquet-djerba-tools--outils-en-ligne-de-commande)
 8. [Agent IA `djerba_ai` : architecture](#8-agent-ia-djerba_ai--architecture)
 9. [Agent IA : module par module](#9-agent-ia--module-par-module)
-10. [Capacités de l'agent (261 outils)](#10-capacités-de-lagent-261-outils)
+10. [Capacités de l'agent (263 outils)](#10-capacités-de-lagent-263-outils)
 11. [Configuration centrale (`/etc/djerba/config.toml`)](#11-configuration-centrale-etcdjerbaconfigtoml)
 12. [Démon root `djerba-ai-sysd` et protocole JSON-RPC](#12-démon-root-djerba-ai-sysd-et-protocole-json-rpc)
 13. [Sécurité : modèle de menace et défenses](#13-sécurité--modèle-de-menace-et-défenses)
@@ -51,7 +51,7 @@ livrée sous forme d'**ISO live hybride installable** (amd64 et arm64) :
 | Amorçage | GRUB EFI signé (shim, Secure Boot) + grub-pc (BIOS) sur amd64, iso-hybrid |
 | Identité | paquet Debian `djerba-branding` (os-release par diversion dpkg, thèmes Plymouth/SDDM/GRUB/Plasma) |
 | Outils | paquet Debian `djerba-tools` : assistant d'accueil, catalogue d'apps, mode anonyme (Tor), mode discret (look Windows), mode jeu, **agent IA « Djerba »** |
-| Agent IA | Python 3.13 + PyQt6/QML ; moteurs : Ollama local, Ollama distant via Tailscale, API OpenAI/Gemini via démon root ; 261 capacités |
+| Agent IA | Python 3.13 + PyQt6/QML ; moteurs : Ollama local, Ollama distant via Tailscale, API OpenAI/Gemini via démon root ; 263 capacités |
 | CI | GitHub Actions : lints, construction ISO amd64/arm64, tests de contenu, démarrage QEMU UEFI, tests en session live avec réseau, publication en pré-release |
 
 Fonctionnalités principales visibles par l'utilisateur :
@@ -249,7 +249,7 @@ Scripts de maintenance :
 
 | Commande | Langage | Fonction |
 |---|---|---|
-| `djerba-ai` | Python | Agent IA (voir §8). Usage : `djerba-ai [--page chat|system|selfheal|studio|tools|settings]`, `--hud`, `--spotlight`, `--ask "…"`, `--ask-file ACTION F…`, `--ask-selection C NOM` (stdin), `--clipboard`, `--tray`, `ask "…"` (terminal), `tools [recherche]`, `run OUTIL ['{json}'] [--verbose]`, `health`, `doctor`, `run-app SLUG [--live]`, `daemon`, `session-report gnome [unité]`. |
+| `djerba-ai` | Python | Agent IA (voir §8). Usage : `djerba-ai [--page chat|system|selfheal|studio|tools|settings]`, `--hud`, `--spotlight`, `--ask "…"`, `--ask-file ACTION F…`, `--ask-selection C NOM` (stdin), `--clipboard`, `--tray`, `ask "…"` (terminal), `tools [recherche]`, `run OUTIL ['{json}'] [--verbose]`, `health`, `doctor`, `run-app SLUG [--live]`, `daemon`, `transactions [N]`, `undo ID [--force]`, `undo --since DATE`, `rollback --make-permanent`, `session-report gnome [unité]`. |
 | `djerba-apps` | Python | Catalogue d'applications (`/usr/share/djerba/apps.yaml`) : `list [--json]`, `install ID…`, `remove ID…`, `apply-selection FICHIER [--installer]`, `apply-pending [--wait-network S]`, `status [--json]`, progression JSON (`--json-progress`, événements start/progress/log/finish/waiting/error/complete). Verrou global, multiarch i386, debconf, Flatpak (Flathub), `APT::Install-Recommends=true`, `DPkg::Lock::Timeout=600`, **exclusions** (`apt.exclude` → `paquet-`), **vérification post-installation** (`verify:`), **réparation de dpkg** avant/après installation. État : `/var/lib/djerba/apps/{pending,last-run}.json`, `/run/djerba-apps/status.json`. |
 | `djerba-anonsurf` | Bash | Mode anonyme : `start|stop|restart|toggle|status|change|myip [--json] [--verbose]`. Coupe-circuit nftables d'abord (table `inet djerba_anonsurf`), TCP → TransPort 9040, DNS → DNSPort 5353, LAN/DHCP autorisés, IPv6/UDP/ICMP Internet rejetés ; annulation complète si Tor ne s'amorce pas ; `change` = NEWNYM. Service `djerba-anonsurf-tor.service`, torrc `/etc/tor/djerba-anonsurf.torrc` (profil AppArmor de Tor respecté). |
 | `djerba-undercover` | Bash | Mode discret : `on|off|toggle|status [--style 10|11] [--json] [--verbose]`. Sauvegarde puis restauration exacte des fichiers Plasma (kdeglobals, kwinrc, plasmarc, plasmashellrc, appletsrc, kcminputrc, ksplashrc, kscreenlockerrc, GTK…) en arrêtant proprement plasmashell. N'écrit que dans `~/.config`. |
@@ -264,6 +264,7 @@ Scripts de maintenance :
 | `djerba-ai-sysd` | Démon root de l'agent (activé par socket). |
 | `djerba-ai-ids` | Service root de détection d'intrusion. |
 | `djerba-dpkg-repair` | Santé de dpkg : `--check [--json]` (sans privilège), `--auto` / `--repair [--json]` (root), `--schedule` (crochet APT), `--watch` (session). Voir §15. |
+| `djerba-boot` | Rollback au démarrage : `ok`, `status`, `make-permanent [--force]`, `grub-snippet counter|entry`. Voir §15 bis. |
 
 ### 7.3 Données (`/usr/share`)
 
@@ -310,7 +311,7 @@ Code : `packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/`.
              │ core/llm.py (Ollama local / Tailscale / Cloud via root ; transport    │
              │              persistant, reprises, repli d'adresse)                   │
              │ core/guard.py (anti-injection) · core/dlp.py · core/memory.py         │
-             │ tools/ (261 capacités) · core/executor.py                              │
+             │ tools/ (263 capacités) · core/executor.py                              │
              ├──────────────────────────────────────────────────────────────────────┤
  Démon user  │ core/daemon.py (djerba-ai.service) : adaptateur de bureau, bus de     │
              │ contexte, télémétrie, auto-réparation, chien de garde, maintenance    │
@@ -372,6 +373,10 @@ Flux d'une demande :
 | `gpu.py` | Détection rendu 3D ou repli 2D (orbe de l'interface). | `detect` |
 | `sanitize.py` | Masquage des secrets avant écriture. | `sanitize` |
 | **`dpkgstate.py`** | Santé de dpkg (voir §15). | `check`, `repair`, `auto`, `schedule`, `watch`, `conflicts`, `busy` |
+| **`transactions.py`** | Journal de transactions du démon root (voir §15 bis) : sauvegarde avant action, relevé des chemins touchés, sondes avant/après, **rollback automatique** sur régression ou échec partiel, undo, undo depuis une date, conflits, rétention. | `Journal`, `Origin`, `TransactionError` |
+| **`snapshots.py`** | Sauvegardes : `BtrfsBackend` (instantanés, `btrfs send --no-data` → chemins exacts), `FilesBackend` (copie de /etc, /usr/local, /boot + manifeste) ; restauration commune ; `tree_digest`. | `detect`, `restore`, `parse_dump`, `Changes` |
+| **`probes.py`** | Sondes de santé déterministes (unités en échec, dpkg, NetworkManager, route, résolveur, unités ciblées) et détection de régression. | `collect`, `regressions` |
+| **`bootguard.py`** | Rollback au démarrage : clone `@djerba-last-good`, compteur GRUB sur l'ESP, entrée de restauration, rendre définitif. | `BootGuard`, `main` |
 
 ### 9.2 `gui/`
 
@@ -413,11 +418,11 @@ Flux d'une demande :
 
 ---
 
-## 10. Capacités de l'agent (261 outils)
+## 10. Capacités de l'agent (263 outils)
 
-Notation : `*` = exécuté par le démon root, `!` = dangereux (confirmation).
+Notation : `*` = exécuté par le démon root, `!` = dangereux (confirmation). Les outils root sont `mutates` (exécutés dans une transaction annulable) sauf les 15 outils de lecture : apparmor_status, auth_failures, btrfs_scrub_status, btrfs_usage, grub_entries, listening_ports, nft_ruleset, smart_health, smart_scan, snapshot_create, snapshot_delete, snapshot_list, suid_binaries, ufw_status, unattended_upgrades_log.
 
-* **agentic (42)** : audit_log, audit_verify, brain_switch!, capability_create, context_now, conversations_list, daemon_status, dlp_vault, engine_handshake, engine_status, feedback, ghost_list, ghost_logs, ghost_run, ghost_stop, health_report, incident_analyze, incidents_list, learning_stats, lesson_record, lessons_list, memory_forget!, memory_recall, memory_remember, model_list, model_pull!, model_recommend, model_set, ollama_install!, patch_deploy!, patch_list, patch_propose, patch_rollback!, self_update*!, settings_get, settings_history, settings_set!, tools_categories, tools_search, venv_install!, web_fetch, web_search.
+* **agentic (44)** : transactions_list, transaction_undo, audit_log, audit_verify, brain_switch!, capability_create, context_now, conversations_list, daemon_status, dlp_vault, engine_handshake, engine_status, feedback, ghost_list, ghost_logs, ghost_run, ghost_stop, health_report, incident_analyze, incidents_list, learning_stats, lesson_record, lessons_list, memory_forget!, memory_recall, memory_remember, model_list, model_pull!, model_recommend, model_set, ollama_install!, patch_deploy!, patch_list, patch_propose, patch_rollback!, self_update*!, settings_get, settings_history, settings_set!, tools_categories, tools_search, venv_install!, web_fetch, web_search.
 * **apps (27)** : apps_catalog, apps_install*!, apps_remove*!, apps_retry_pending*, apps_status, apt_history, apt_install*!, apt_remove*!, default_apps, default_browser_set, flatpak_install*!, flatpak_list, flatpak_remotes, flatpak_remove*!, flatpak_search, heroic_install*!, lutris_install*!, multilib_enable*, multilib_status, open_discover, open_store, package_files, package_owner, proton_install_ge, proton_list, steam_install*!, wine_install*!.
 * **desktop (26)** : audio_default, audio_devices, colorscheme_apply, colorschemes_list, dark_mode, desktop_apps, keyboard_layout, lock_screen, mute_toggle, night_light, notify, open_app, open_welcome, screen_mode!, screen_scale, screen_vrr, screens_list, screenshot, theme_apply!, themes_list, undercover_off, undercover_on, undercover_status, volume_get, volume_set, wallpaper_set.
 * **devtools (19)** : app_delete!, app_export, app_generator, app_history, app_iterate, app_open_folder, app_revert!, app_run, apps_generated_list, compile_c, compile_rust, git_status, plugin_disable, plugin_enable!, plugin_generate, plugins_list, python_check, shellcheck_file, studio_templates.
@@ -485,6 +490,10 @@ Fichier root 0600, écrit uniquement par le démon root (`config.set`) ; vue pub
 | `audit.tail {lines}` / `audit.verify` | `org.djerba.ai.audit` | Lecture et vérification de la chaîne |
 | `security.status` / `security.unblock {ip}` / `security.apparmor_load {kind, name, network}` | audit / configure / extend | IDS, AppArmor |
 | **`session.report {desktop, component, detail}`** | — (appelant de confiance, 30/h/uid) | Écrit `/var/log/djerba/<bureau>-crash.log` (root:adm 0640, rotation 1 Mio) |
+| `tx.list {limit, since}` / `tx.show {id}` | `org.djerba.ai.audit` | Journal de transactions |
+| `tx.undo {id, force}` / `tx.undo_since {since}` | `org.djerba.ai.undo` | Annulation depuis la sauvegarde |
+
+Les méthodes qui modifient le système (`sys.exec_tool` d'un outil `mutates`, correctifs, `sys.install_ollama`, `sys.venv_install`, `config.set`, `security.apparmor_load`) acceptent un champ facultatif `origin {engine, session}` et s'exécutent **dans une transaction** (§15 bis).
 
 ---
 
@@ -526,6 +535,17 @@ Module `core/dpkgstate.py`, exécutable `/usr/libexec/djerba-dpkg-repair`.
 
 ---
 
+## 15 bis. Réversibilité : transactions, instantanés, rollback au démarrage
+
+* **Transaction** (`core/transactions.py`) pour toute action root qui modifie le système : sondes « avant » (`core/probes.py`) et liste des paquets → **sauvegarde** (si elle échoue, l'action n'est pas exécutée) → action → relevé des chemins touchés et du delta de paquets → sondes « après ». Régression (nouvelle unité en échec, dpkg incohérent, NetworkManager, route ou résolveur perdus, unité ciblée arrêtée) **ou** échec de l'action avec modifications partielles → **annulation automatique** (tout ou rien).
+* **Sauvegarde** (`core/snapshots.py`) :
+  * **Btrfs** : instantanés en lecture seule `<sommet>/@djerba-snapshots/<id>-avant` (conservé) et `-apres` (supprimé dès le relevé) ; le sommet du volume (`subvolid=5`) est monté dans `/run/djerba-ai/btrfs` ; `btrfs send --no-data -p avant après | btrfs receive --dump` donne les chemins exacts, sans déclaration par l'outil.
+  * **Fichiers** (live, ext4, xfs) : copie de `/etc` et `/usr/local` (+ `/boot` pour les outils d'amorçage) dans `/var/lib/djerba-ai/tx/<id>/avant`, manifeste d'empreintes ; les paquets hors de ces dossiers sont annulés par APT (purge des paquets ajoutés, réinstallation des versions retirées ou changées).
+  * Jamais restaurés : `/var/log`, caches, `/var/lib/djerba-ai*`, `/var/lib/systemd`, listes APT, baux réseau, `/home`, `.snapshots`…
+* **Journal** : SQLite root 0600 `/var/lib/djerba-ai/transactions.db` (`PRAGMA user_version` = 1) — id `tAAAAMMJJhhmmssXXXX`, dates, uid, **moteur d'IA** (`kind:modèle`, transmis par l'agent) et **session** (conversation), méthode, outil, paramètres masqués, sauvegarde, chemins, paquets, sondes, régressions, état (`appliquée`, `sans effet`, `échec`, `annulée`, `annulée automatiquement`, `annulation partielle`, `expirée`). Rétention : 60 dernières transactions, 30 jours.
+* **Undo** : `djerba-ai transactions [N]`, `djerba-ai undo ID [--force]`, `djerba-ai undo --since AAAA-MM-JJ[THH:MM]` (antichronologique) ; outils de l'agent `transactions_list`, `transaction_undo`. Refus si une transaction plus récente encore appliquée a touché les mêmes chemins.
+* **Rollback au démarrage** (`core/bootguard.py`, `/usr/libexec/djerba-boot`, Btrfs + UEFI, racine non chiffrée) : `djerba-boot-ok.timer` (3 min après l'amorçage) → si le démarrage est sain, compteur remis à 0 et clone inscriptible `@djerba-last-good` rafraîchi (fstab pointé sur lui, noyau/initrd aux noms stables `boot/djerba-vmlinuz`, `boot/djerba-initrd.img`). `/etc/grub.d/09_djerba_bootcount` incrémente `djerba_boot_tries` dans `EFI/djerba/grubenv` sur l'ESP ; à 2, GRUB démarre l'entrée `djerba-last-good` (`/etc/grub.d/42_djerba_rollback`). `djerba-ai rollback --make-permanent` (pkexec, `org.djerba.boot-rollback`) conserve l'état restauré (l'ancien `@` est gardé en `@djerba-broken-<date>`).
+
 ## 16. Chemins installés et données à l'exécution
 
 | Chemin | Propriétaire / droits | Contenu |
@@ -533,7 +553,9 @@ Module `core/dpkgstate.py`, exécutable `/usr/libexec/djerba-dpkg-repair`.
 | `/etc/djerba/config.toml` | root 0600 | Configuration centrale |
 | `/etc/djerba/config.public.json` | root 0644 | Vue publique |
 | `/var/log/djerba/` | root:adm 0750 | `audit.log` (0640, append-only, chaîné), `dpkg-repair.log`, `gnome-crash.log`, `kde-crash.log`… |
-| `/var/lib/djerba-ai/` | root | `audit.head`, `sandbox/` (dépôt Git du bac à sable), correctifs |
+| `/var/lib/djerba-ai/` | root 0700 | `audit.head`, `sandbox/` (dépôt Git du bac à sable), correctifs, `transactions.db` (0600), `tx/<id>/` (sauvegardes sans Btrfs) |
+| `<sommet Btrfs>/@djerba-snapshots/`, `@djerba-last-good`, `@djerba-broken-*` | root | Instantanés des transactions, dernier bon état, anciens systèmes après rollback |
+| `/boot/efi/EFI/djerba/grubenv` | root | Compteur de démarrages lu/écrit par GRUB |
 | `/var/lib/djerba-ai-runs/` | root 0711 | Dossiers de travail éphémères du bac à sable |
 | `/var/lib/djerba/apps/` | root | `pending.json`, `last-run.json` |
 | `/run/djerba-ai/` | root | `sysd.sock`, `ids.json` |
@@ -559,13 +581,14 @@ Module `core/dpkgstate.py`, exécutable `/usr/libexec/djerba-dpkg-repair`.
 * `djerba-anonsurf-tor.service` — Tor du mode anonyme.
 * `djerba-apps-firstboot.service` — installation des applications choisies au premier démarrage.
 * `djerba-dpkg-repair.service` + `.timer` — vérification/réparation de dpkg.
+* `djerba-boot-ok.service` + `.timer` — validation du démarrage (compteur GRUB, `@djerba-last-good`).
 
 **Utilisateur** (`/usr/lib/systemd/user/`) :
 * `djerba-ai.service` — démon utilisateur (`WantedBy=graphical-session.target`, activé globalement).
 * `djerba-gnome-crash.service` + compléments `org.gnome.Shell@wayland.service.d/`, `org.gnome.Shell@x11.service.d/`, `gnome-session-failed.target.d/`.
 * `djerba-ghost-*` (transitoires) — Ghost Runner ; `djerba-app-*` (scopes) — applications du Studio.
 
-**Actions polkit** : `org.djerba.ai.{exec,patch,deploy,setup,configure,cloud,audit,extend}`, `org.djerba.apps`, `org.djerba.anonsurf`, `org.djerba.dpkg-repair`, `org.djerba.installer`.
+**Actions polkit** : `org.djerba.ai.{exec,patch,deploy,setup,configure,cloud,audit,extend,undo}`, `org.djerba.apps`, `org.djerba.anonsurf`, `org.djerba.dpkg-repair`, `org.djerba.boot-rollback`, `org.djerba.installer`.
 
 **Autostart** : `djerba-welcome` (KDE), `djerba-ai-tray` (KDE), `djerba-dpkg-watch` (tous bureaux).
 

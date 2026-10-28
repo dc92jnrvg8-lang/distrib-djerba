@@ -2054,5 +2054,334 @@ class BrandingPackageTests(unittest.TestCase):
         self.assertIn("djerba-dpkg-repair --auto", (branding / "DEBIAN" / "postinst").read_text())
 
 
+SEND_DUMP = r"""snapshot        ./apres                         uuid=9f transid=10 parent_uuid=df parent_transid=9
+update_extent   ./apres/etc/a                   offset=0 len=4
+unlink          ./apres/etc/b
+mkfile          ./apres/o259-10-0
+mkdir           ./apres/o260-10-0
+rename          ./apres/o259-10-0               dest=./apres/o260-10-0/f3
+rename          ./apres/o260-10-0               dest=./apres/etc/d
+chmod           ./apres/etc/c                   mode=600
+utimes          ./apres/etc                     atime=x mtime=x ctime=x
+mkfile          ./apres/var/log/journal\ x
+rename          ./apres/usr/bin/x               dest=./apres/usr/bin/nom\ espace
+"""
+
+
+def healthy_probe(targets=()):
+    return {"failed_units": [], "dpkg": True, "network_manager": True, "route": True, "resolver": True,
+            "targets": {unit: True for unit in targets}}
+
+
+def populate(root: Path) -> None:
+    for path, content in {"etc/a": "a", "etc/b": "b", "etc/c": "c", "etc/keep/d": "d", "usr/local/bin/outil": "x",
+                          "var/log/syslog": "journal"}.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(content)
+
+
+def change_everything(root: Path) -> dict:
+    (root / "etc/a").write_text("modifié")
+    (root / "etc/b").unlink()
+    os.chmod(root / "etc/c", 0o600)
+    (root / "etc/new/sub").mkdir(parents=True)
+    (root / "etc/new/sub/f").write_text("nouveau")
+    shutil.rmtree(root / "etc/keep")
+    (root / "usr/local/bin/outil").rename(root / "usr/local/bin/outil2")
+    (root / "var/log/syslog").write_text("journal modifié")
+    return {"success": True, "message": "fait", "data": {}}
+
+
+class TransactionTests(unittest.TestCase):
+    IGNORE = ("var/log/",)
+
+    def journal(self, probe=healthy_probe, packages=None):
+        from djerba_ai.core import snapshots, transactions
+        self.base = Path(tempfile.mkdtemp())
+        self.live = self.base / "racine"
+        populate(self.live)
+        backend = snapshots.FilesBackend(self.base / "tx", self.live)
+        return transactions.Journal(db=self.base / "tx.db", backend=backend, probe=probe,
+                                    packages=packages or (lambda: {"base-files": "13"}),
+                                    runner=lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
+
+    def test_send_dump_parsing(self) -> None:
+        from djerba_ai.core import snapshots
+        changes = snapshots.parse_dump(SEND_DUMP).filtered()
+        self.assertEqual(sorted(changes.paths), ["etc", "etc/a", "etc/b", "etc/c", "etc/d", "usr/bin/nom espace",
+                                                 "usr/bin/x"])
+        self.assertIn("rename_to", changes.paths["etc/d"])
+        self.assertEqual(changes.paths["etc"], {"utimes"})
+
+    def test_action_then_undo_restores_identical_state(self) -> None:
+        from djerba_ai.core import snapshots, transactions
+        journal = self.journal()
+        before = snapshots.tree_digest(self.live, self.IGNORE)
+        result = journal.run(lambda: change_everything(self.live), method="sys.exec_tool", tool="essai",
+                             params={"x": 1}, uid=1000, origin=transactions.Origin("tailscale:qwen2.5:32b", "17"))
+        info = result["transaction"]
+        self.assertEqual(info["state"], transactions.APPLIED)
+        self.assertTrue(info["undoable"])
+        record = journal.show(info["id"])
+        self.assertEqual((record["engine"], record["session"], record["uid"]), ("tailscale:qwen2.5:32b", "17", 1000))
+        self.assertIn("etc/new/sub/f", record["changes"])
+        self.assertNotIn("var/log/syslog", record["changes"])
+        self.assertNotEqual(snapshots.tree_digest(self.live, self.IGNORE), before)
+        report = journal.undo(info["id"])
+        self.assertEqual(report["state"], transactions.UNDONE, report)
+        self.assertEqual(snapshots.tree_digest(self.live, self.IGNORE), before)
+        self.assertEqual((self.live / "var/log/syslog").read_text(), "journal modifié")  # journaux jamais restaurés
+        with self.assertRaises(transactions.TransactionError):
+            journal.undo(info["id"])  # déjà annulée
+
+    def test_regression_triggers_automatic_rollback(self) -> None:
+        from djerba_ai.core import snapshots, transactions
+        calls = {"n": 0}
+
+        def probe(targets=()):
+            calls["n"] += 1
+            state = healthy_probe(targets)
+            if calls["n"] == 2:  # sonde « après » : un service est tombé
+                state["failed_units"] = ["sddm.service"]
+            return state
+        journal = self.journal(probe)
+        before = snapshots.tree_digest(self.live, self.IGNORE)
+        result = journal.run(lambda: change_everything(self.live), method="sys.exec_tool", tool="essai")
+        self.assertFalse(result["success"])
+        self.assertEqual(result["transaction"]["state"], transactions.AUTO_UNDONE)
+        self.assertIn("sddm.service", result["message"])
+        self.assertEqual(snapshots.tree_digest(self.live, self.IGNORE), before)
+        self.assertEqual(journal.show(result["transaction"]["id"])["regressions"], ["l'unité sddm.service est en échec"])
+
+    def test_failed_action_with_partial_changes_is_rolled_back(self) -> None:
+        from djerba_ai.core import snapshots, transactions
+        journal = self.journal()
+        before = snapshots.tree_digest(self.live, self.IGNORE)
+
+        def half_done():
+            (self.live / "etc/a").write_text("à moitié")
+            raise RuntimeError("coupure au milieu")
+        result = journal.run(half_done, method="sys.exec_tool", tool="essai")
+        self.assertFalse(result["success"])
+        self.assertEqual(result["transaction"]["state"], transactions.AUTO_UNDONE)
+        self.assertEqual(snapshots.tree_digest(self.live, self.IGNORE), before)
+
+    def test_no_effect_and_backup_failure(self) -> None:
+        from djerba_ai.core import transactions
+        journal = self.journal()
+        result = journal.run(lambda: {"success": True, "message": "rien"}, method="m")
+        self.assertEqual(result["transaction"]["state"], transactions.NO_EFFECT)
+        self.assertFalse((self.base / "tx" / result["transaction"]["id"]).exists())  # sauvegarde libérée
+        ran = []
+
+        class Broken:
+            name = "fichiers"
+
+            def prepare(self, *_a, **_k):
+                raise transactions.snapshots.SnapshotError("disque plein")
+        journal._backend = Broken()
+        result = journal.run(lambda: ran.append(1), method="m")
+        self.assertFalse(result["success"])
+        self.assertEqual(ran, [])  # jamais exécutée sans sauvegarde
+
+    def test_undo_since_in_reverse_order_and_conflicts(self) -> None:
+        from djerba_ai.core import snapshots, transactions
+        journal = self.journal()
+        before = snapshots.tree_digest(self.live, self.IGNORE)
+        first = journal.run(lambda: ((self.live / "etc/a").write_text("1"), {"success": True})[1], method="m")
+        second = journal.run(lambda: ((self.live / "etc/a").write_text("2"), {"success": True})[1], method="m")
+        with self.assertRaises(transactions.TransactionError) as caught:
+            journal.undo(first["transaction"]["id"])
+        self.assertIn(second["transaction"]["id"], str(caught.exception))
+        result = journal.undo_since("2000-01-01")
+        self.assertEqual(result["undone"], [second["transaction"]["id"], first["transaction"]["id"]])
+        self.assertEqual(snapshots.tree_digest(self.live, self.IGNORE), before)
+
+    def test_package_delta_reverted_without_btrfs(self) -> None:
+        sequence = iter([{"base-files": "13"}, {"base-files": "13", "nginx": "1.26"}])
+        journal = self.journal(packages=lambda: next(sequence, {"base-files": "13", "nginx": "1.26"}))
+        commands: list[list[str]] = []
+        journal.runner = lambda argv, **_k: (commands.append(list(argv)), subprocess.CompletedProcess(argv, 0, "", ""))[1]
+        result = journal.run(lambda: ((self.live / "etc/nginx.conf").write_text("x"), {"success": True})[1],
+                             method="sys.exec_tool", tool="apt_install")
+        self.assertEqual(journal.show(result["transaction"]["id"])["packages"], {"installed": {"nginx": "1.26"}})
+        journal.undo(result["transaction"]["id"])
+        self.assertIn(["apt-get", "-y", "purge", "nginx"], commands)
+        self.assertFalse((self.live / "etc/nginx.conf").exists())
+
+    def test_probe_regressions(self) -> None:
+        from djerba_ai.core import probes
+        before = healthy_probe(("cups.service",))
+        after = dict(before, failed_units=["djerba-ghost-x.service", "cups.service"], dpkg=False, route=False,
+                     targets={"cups.service": False}, network_manager=None)
+        found = probes.regressions(before, after)
+        self.assertEqual(len(found), 4, found)  # unité ghost ignorée, valeur inconnue jamais une régression
+        self.assertEqual(probes.regressions(before, before), [])
+
+    def test_root_daemon_wraps_mutating_tools(self) -> None:
+        from djerba_ai.core import transactions
+        from djerba_ai.tools.base import function_tool
+        journal = self.journal()
+        live = self.live
+        Mutating = function_tool("essai_modif", "system", "modifie", lambda p, v: change_everything(live),
+                                 requires_root=True)
+        Reading = function_tool("essai_lecture", "system", "lit", lambda p, v: {"success": True, "message": "lu"},
+                                requires_root=True, mutates=False)
+
+        class Registry:
+            tools = {"essai_modif": Mutating(), "essai_lecture": Reading()}
+
+            def get(self, name):
+                return self.tools.get(name)
+        dispatcher = sysd.Dispatcher(authorizer=lambda *_: True, verifier=TRUSTED, journal=journal)
+        dispatcher._registry = Registry()
+        _request, model = parse_rpc({"jsonrpc": "2.0", "id": 1, "method": "sys.exec_tool", "params": {
+            "name": "essai_modif", "origin": {"engine": "cloud:gpt-test", "session": "9"}}})
+        result = dispatcher.dispatch("sys.exec_tool", model.model_dump(), 1, 1000)
+        tx_id = result["transaction"]["id"]
+        self.assertEqual(journal.show(tx_id)["engine"], "cloud:gpt-test")
+        read = dispatcher.dispatch("sys.exec_tool", {"name": "essai_lecture", "params": {}, "verbose": False}, 1, 1000)
+        self.assertNotIn("transaction", read)
+        listed = dispatcher.dispatch("tx.list", {"limit": 10, "since": None}, 1, 1000)["transactions"]
+        self.assertEqual([item["id"] for item in listed], [tx_id])
+        undone = dispatcher.dispatch("tx.undo", {"id": tx_id, "force": False}, 1, 1000)
+        self.assertTrue(undone["success"])
+        self.assertEqual(journal.show(tx_id)["state"], transactions.UNDONE)
+        with self.assertRaises(ipc.RPCError):
+            dispatcher.dispatch("tx.undo", {"id": tx_id, "force": False}, 1, 1000)
+        for bad in ({"id": "t1"}, {"id": "t20261028084635301g"}):
+            with self.assertRaises(ipc.RPCError):
+                parse_rpc({"jsonrpc": "2.0", "id": 1, "method": "tx.undo", "params": bad})
+        with self.assertRaises(ipc.RPCError):
+            parse_rpc({"jsonrpc": "2.0", "id": 1, "method": "tx.undo_since", "params": {"since": "hier"}})
+
+
+class FakeBootGuard:
+    @staticmethod
+    def make(esp: Path):
+        from djerba_ai.core import bootguard
+
+        class Guard(bootguard.BootGuard):
+            def facts(self):
+                return {"root_uuid": "1111-2222", "esp_uuid": "ABCD-EF01"}
+        return Guard(backend=None, esp=esp)
+
+
+class BootRollbackTests(unittest.TestCase):
+    def test_grub_snippets_are_valid(self) -> None:
+        guard = FakeBootGuard.make(Path(tempfile.mkdtemp()))
+        counter = guard.grub_snippet("counter")
+        entry = guard.grub_snippet("entry", {"GRUB_CMDLINE_LINUX_DEFAULT": "quiet splash"})
+        self.assertIn('set default="djerba-last-good"', counter)
+        self.assertIn("save_env --file", counter)
+        self.assertIn("--id djerba-last-good", entry)
+        self.assertIn("rootflags=subvol=/@djerba-last-good ro quiet splash", entry)
+        checker = shutil.which("grub-script-check")
+        if checker:
+            for snippet in (counter, entry):
+                script = Path(tempfile.mkdtemp()) / "grub.cfg"
+                script.write_text(snippet)
+                self.assertEqual(subprocess.run([checker, str(script)]).returncode, 0, snippet)
+
+    def test_boot_counter_on_esp(self) -> None:
+        if not shutil.which("grub-editenv"):
+            self.skipTest("grub-editenv absent")
+        guard = FakeBootGuard.make(Path(tempfile.mkdtemp()))
+        self.assertEqual(guard.tries(), 0)
+        self.assertTrue(guard.set_tries(2))
+        self.assertEqual(guard.tries(), 2)
+        self.assertTrue(guard.set_tries(0))
+        self.assertEqual(guard.tries(), 0)
+
+    def test_fstab_and_kernel_selection(self) -> None:
+        from djerba_ai.core import bootguard
+        root = Path(tempfile.mkdtemp())
+        (root / "etc").mkdir()
+        (root / "etc/fstab").write_text("UUID=1 / btrfs subvol=/@,noatime 0 0\nUUID=1 /home btrfs subvol=/@home 0 0\n")
+        self.assertTrue(bootguard.point_fstab(root, "@djerba-last-good"))
+        lines = (root / "etc/fstab").read_text().splitlines()
+        self.assertEqual(lines[0], "UUID=1 / btrfs noatime,subvol=/@djerba-last-good 0 0")
+        self.assertEqual(lines[1], "UUID=1 /home btrfs subvol=/@home 0 0")
+        (root / "boot").mkdir()
+        for version in ("6.12.9", "6.12.10", "6.12.11"):
+            (root / f"boot/vmlinuz-{version}-amd64").write_text(version)
+        for version in ("6.12.9", "6.12.10"):
+            (root / f"boot/initrd.img-{version}-amd64").write_text(version)
+        kernel, initrd = bootguard.newest_kernel(root)
+        self.assertEqual((kernel.name, initrd.name), ("vmlinuz-6.12.10-amd64", "initrd.img-6.12.10-amd64"))
+
+
+ROOT_BTRFS = os.geteuid() == 0 and shutil.which("mkfs.btrfs") and os.environ.get("DJERBA_AI_ROOT_TESTS")
+
+
+@unittest.skipUnless(ROOT_BTRFS, "Btrfs réel requis (root, btrfs-progs, DJERBA_AI_ROOT_TESTS)")
+class BtrfsReversibilityTests(unittest.TestCase):
+    """Instantanés réels sur une image loop : action -> undo -> état identique."""
+
+    IGNORE = ("var/log/",)
+
+    def setUp(self) -> None:
+        from djerba_ai.core import snapshots
+        self.base = Path(tempfile.mkdtemp())
+        image, self.top = self.base / "image", self.base / "sommet"
+        self.top.mkdir()
+        subprocess.run(["truncate", "-s", "300M", str(image)], check=True)
+        subprocess.run(["mkfs.btrfs", "-q", str(image)], check=True, capture_output=True)
+        subprocess.run(["mount", "-o", "loop", str(image), str(self.top)], check=True)
+        subprocess.run(["btrfs", "-q", "subvolume", "create", str(self.top / "@")], check=True)
+        self.live = self.top / "@"
+        populate(self.live)
+        self.backend = snapshots.BtrfsBackend(self.top, "@", self.live)
+
+    def tearDown(self) -> None:
+        subprocess.run(["umount", "-l", str(self.top)], capture_output=True)
+
+    def test_btrfs_undo_and_automatic_rollback(self) -> None:
+        from djerba_ai.core import snapshots, transactions
+        journal = transactions.Journal(db=self.base / "tx.db", backend=self.backend, probe=healthy_probe,
+                                       packages=lambda: {})
+        before = snapshots.tree_digest(self.live, self.IGNORE)
+        result = journal.run(lambda: change_everything(self.live), method="sys.exec_tool", tool="essai",
+                             origin=transactions.Origin("local:qwen3:8b", "3"))
+        info = result["transaction"]
+        self.assertEqual((info["state"], info["backend"]), (transactions.APPLIED, "btrfs"))
+        self.assertFalse((self.top / "@djerba-snapshots" / f"{info['id']}-apres").exists())
+        journal.undo(info["id"])
+        self.assertEqual(snapshots.tree_digest(self.live, self.IGNORE), before)
+
+        calls = {"n": 0}
+
+        def probe(targets=()):
+            calls["n"] += 1
+            return dict(healthy_probe(targets), dpkg=calls["n"] != 2)
+        journal.probe = probe
+        result = journal.run(lambda: change_everything(self.live), method="sys.exec_tool", tool="essai")
+        self.assertEqual(result["transaction"]["state"], transactions.AUTO_UNDONE)
+        self.assertEqual(snapshots.tree_digest(self.live, self.IGNORE), before)
+
+    def test_last_good_clone_and_make_permanent(self) -> None:
+        from djerba_ai.core import bootguard, snapshots
+        (self.live / "etc/fstab").write_text("UUID=1 / btrfs subvol=/@,noatime 0 0\n")
+        (self.live / "boot").mkdir()
+        (self.live / "boot/vmlinuz-6.12.10-amd64").write_text("noyau")
+        (self.live / "boot/initrd.img-6.12.10-amd64").write_text("initrd")
+        guard = bootguard.BootGuard(backend=self.backend, esp=self.base / "esp")
+        self.assertIn("dernier bon état enregistré", guard.refresh_last_good())
+        clone = self.top / bootguard.LAST_GOOD
+        self.assertEqual((clone / bootguard.KERNEL).read_text(), "noyau")
+        self.assertIn("subvol=/@djerba-last-good", (clone / "etc/fstab").read_text())
+        self.assertIn("subvol=/@,", (self.live / "etc/fstab").read_text())  # l'original n'est pas touché
+        self.assertIn("dernier bon état enregistré", guard.refresh_last_good())  # rafraîchissement idempotent
+        reference = snapshots.tree_digest(clone, ("etc/fstab", "etc/djerba-last-good"))
+        (self.live / "etc/a").write_text("état cassé")
+        message = guard.make_permanent(force=True)
+        self.assertIn("@djerba-broken-", message)
+        restored = self.top / "@"
+        self.assertEqual(snapshots.tree_digest(restored, ("etc/fstab", "etc/djerba-last-good")), reference)
+        self.assertRegex((restored / "etc/fstab").read_text(), r"^UUID=1 / btrfs \S*subvol=/@(,|\s)")
+        self.assertFalse((restored / bootguard.MARKER).exists())
+        self.assertTrue(any(path.name.startswith("@djerba-broken-") for path in self.top.iterdir()))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -165,6 +165,12 @@ OFFLINE_CHECKS = [
      "printf '%s\\n' \"$e\" | grep -Eq '^XDG_CONFIG_DIRS=([^:]*:)*/etc/xdg/djerba:([^:]*:)*/etc/xdg(:|$)' "
      "&& test -f /etc/xdg/djerba/kcm-about-distrorc "
      "&& ! dpkg -S /etc/xdg/kcm-about-distrorc 2>/dev/null | grep -q djerba", 30),
+    ("Réversibilité : modification root tracée puis annulée à l'identique (djerba-ai undo)",
+     "before=$(readlink /etc/localtime); sudo djerba-ai run timezone_set '{\"zone\": \"Pacific/Tahiti\"}' "
+     "| grep -q '\"undoable\": true' && test \"$(readlink /etc/localtime)\" != \"$before\" "
+     "&& id=$(sudo djerba-ai transactions 1 | awk 'END {print $1}') && sudo djerba-ai undo \"$id\" "
+     "&& test \"$(readlink /etc/localtime)\" = \"$before\" "
+     "&& sudo djerba-ai transactions 1 | grep -q 'annulée'", 180),
     ("Store : catalogue JSON",
      "djerba-apps list --json | python3 -c 'import json,sys; assert len(json.load(sys.stdin)[\"apps\"]) >= 10'", 60),
     ("Mode discret : bascule Windows 11 puis restauration à l'identique",
