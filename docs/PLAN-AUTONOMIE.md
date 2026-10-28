@@ -469,6 +469,8 @@ consignés dans `tests/garde/derogations.txt`.
 - [x] Tests négatifs : base et sauvegarde plus récentes, imports malformés
       ou trop gros, identifiant réutilisé.
 - [x] Tableau des entrées de `policy.toml`.
-- [ ] Test QEMU réel du rollback au démarrage.
+- [x] Test QEMU réel du rollback au démarrage (`tests/test-boot-rollback.sh`) :
+      démarrage sain sur `@`, panne de `@`, deux paniques, puis GRUB démarre seul
+      `@djerba-last-good` (compteur 2). Vert en local (TCG) ; étape CI x86_64.
 - [ ] CI verte (x86_64 et arm64) et PR relue.
 
