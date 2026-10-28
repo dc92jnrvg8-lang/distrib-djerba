@@ -300,3 +300,99 @@ conteneur Debian 13, CI x86_64 et arm64).
   l'historique à généraliser en phase 4 (historique par IA).
 * Interface graphique de gestion des moteurs : CLI et réglages seulement ;
   page dédiée en phase 8.
+
+## Phase 4 — Historique par IA, mémoire, continuité
+
+### Conception
+
+* **Schéma versionné** de la mémoire (`core/memory.py`, `PRAGMA
+  user_version`) : liste ordonnée de migrations, chacune dans une
+  transaction, **sauvegarde automatique** de la base avant toute migration
+  (`~/.local/share/djerba/backups/`). Version 3 :
+  * `conversations` : `key` (identifiant unique, sert de session au journal
+    de transactions), `engine` (moteur d'origine), `pinned`, `summary`
+    (chiffré) et `summary_upto`, `source` (import) ;
+  * `messages.engine` (moteur qui a produit chaque réponse) ;
+  * `facts.engine`, `lessons.engine` (`""` = mémoire partagée) ;
+  * `tool_runs.conversation`, `tool_runs.engine`, `tool_runs.transaction` ;
+  * table `engine_memory` : par moteur, mode `isole` / `partage` et
+    rétention (jours, 0 = illimitée).
+* **Historique par moteur** : liste filtrable par moteur, recherche plein
+  texte (déchiffrement en mémoire, insensible à la casse et aux accents) et
+  sémantique (embeddings Ollama locaux), épinglage, renommage, export
+  Markdown/JSON (messages et actions), suppression. Chiffrement AES-256-GCM
+  conservé (titres, messages, résumés).
+* **Continuité** : la conversation suit le changement de moteur ;
+  l'historique transmis est adapté à la fenêtre du nouveau moteur — derniers
+  échanges intégraux, plus anciens condensés en un résumé extractif
+  déterministe (mis en cache, chiffré).
+* **Mémoire isolée / partagée par moteur** : en mode `partage`, le moteur lit
+  et écrit la mémoire commune ; en mode `isole`, seulement la sienne. Par
+  défaut : Ollama local partagé, tout autre moteur isolé. L'envoi vers un
+  moteur distant reste soumis aux règles `share` et au DLP (phase 3).
+* **Traçabilité et annulation depuis l'historique** : chaque action est
+  liée à la conversation (`key`) et au moteur ; méthode root
+  `tx.undo_session {session}` (polkit `org.djerba.ai.undo`, transactions du
+  seul appelant), outil `history_undo`, bouton dans l'interface.
+* **Rétention** par moteur (purge des conversations non épinglées),
+  **sauvegarde / restauration** de l'historique (copie SQLite cohérente,
+  contrôle d'intégrité et de clé avant restauration, sauvegarde de l'état
+  courant d'abord).
+* **Import Jarvis** : format d'export défini dans le contrat
+  (`docs/JARVIS-CONTRAT.md` §4, conversations JSON) ; import depuis un
+  fichier ou par le relais root (`GET /v1/history`, jeton jamais exposé) ;
+  dédoublonnage par identifiant d'origine.
+* **Accès** : CLI `djerba-ai history …`, outils de l'agent, page Historique
+  de l'interface (liste par moteur, recherche, épingler, renommer, exporter,
+  supprimer, reprendre avec un autre moteur, annuler les actions).
+
+### Critères de réussite
+
+- [x] Migrations v1 (clair) → v2 → v3 testées : aucune perte, sauvegarde
+      préalable créée (déjà chiffrée), base plus récente refusée.
+- [x] Historique filtré par moteur ; recherche plein texte et sémantique ;
+      épinglage, renommage, export Markdown/JSON, suppression.
+- [x] Reprise d'une conversation avec un autre moteur : résumé adapté à sa
+      fenêtre (demande d'origine et actions conservées), derniers échanges
+      intégraux.
+- [x] Mémoire isolée / partagée par moteur respectée (faits, leçons, outils
+      de mémoire attribués au moteur actif).
+- [x] Actions liées à la conversation et au moteur ; annulation depuis
+      l'historique (transactions root du seul appelant).
+- [x] Rétention par moteur, sauvegarde et restauration vérifiées (clé
+      étrangère et base corrompue refusées, état courant sauvegardé).
+- [x] Import Jarvis (fichier et relais root) contre le serveur factice,
+      dédoublonné.
+- [x] Lints et 138 tests verts en local ; contrôle de session live ajouté.
+- [ ] CI verte (x86_64 et arm64).
+
+### Décisions
+
+* **Pas de FTS5** : un index plein texte SQLite stockerait le texte en clair ;
+  la recherche déchiffre en mémoire (volume personnel : quelques milliers de
+  messages), la recherche sémantique réutilise l'index chiffré existant.
+* **Résumé extractif déterministe** plutôt que résumé par le modèle : pas
+  d'appel réseau supplémentaire, testable, rien n'est envoyé à un moteur
+  distant pour être résumé ; la demande d'origine et les actions sont
+  toujours conservées.
+* **Clé de conversation** (UUID) comme session du journal de transactions :
+  un identifiant numérique supprimé peut être réutilisé par SQLite ; l'état
+  de session de l'agent est aussi lié à cette clé (correction d'une fuite
+  d'état possible entre conversations).
+* **Annulation par conversation limitée à l'appelant** : `tx.undo_session`
+  filtre sur l'uid ; aucune conversation n'engage un autre utilisateur.
+* **Origine propagée aux méthodes root appelées par un outil** (variable de
+  contexte `ipc.ORIGIN`) : un réglage changé par l'agent appartient à sa
+  conversation et s'annule depuis l'historique comme une action root.
+* **Mémoire isolée par défaut pour tout moteur autre qu'Ollama local** : ce
+  qu'un moteur distant apprend ne se mélange pas à la mémoire commune sans
+  choix explicite.
+
+### Limites restantes
+
+* Recherche plein texte linéaire (suffisante jusqu'à quelques dizaines de
+  milliers de messages).
+* Import Jarvis selon le contrat v1 ; format réel inconnu.
+* Interface de l'historique fonctionnelle mais sobre (onglet du Studio) ;
+  refonte en phase 8.
+

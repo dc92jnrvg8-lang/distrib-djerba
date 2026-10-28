@@ -179,6 +179,8 @@ OFFLINE_CHECKS = [
     ("Moteurs d'IA : registre (Ollama local actif) ; serveur MCP désactivé par défaut",
      f"djerba-ai engines | grep -q '^● local ' && djerba-ai mcp list >/dev/null "
      f"&& {SESSION}; journalctl --user -u djerba-ai-mcp --no-pager -o cat | grep -q 'désactivé'", 60),
+    ("Historique par moteur : base migrée, mémoire de l'IA locale partagée",
+     "djerba-ai history >/dev/null && djerba-ai history memory | grep -Eq '^local +partage'", 60),
     ("Store : catalogue JSON",
      "djerba-apps list --json | python3 -c 'import json,sys; assert len(json.load(sys.stdin)[\"apps\"]) >= 10'", 60),
     ("Mode discret : bascule Windows 11 puis restauration à l'identique",

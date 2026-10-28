@@ -76,9 +76,32 @@ par le réglage `mcp.enabled`), **lié à l'adresse Tailscale** de la machine
   "isError": <échec>}`.
 * **Débit** : 60 appels par minute et par appelant.
 
-## 3. Ce dont Djerba a besoin pour brancher le vrai Jarvis
+## 3. Historique de Jarvis (import, phase 4)
+
+| Méthode | Chemin | Rôle |
+|---|---|---|
+| `GET` | `/v1/history` | Historique des conversations (Bearer), 32 Mio au plus |
+
+```json
+{"conversations": [
+  {"id": "c-42", "title": "Réseau du salon", "created": 1761600000,
+   "messages": [{"role": "user", "content": "…", "created": 1761600000},
+                {"role": "assistant", "content": "…", "created": 1761600005}]}
+]}
+```
+
+* Lu par le démon root (`engines.jarvis_history`) : le jeton reste root, seul
+  l'historique revient à la session, qui l'importe dans sa mémoire chiffrée
+  (`djerba-ai history import`, sans fichier) ; ou depuis un fichier JSON du
+  même format (`djerba-ai history import export.json`).
+* Seuls les rôles `user` et `assistant` sont repris ; contenu passé au DLP ;
+  dédoublonnage par `id` (un import répété n'ajoute rien).
+* Les conversations importées sont attribuées au moteur Jarvis et peuvent
+  être reprises avec n'importe quel moteur.
+
+## 4. Ce dont Djerba a besoin pour brancher le vrai Jarvis
 
 * L'adresse de son API et son protocole (HTTP compatible OpenAI, WebSocket,
   MCP…), son mode d'authentification ;
 * s'il gère les appels d'outils et le flux ;
-* le format de son historique (import prévu en phase 4).
+* le format réel de son historique (l'import suit pour l'instant le §3).

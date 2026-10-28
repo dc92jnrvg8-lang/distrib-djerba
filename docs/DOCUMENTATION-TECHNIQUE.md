@@ -22,7 +22,7 @@
 7. [Paquet `djerba-tools` : outils en ligne de commande](#7-paquet-djerba-tools--outils-en-ligne-de-commande)
 8. [Agent IA `djerba_ai` : architecture](#8-agent-ia-djerba_ai--architecture)
 9. [Agent IA : module par module](#9-agent-ia--module-par-module)
-10. [Capacités de l'agent (265 outils)](#10-capacités-de-lagent-265-outils)
+10. [Capacités de l'agent (270 outils)](#10-capacités-de-lagent-270-outils)
 11. [Configuration centrale (`/etc/djerba/config.toml`)](#11-configuration-centrale-etcdjerbaconfigtoml)
 12. [Démon root `djerba-ai-sysd` et protocole JSON-RPC](#12-démon-root-djerba-ai-sysd-et-protocole-json-rpc)
 13. [Sécurité : modèle de menace et défenses](#13-sécurité--modèle-de-menace-et-défenses)
@@ -51,7 +51,7 @@ livrée sous forme d'**ISO live hybride installable** (amd64 et arm64) :
 | Amorçage | GRUB EFI signé (shim, Secure Boot) + grub-pc (BIOS) sur amd64, iso-hybrid |
 | Identité | paquet Debian `djerba-branding` (os-release par diversion dpkg, thèmes Plymouth/SDDM/GRUB/Plasma) |
 | Outils | paquet Debian `djerba-tools` : assistant d'accueil, catalogue d'apps, mode anonyme (Tor), mode discret (look Windows), mode jeu, **agent IA « Djerba »** |
-| Agent IA | Python 3.13 + PyQt6/QML ; moteurs (registre `core/engines.py`) : Ollama local, Ollama distant, Jarvis, Anthropic, API compatibles OpenAI/Gemini (relayés par le démon root) ; serveur MCP pour Jarvis ; 265 capacités |
+| Agent IA | Python 3.13 + PyQt6/QML ; moteurs (registre `core/engines.py`) : Ollama local, Ollama distant, Jarvis, Anthropic, API compatibles OpenAI/Gemini (relayés par le démon root) ; serveur MCP pour Jarvis ; 270 capacités |
 | CI | GitHub Actions : lints, construction ISO amd64/arm64, tests de contenu, démarrage QEMU UEFI, tests en session live avec réseau, publication en pré-release |
 
 Fonctionnalités principales visibles par l'utilisateur :
@@ -311,7 +311,7 @@ Code : `packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/`.
              │ core/llm.py (Ollama local / Tailscale / Cloud via root ; transport    │
              │              persistant, reprises, repli d'adresse)                   │
              │ core/guard.py (anti-injection) · core/dlp.py · core/memory.py         │
-             │ tools/ (265 capacités) · core/executor.py                              │
+             │ tools/ (270 capacités) · core/executor.py                              │
              ├──────────────────────────────────────────────────────────────────────┤
  Démon user  │ core/daemon.py (djerba-ai.service) : adaptateur de bureau, bus de     │
              │ contexte, télémétrie, auto-réparation, chien de garde, maintenance    │
@@ -350,7 +350,7 @@ Flux d'une demande :
 | `schemas.py` | Contrat Pydantic v2 unique : `UserPrompt`, `ToolCall`, `ChatMessage`, `ChatResult`, `Capabilities`, `SessionState`, **`OllamaChatRequest`/`OllamaMessage`/`OllamaToolSpec`**, paramètres de chaque méthode RPC (`RPC_PARAMS`), `parse_rpc`. Modèles « frozen », champs inconnus refusés. | |
 | `guard.py` | Anti-injection : détection de consignes cachées, rôles usurpés, caractères invisibles ; `wrap_untrusted` encadre les contenus externes. | `inspect`, `inspect_user`, `wrap_untrusted`, `neutralize`, `Verdict` |
 | `dlp.py` | Prévention des fuites à deux niveaux (motifs + entropie + jugement) avant envoi au cloud ; coffre de jetons. | `analyze`, `mask`, `judge` |
-| `memory.py` | Mémoire permanente SQLite chiffrée (`~/.local/share/djerba/memory.db`) : conversations, faits, leçons, incidents, index sémantique. | `Memory` |
+| `memory.py` | Mémoire permanente SQLite chiffrée (`~/.local/share/djerba/memory.db`) : conversations, faits, leçons, incidents, index sémantique ; **historique par moteur** (schéma v3, migrations versionnées avec sauvegarde préalable, mémoire isolée/partagée, rétention, recherche, export, résumé de reprise, sauvegarde/restauration, import Jarvis). Voir §13 quater. | `Memory`, `HistoryError`, `engine_of` |
 | `embeddings.py` | Embeddings Ollama (`/api/embed`, même transport) ou hachage local de repli ; cosinus, découpage. | `embed`, `ollama_embed`, `hashed`, `cosine`, `chunks` |
 | `crypto.py` | AES-256-GCM (python3-cryptography), clé par utilisateur, écriture atomique. | `Box`, `write_atomic` |
 | `context.py` | Instantané de configuration système donné à chaque requête. | `snapshot`, `collect` |
@@ -421,11 +421,11 @@ Flux d'une demande :
 
 ---
 
-## 10. Capacités de l'agent (265 outils)
+## 10. Capacités de l'agent (270 outils)
 
 Notation : `*` = exécuté par le démon root, `!` = dangereux (confirmation). Les outils root sont `mutates` (exécutés dans une transaction annulable) sauf les 15 outils de lecture : apparmor_status, auth_failures, btrfs_scrub_status, btrfs_usage, grub_entries, listening_ports, nft_ruleset, smart_health, smart_scan, snapshot_create, snapshot_delete, snapshot_list, suid_binaries, ufw_status, unattended_upgrades_log.
 
-* **agentic (46)** : transactions_list, transaction_undo, engines_list, engine_use, audit_log, audit_verify, brain_switch!, capability_create, context_now, conversations_list, daemon_status, dlp_vault, engine_handshake, engine_status, feedback, ghost_list, ghost_logs, ghost_run, ghost_stop, health_report, incident_analyze, incidents_list, learning_stats, lesson_record, lessons_list, memory_forget!, memory_recall, memory_remember, model_list, model_pull!, model_recommend, model_set, ollama_install!, patch_deploy!, patch_list, patch_propose, patch_rollback!, self_update*!, settings_get, settings_history, settings_set!, tools_categories, tools_search, venv_install!, web_fetch, web_search.
+* **agentic (51)** : transactions_list, transaction_undo, engines_list, engine_use, history_search, history_export!, history_undo, history_import!, memory_mode!, audit_log, audit_verify, brain_switch!, capability_create, context_now, conversations_list, daemon_status, dlp_vault, engine_handshake, engine_status, feedback, ghost_list, ghost_logs, ghost_run, ghost_stop, health_report, incident_analyze, incidents_list, learning_stats, lesson_record, lessons_list, memory_forget!, memory_recall, memory_remember, model_list, model_pull!, model_recommend, model_set, ollama_install!, patch_deploy!, patch_list, patch_propose, patch_rollback!, self_update*!, settings_get, settings_history, settings_set!, tools_categories, tools_search, venv_install!, web_fetch, web_search.
 * **apps (27)** : apps_catalog, apps_install*!, apps_remove*!, apps_retry_pending*, apps_status, apt_history, apt_install*!, apt_remove*!, default_apps, default_browser_set, flatpak_install*!, flatpak_list, flatpak_remotes, flatpak_remove*!, flatpak_search, heroic_install*!, lutris_install*!, multilib_enable*, multilib_status, open_discover, open_store, package_files, package_owner, proton_install_ge, proton_list, steam_install*!, wine_install*!.
 * **desktop (26)** : audio_default, audio_devices, colorscheme_apply, colorschemes_list, dark_mode, desktop_apps, keyboard_layout, lock_screen, mute_toggle, night_light, notify, open_app, open_welcome, screen_mode!, screen_scale, screen_vrr, screens_list, screenshot, theme_apply!, themes_list, undercover_off, undercover_on, undercover_status, volume_get, volume_set, wallpaper_set.
 * **devtools (19)** : app_delete!, app_export, app_generator, app_history, app_iterate, app_open_folder, app_revert!, app_run, apps_generated_list, compile_c, compile_rust, git_status, plugin_disable, plugin_enable!, plugin_generate, plugins_list, python_check, shellcheck_file, studio_templates.
@@ -507,6 +507,8 @@ Fichier root 0600, écrit uniquement par le démon root (`config.set`) ; vue pub
 | `mcp.pair_begin {name, cap}` / `mcp.revoke {client}` | `org.djerba.ai.configure` | Code d'appairage MCP, révocation |
 | `mcp.pair_complete {code, name}` / `mcp.verify {token}` | — (appelant de confiance) | Échange code → jeton, vérification de jeton (serveur MCP) |
 | `mcp.list` | `org.djerba.ai.audit` | Appelants MCP |
+| `tx.undo_session {session}` | `org.djerba.ai.undo` | Annule les transactions d'une conversation (clé), de l'appelant seulement |
+| `engines.jarvis_history {id}` | `org.djerba.ai.cloud` | Historique exporté par Jarvis (`GET /v1/history`), jeton gardé par root |
 | `policy.set_mode {mode}` / `policy.set_caps {caps}` / `policy.resume` | `org.djerba.ai.policy` (auth_admin) | Changement de la politique, reprise après pause |
 | `policy.pause {reason}` | `org.djerba.ai.undo` | Disjoncteur : plus aucune action de niveau ≥ 1 |
 
@@ -550,6 +552,17 @@ Les méthodes qui modifient le système (`sys.exec_tool` d'un outil `mutates`, c
 * **Confidentialité** : DLP sur tout message vers un moteur distant ; règles `share` par moteur (contexte système, mémoire) ; réponse anormale (outil non proposé, indices d'injection) → tâche « tainted » (niveau 1).
 * **Bascule à chaud** : le moteur est relu à chaque tâche, l'historique de la conversation suit ; moteur distant injoignable → repli Ollama local (`llm.fallback_to_local`).
 * **MCP** (`core/mcp.py`, `djerba-ai mcp-serve`, unité utilisateur `djerba-ai-mcp.service`, inactif tant que `mcp.enabled` est faux) : JSON-RPC sur HTTP lié à l'adresse Tailscale ; appairage par code à 6 chiffres / QR (`djerba-ai mcp pair NOM`), jetons hachés, révocation, 60 appels/min, origine `mcp-<client>` avec plafond (2 par défaut). Contrat complet : `docs/JARVIS-CONTRAT.md`.
+
+## 13 quater. Historique par moteur, mémoire et continuité (phase 4)
+
+* **Schéma v3** de `memory.db` (`PRAGMA user_version`) : `conversations.key` (clé unique = session du journal de transactions), `.engine`, `.pinned`, `.summary` (chiffré), `.source` (import) ; `messages.engine` ; `facts.engine`, `lessons.engine` (`""` = commun) ; `tool_runs.conversation`, `.engine`, `.tx` ; table `engine_memory` (mode `isole`/`partage`, rétention en jours). Migrations ordonnées, une transaction chacune ; **copie intégrale avant la première migration de schéma** (`~/.local/share/djerba/backups/`, 10 copies automatiques au plus ; la v2, qui chiffre une base en clair, passe avant pour ne laisser aucune copie en clair). Une base plus récente que le code est refusée.
+* **Historique par moteur** : liste filtrée (moteur d'origine ou ayant répondu), recherche plein texte (insensible à la casse et aux accents) et sémantique (embeddings Ollama ou hachage local), épinglage, renommage, export Markdown/JSON (`djerba-history/1`, messages et actions avec leur transaction), suppression (index sémantique nettoyé).
+* **Reprise par un autre moteur** : l'état de session n'est réutilisé que pour le même moteur et la même conversation (clé) ; sinon `Memory.context()` fournit les derniers échanges intégraux tenant dans la fenêtre du nouveau moteur et un **résumé extractif** (demande d'origine, échanges intermédiaires condensés, actions menées), mis en cache chiffré.
+* **Mémoire isolée / partagée** : par défaut Ollama local partagé, tout autre moteur isolé (`djerba-ai history memory ID partage`) ; l'envoi vers un moteur distant reste soumis aux règles `share` et au DLP.
+* **Actions liées** : chaque exécution porte la conversation, le moteur et l'identifiant de transaction root ; « Annuler » depuis l'historique → `tx.undo_session` (transactions de l'appelant, de la plus récente à la plus ancienne).
+* **Rétention, sauvegarde, restauration** : `prune()` par moteur (conversations épinglées conservées) ; `backup()` (API SQLite, 0600) ; `restore()` contrôle intégrité, version et clé de chiffrement, sauvegarde l'état courant d'abord.
+* **Import Jarvis** : contrat §3 (`GET /v1/history` par le relais root, ou fichier JSON), rôles `user`/`assistant` seulement, DLP, dédoublonnage par identifiant d'origine.
+* **Accès** : `djerba-ai history …`, outils `history_search`, `history_export`, `history_undo`, `history_import`, `memory_mode`, onglet Historique du Studio (filtre par moteur, recherche, épingler, renommer, exporter, annuler, supprimer, mode de mémoire).
 
 ## 14. Multi-bureau (KDE Plasma / GNOME)
 
