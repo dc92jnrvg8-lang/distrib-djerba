@@ -245,6 +245,16 @@ if grep -q "djerba-last-good" "${TARGET}/boot/grub/grub.cfg"; then
     exit 1
 fi
 
+# Processus restés dans le chroot (démons lancés par les scripts des paquets) : arrêtés, sinon la racine
+# reste occupée.
+for link in /proc/[0-9]*/root; do
+    if [[ "$(readlink "${link}" 2>/dev/null)" == "${TARGET}" ]]; then
+        pid="${link#/proc/}"; pid="${pid%/root}"
+        log "processus resté dans le chroot : ${pid} ($(tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null))"
+        kill -9 "${pid}" 2>/dev/null || true
+    fi
+done
+sleep 1
 # Pseudo-systèmes de l'hôte : démontage différé (hors de l'image) ; ESP et Btrfs : démontage complet
 # obligatoire avant que QEMU n'écrive sur le disque.
 for mountpoint in "${TARGET}/dev/pts" "${TARGET}/dev" "${TARGET}/proc" "${TARGET}/sys"; do
