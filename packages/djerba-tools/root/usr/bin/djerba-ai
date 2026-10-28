@@ -341,7 +341,7 @@ def history_command(argv: list[str]) -> int:
             return 0
         if action == "import":
             engine = options.get("engine", "jarvis")
-            data = json.loads(Path(rest[1]).read_text(encoding="utf-8")) if len(rest) > 1 else \
+            data = Memory.read_history_file(Path(rest[1])) if len(rest) > 1 else \
                 ipc.call("engines.jarvis_history", {"id": engine}, timeout=120)
             print(memory.import_history(data, engine=engine, source=engine)["message"])
             return 0

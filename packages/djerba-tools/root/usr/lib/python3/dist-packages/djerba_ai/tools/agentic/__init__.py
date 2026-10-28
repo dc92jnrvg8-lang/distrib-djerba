@@ -121,14 +121,12 @@ def _history_undo(params: dict, _verbose: bool) -> dict:
 
 
 def _history_import(params: dict, _verbose: bool) -> dict:
-    import json
-    from pathlib import Path
     from djerba_ai.core import ipc
-    from djerba_ai.core.memory import HistoryError
+    from djerba_ai.core.memory import HistoryError, Memory
     engine = params.get("engine", "jarvis")
     try:
         if params.get("path"):
-            data = json.loads(Path(params["path"]).expanduser().read_text(encoding="utf-8"))
+            data = Memory.read_history_file(params["path"])
         else:
             data = ipc.call("engines.jarvis_history", {"id": engine}, timeout=120)
         return ok(**_memory().import_history(data, engine=engine, source=engine))

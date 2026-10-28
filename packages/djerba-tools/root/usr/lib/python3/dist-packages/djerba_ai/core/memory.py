@@ -99,6 +99,8 @@ MEMORY_MODES = ("isole", "partage")
 #: moteurs dont la mémoire est partagée par défaut (tout reste sur la machine) ; les autres sont isolés
 SHARED_BY_DEFAULT = ("", "local")
 EXPORT_FORMAT = "djerba-history/1"
+#: taille maximale d'un historique importé (fichier ou relais root)
+IMPORT_MAX = 32 * 1024 * 1024
 KEEP_BACKUPS = 10
 
 
@@ -183,8 +185,8 @@ class Memory:
                 raise
             self.db.execute("COMMIT")
 
-    def _insert(self, table: str, values: dict) -> int:
-        protected = {key: (self._protect(table, key, value) if key in ENCRYPTED.get(table, ()) else value)
+    def _insert(self, table: str, values: dict, origin: str = "") -> int:
+        protected = {key: (self._protect(table, key, value, origin) if key in ENCRYPTED.get(table, ()) else value)
                      for key, value in values.items()}
         columns = ", ".join(protected)
         marks = ", ".join("?" for _ in protected)
@@ -418,8 +420,9 @@ class Memory:
         now = created or time.time()
         engine = engine_of(engine)
         with self.transaction() as db:
+            # Secrets éventuels rangés au coffre avec l'origine de la conversation (purgés avec elle).
             self._insert("messages", {"conversation": conversation, "role": role, "content": content, "tool": tool,
-                                      "created": now, "engine": engine})
+                                      "created": now, "engine": engine}, origin=self._vault_origin(conversation))
             db.execute("UPDATE conversations SET updated = ? WHERE id = ?", (now, conversation))
             if engine:  # première réponse : le moteur d'origine de la conversation
                 db.execute("UPDATE conversations SET engine = ? WHERE id = ? AND engine = ''", (engine, conversation))
@@ -429,15 +432,74 @@ class Memory:
                           (conversation, limit))
         return list(reversed(rows))
 
-    def delete_conversation(self, conversation: int) -> None:
+    def _vault_origin(self, conversation: int | None) -> str:
+        if conversation is None:
+            return ""
+        with self.lock:
+            row = self.db.execute("SELECT key FROM conversations WHERE id = ?", (conversation,)).fetchone()
+        return f"conversation:{row['key']}" if row and row["key"] else ""
+
+    def delete_conversation(self, conversation: int, sessions_dir: Path | None = None) -> None:
+        """Oubli réel (invariant 33) : conversation, messages, actions, index sémantique, résumé, secrets du
+        coffre qui en viennent, état de session de l'agent, copies dans les sauvegardes ; puis point de
+        contrôle du journal WAL et VACUUM (pages libérées écrasées : secure_delete)."""
+        info = self.conversation(conversation)
+        if info is None:
+            return
+        origin = f"conversation:{info['key']}"
         with self.lock:
             refs = [str(row["id"]) for row in
                     self.db.execute("SELECT id FROM messages WHERE conversation = ?", (conversation,)).fetchall()]
+            vault = [row["id"] for row in self.db.execute("SELECT id, origin FROM vault").fetchall()
+                     if row["origin"] and self.box.decrypt(row["origin"], aad="vault.origin") == origin]
         with self.transaction() as db:
-            db.execute("DELETE FROM conversations WHERE id = ?", (conversation,))
-            db.execute("UPDATE tool_runs SET conversation = NULL WHERE conversation = ?", (conversation,))
-        if refs:
-            self.delete_embeddings("message", refs)
+            db.execute("DELETE FROM conversations WHERE id = ?", (conversation,))  # messages : ON DELETE CASCADE
+            db.execute("DELETE FROM tool_runs WHERE conversation = ?", (conversation,))
+            db.executemany("DELETE FROM vault WHERE id = ?", [(identifier,) for identifier in vault])
+            db.executemany("DELETE FROM embeddings WHERE kind = 'message' AND ref = ?", [(ref,) for ref in refs])
+        from djerba_ai.core.engine import SESSIONS_DIR
+        (Path(sessions_dir or SESSIONS_DIR) / f"{conversation}.session").unlink(missing_ok=True)
+        self._purge_backups(info, refs)
+        self.compact()
+
+    def compact(self) -> None:
+        """Plus aucune trace des données supprimées : journal WAL vidé, base reconstruite."""
+        with self.lock:
+            self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self.db.execute("VACUUM")
+            self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    def _purge_backups(self, info: dict, refs: list[str]) -> None:
+        """Retire la conversation des sauvegardes (même clé de chiffrement) : un oubli n'y survit pas."""
+        folder = self.path.parent / "backups"
+        for path in sorted(folder.glob("*.db")) if folder.is_dir() else []:
+            try:
+                copy = sqlite3.connect(path, isolation_level=None)
+                try:
+                    copy.execute("PRAGMA secure_delete = ON")
+                    columns = {row[1] for row in copy.execute("PRAGMA table_info(conversations)").fetchall()}
+                    if "key" in columns:
+                        rows = copy.execute("SELECT id FROM conversations WHERE key = ?", (info["key"],)).fetchall()
+                    else:  # sauvegarde antérieure à la v3 : même identifiant et même date de création
+                        rows = copy.execute("SELECT id FROM conversations WHERE id = ? AND created = ?",
+                                            (info["id"], info["created"])).fetchall()
+                    for (identifier,) in rows:
+                        old_refs = [str(row[0]) for row in copy.execute(
+                            "SELECT id FROM messages WHERE conversation = ?", (identifier,)).fetchall()]
+                        copy.execute("BEGIN IMMEDIATE")
+                        copy.execute("DELETE FROM messages WHERE conversation = ?", (identifier,))
+                        copy.execute("DELETE FROM conversations WHERE id = ?", (identifier,))
+                        if "key" in columns:
+                            copy.execute("DELETE FROM tool_runs WHERE conversation = ?", (identifier,))
+                        copy.executemany("DELETE FROM embeddings WHERE kind = 'message' AND ref = ?",
+                                         [(ref,) for ref in set(old_refs) | set(refs)])
+                        copy.execute("COMMIT")
+                    if rows:
+                        copy.execute("VACUUM")
+                finally:
+                    copy.close()
+            except sqlite3.Error as exc:
+                raise HistoryError(f"sauvegarde {path.name} : purge impossible ({exc})") from exc
 
     def actions(self, conversation: int) -> list[dict]:
         """Actions menées dans une conversation (outil, moteur, résultat, transaction root éventuelle)."""
@@ -585,6 +647,19 @@ class Memory:
                       f"{row['message']}" + (f" · transaction {row['tx']}" if row["tx"] else "") for row in actions]
         return "\n".join(lines).rstrip() + "\n"
 
+    @staticmethod
+    def read_history_file(path: Path) -> Any:
+        """Historique à importer depuis un fichier JSON : taille bornée, JSON valide (sinon HistoryError)."""
+        path = Path(path).expanduser()
+        try:
+            if path.stat().st_size > IMPORT_MAX:
+                raise HistoryError(f"historique trop volumineux ({IMPORT_MAX // (1024 * 1024)} Mio au plus)")
+            return json.loads(path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise HistoryError(f"historique illisible : {exc}") from exc
+        except ValueError as exc:
+            raise HistoryError("historique illisible : JSON invalide") from exc
+
     def import_history(self, data: Any, engine: str = "jarvis", source: str = "jarvis") -> dict[str, Any]:
         """Importe des conversations (contrat Jarvis §4 ou export Djerba) ; dédoublonnage par origine."""
         if isinstance(data, dict) and data.get("format") == EXPORT_FORMAT:
@@ -692,7 +767,8 @@ class Memory:
                                               "params": json.dumps(params, ensure_ascii=False)[:2000],
                                               "success": int(success), "message": message[:500],
                                               "created": time.time(), "conversation": conversation,
-                                              "engine": engine_of(engine), "tx": tx})
+                                              "engine": engine_of(engine), "tx": tx},
+                                origin=self._vault_origin(conversation))
 
     def feedback(self, run_id: int, value: int) -> None:
         value = max(-1, min(1, value))

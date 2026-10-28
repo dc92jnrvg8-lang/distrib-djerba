@@ -3280,6 +3280,45 @@ class HistoryTests(unittest.TestCase):
         with self.assertRaises(memory_errors()):
             memory.set_engine_memory("jarvis", "public")
 
+    def test_delete_conversation_purges_every_trace(self) -> None:
+        """Oubli réel : ni la base, ni le journal WAL, ni les sauvegardes, ni le coffre, ni l'index sémantique,
+        ni les actions, ni l'état de session ne gardent la conversation (pas même chiffrée)."""
+        import sqlite3
+        path = Path(tempfile.mkdtemp()) / "memory.db"
+        memory = Memory(path)
+        self.addCleanup(memory.close)
+        kept = memory.new_conversation("à garder")
+        memory.add_message(kept, "user", "conversation conservée")
+        doomed = memory.new_conversation("à oublier")
+        memory.add_message(doomed, "user", "message à oublier, jeton ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8")
+        memory.record_run("os_info", "requête à oublier", {"x": "paramètre"}, True, "ok", conversation=doomed)
+        memory.index_history(self.embed)
+        sessions = Path(tempfile.mkdtemp())
+        (sessions / f"{doomed}.session").write_text("état chiffré")
+        backup = memory.backup(automatic="essai")
+        ciphertexts = [row[0] for row in memory.db.execute(
+            "SELECT content FROM messages WHERE conversation = ?", (doomed,)).fetchall()]
+        ciphertexts += [row[0] for row in memory.db.execute("SELECT request FROM tool_runs WHERE conversation = ?",
+                                                            (doomed,)).fetchall()]
+        self.assertEqual(len(memory.vault_entries()), 1)  # le jeton est passé au coffre
+        memory.delete_conversation(doomed, sessions_dir=sessions)
+        self.assertIsNone(memory.conversation(doomed))
+        self.assertEqual(memory.db.execute("SELECT COUNT(*) FROM tool_runs").fetchone()[0], 0)
+        self.assertEqual(memory.vault_entries(), [])
+        self.assertEqual(len(memory.embedding_refs("message")), 1)  # seul le message conservé reste indexé
+        self.assertFalse((sessions / f"{doomed}.session").exists())
+        self.assertEqual(memory.db.execute("PRAGMA secure_delete").fetchone()[0], 1)
+        files = [item for item in path.parent.rglob("*") if item.is_file()]
+        self.assertIn(backup, files)
+        for item in files:
+            raw = item.read_bytes()
+            for cipher in ciphertexts:
+                self.assertNotIn(cipher[5:45].encode(), raw, f"chiffré encore présent dans {item.name}")
+        copy = sqlite3.connect(backup)
+        self.assertEqual([row[0] for row in copy.execute("SELECT id FROM conversations")], [kept])
+        copy.close()
+        self.assertEqual([row["content"] for row in memory.messages(kept)], ["conversation conservée"])
+
     def test_retention_backup_and_restore(self) -> None:
         memory = self.memory()
         old = memory.new_conversation("ancienne", engine="claude", created=time.time() - 40 * 86400)
@@ -3309,6 +3348,72 @@ class HistoryTests(unittest.TestCase):
         with self.assertRaises(memory_errors()):
             memory.restore(broken)
         self.assertIsNotNone(memory.conversation(recent))  # refus : rien n'a changé
+
+
+class HistoryNegativeTests(unittest.TestCase):
+    """Phase 4 bis : ce que l'historique doit refuser."""
+
+    def test_newer_database_and_newer_backup_are_refused(self) -> None:
+        import sqlite3
+        from djerba_ai.core import memory as memory_module
+        path = Path(tempfile.mkdtemp()) / "memory.db"
+        future = sqlite3.connect(path)
+        future.execute(f"PRAGMA user_version = {memory_module.VERSION + 1}")
+        future.commit()
+        future.close()
+        with self.assertRaises(memory_errors()):
+            Memory(path)  # jamais de « migration » à rebours : données d'une version plus récente intactes
+        self.assertEqual(sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0],
+                         memory_module.VERSION + 1)
+        memory = Memory(Path(tempfile.mkdtemp()) / "memory.db")
+        self.addCleanup(memory.close)
+        memory.new_conversation("actuelle")
+        with self.assertRaises(memory_errors()):
+            memory.restore(path)
+        self.assertEqual(len(memory.conversations()), 1)
+
+    def test_malformed_and_oversized_imports_are_refused(self) -> None:
+        from djerba_ai.core import memory as memory_module
+        memory = Memory(Path(tempfile.mkdtemp()) / "memory.db")
+        self.addCleanup(memory.close)
+        for data in ("texte", 42, {"conversations": "x"}, {"conversations": [{"titre": "sans messages"}]},
+                     {"conversations": [{"messages": "x"}]}, None):
+            with self.assertRaises(memory_errors(), msg=repr(data)):
+                memory.import_history(data)
+        self.assertEqual(memory.conversations(), [])  # rien d'importé à moitié
+        broken = Path(tempfile.mkdtemp()) / "historique.json"
+        broken.write_text("{pas du json")
+        with self.assertRaises(memory_errors()):
+            Memory.read_history_file(broken)
+        original = memory_module.IMPORT_MAX
+        memory_module.IMPORT_MAX = 1024
+        self.addCleanup(setattr, memory_module, "IMPORT_MAX", original)
+        broken.write_text(json.dumps({"conversations": [{"messages": [{"role": "user", "content": "x" * 2000}]}]}))
+        with self.assertRaises(memory_errors()):
+            Memory.read_history_file(broken)
+        result = registry().get("history_import").run({"path": str(broken)})
+        self.assertFalse(result["success"])
+        self.assertIn("volumineux", result["message"])
+
+    def test_reused_conversation_id_never_inherits_old_session_state(self) -> None:
+        from djerba_ai.core.schemas import SessionState
+        memory = Memory(Path(tempfile.mkdtemp()) / "memory.db")
+        self.addCleanup(memory.close)
+        old = memory.new_conversation("ancienne")
+        store = SessionStore(Path(tempfile.mkdtemp()), crypto.Box(Path(tempfile.mkdtemp()) / "cle"))
+        store.save(SessionState(conversation=old, key=memory.conversation(old)["key"],
+                                messages=[{"role": "user", "content": "SECRET-ANCIENNE-CONVERSATION"}]))
+        store.flush()
+        memory.delete_conversation(old)
+        reused = memory.new_conversation("nouvelle")
+        self.assertEqual(reused, old)  # SQLite réutilise l'identifiant libéré
+        config = provider_config(**{"llm.local.endpoint": start_fake_ollama()})
+        agent = Agent(config, registry(), memory)
+        agent.engine.sessions = store
+        FakeOllama.script = [{"content": "ok"}]
+        FakeOllama.requests.clear()
+        agent.run("bonjour", reused, lambda *_: None, lambda *_: True)
+        self.assertNotIn("SECRET-ANCIENNE-CONVERSATION", json.dumps(FakeOllama.requests, ensure_ascii=False))
 
 
 class HistoryAgentTests(EngineFixture):
@@ -3448,6 +3553,12 @@ class HistoryAgentTests(EngineFixture):
         self.assertEqual(memory.search("canal 11")[0]["engine"], "jarvis")
         with self.assertRaises(ipc.RPCError):
             ipc.call("engines.jarvis_history", {"id": "local"})
+        # Historique trop volumineux renvoyé par Jarvis : refusé par le relais root.
+        original = self.engines.HISTORY_MAX
+        self.engines.HISTORY_MAX = 100
+        self.addCleanup(setattr, self.engines, "HISTORY_MAX", original)
+        with self.assertRaises(ipc.RPCError):
+            ipc.call("engines.jarvis_history", {"id": "jarvis"})
 
 
 def memory_errors() -> type:
