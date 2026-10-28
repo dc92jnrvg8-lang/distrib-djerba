@@ -26,6 +26,8 @@ et en **UEFI ARM64**.
 
 ## Sommaire
 
+> Documentation technique complète (chaque fichier, chemin, service, capacité, contrat interne) : [`docs/DOCUMENTATION-TECHNIQUE.md`](docs/DOCUMENTATION-TECHNIQUE.md).
+
 1. [Démarrage rapide](#démarrage-rapide)
 2. [Le système Djerba OS](#le-système-djerba-os)
 3. [Architecture du dépôt](#architecture-du-dépôt)
