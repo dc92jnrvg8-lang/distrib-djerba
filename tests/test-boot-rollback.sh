@@ -41,8 +41,11 @@ mkdir -p "${OUT}"
 [[ "$(id -u)" == 0 ]] || { echo "[rollback] à exécuter en root (image de construction)" >&2; exit 2; }
 
 detach() {
-    # Tous les loops de l'image (disque entier et, en repli, une par partition).
+    # Partitions device-mapper du repli, puis tous les loops de l'image.
     local device
+    for device in djerba-rollback-p1 djerba-rollback-p2; do
+        if dmsetup info "${device}" >/dev/null 2>&1; then dmsetup remove "${device}"; fi
+    done
     while read -r device; do
         if [[ -n "${device}" ]]; then losetup -d "${device}"; fi
     done < <(losetup -j "${IMAGE}" -O NAME -n 2>/dev/null)
@@ -72,12 +75,17 @@ udevadm settle 2>/dev/null || sleep 2
 ESP_DEV="${LOOP}p1"
 ROOT_DEV="${LOOP}p2"
 if [[ ! -e "/sys/class/block/$(basename "${LOOP}")p1" ]]; then
-    # Noyau sans balayage des partitions des périphériques loop (certains conteneurs) : un loop par
-    # partition, au décalage lu dans la table GPT (mêmes octets, mêmes systèmes de fichiers).
+    # Noyau sans balayage des partitions des périphériques loop (certains conteneurs) : chaque partition
+    # exposée par device-mapper (cible linéaire au décalage lu dans la table GPT). Pas un loop à décalage :
+    # GRUB (10_linux) remplace une racine /dev/loopN par son fichier et ne génère alors aucune entrée.
     PARTS=()
+    index=0
     while read -r start sectors; do
-        PARTS+=("$(losetup --show -f -o $((start * 512)) --sizelimit $((sectors * 512)) "${IMAGE}")")
+        index=$((index + 1))
+        dmsetup create "djerba-rollback-p${index}" --table "0 ${sectors} linear ${LOOP} ${start}"
+        PARTS+=("/dev/mapper/djerba-rollback-p${index}")
     done < <(partx -g -o START,SECTORS "${LOOP}")
+    dmsetup mknodes
     ESP_DEV="${PARTS[0]}"
     ROOT_DEV="${PARTS[1]}"
 else
