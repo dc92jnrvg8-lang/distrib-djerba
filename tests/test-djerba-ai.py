@@ -39,6 +39,7 @@ Usage : python3 tests/test-djerba-ai.py   (depuis la racine du dépôt)
 from __future__ import annotations
 
 import http.server
+import io
 import json
 import os
 import shutil
@@ -2527,8 +2528,10 @@ class PolicyTests(unittest.TestCase):
         # À plafond égal (relevé par un humain pour les moteurs distants), décision identique pour tous.
         equal = ["tailscale:3", "jarvis:3", "cloud:3"]
         for name in ("os_info", "apt_install", "grub_update", "secure_delete", "os_file_write"):
-            decisions = {engine: self.policy(caps=equal).decide(self.tool(name), {}, Origin(engine, "1")).to_dict()
-                         for engine in engines}
+            # Le moteur et la session figurent dans la décision comme étiquettes : seule la décision est comparée.
+            decisions = {engine: {key: value for key, value in self.policy(caps=equal).decide(
+                self.tool(name), {}, Origin(engine, "1")).to_dict().items() if key not in ("engine", "session")}
+                for engine in engines}
             self.assertEqual(len({json.dumps(value, sort_keys=True) for value in decisions.values()}), 1, name)
         # Par défaut, tout moteur distant est plafonné au niveau 1 ; Ollama local ne l'est pas.
         for engine in engines:
@@ -3055,46 +3058,64 @@ class EngineLayerTests(EngineFixture):
         executed = []
 
         def execute(name, arguments, origin):
-            executed.append((name, origin["engine"]))
+            executed.append((name, origin["engine"], origin["session"]))
             return {"success": True, "message": "ok", "data": {}}
 
         def rpc(method, params):
+            signed = {key: params[key] for key in ("client", "ts", "nonce", "sig")} if "sig" in params else {}
             handlers = {"mcp.pair_complete": lambda: store.complete(params["code"], params.get("name", "")),
-                        "mcp.verify": lambda: store.verify(params["token"])}
+                        "mcp.verify": lambda: {**(store.verify_request(signed, body_sha256=params["body_sha256"])
+                                                  or {"client": None}), "session": "f" * 32},
+                        "mcp.rotate": lambda: store.rotate(params["client"], signed,
+                                                           body_sha256=params["body_sha256"])}
             return handlers[method]() or {}
         server = mcp.MCPServer(registry(), execute, rpc)
         url = serve(mcp.make_handler(server))
+        state = {"token": ""}
 
-        def post(path, payload, token=""):
-            request = urllib.request.Request(url + path, data=json.dumps(payload).encode(), method="POST",
-                                             headers={"Content-Type": "application/json",
-                                                      **({"Authorization": f"Bearer {token}"} if token else {})})
+        def post(path, payload, sign=True, signed=None):
+            body = json.dumps(payload).encode()
+            headers = {"Content-Type": "application/json"}
+            if sign:
+                headers["Authorization"] = mcp.header(signed or mcp.sign(state["token"], "jarvis", body))
+            request = urllib.request.Request(url + path, data=body, method="POST", headers=headers)
             try:
                 with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=10) as reply:
                     return reply.status, json.loads(reply.read() or b"null")
             except urllib.error.HTTPError as exc:
                 return exc.code, json.loads(exc.read() or b"null")
-        status, _body = post("/mcp", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        status, _body = post("/mcp", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, sign=False)
         self.assertEqual(status, 401)
-        status, body = post("/pair", {"code": "999999"})
+        status, body = post("/pair", {"code": "999999"}, sign=False)
         self.assertEqual(status, 403)
-        status, body = post("/pair", {"code": code, "name": "jarvis"})
+        status, body = post("/pair", {"code": code, "name": "jarvis"}, sign=False)
         self.assertEqual(status, 200, body)
-        token = body["token"]
-        self.assertNotIn(token, clients.read_text())  # jeton haché
-        status, body = post("/mcp", {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}, token)
+        state["token"] = body["token"]
+        self.assertNotIn(state["token"], clients.read_text())  # seule l'empreinte est conservée
+        status, body = post("/mcp", {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
         self.assertEqual(body["result"]["serverInfo"]["name"], "djerba-os")
-        status, body = post("/mcp", {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, token)
+        listing = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
+        replayed = mcp.sign(state["token"], "jarvis", json.dumps(listing).encode())
+        status, body = post("/mcp", listing, signed=replayed)
         self.assertGreater(len(body["result"]["tools"]), 200)
+        status, _body = post("/mcp", listing, signed=replayed)
+        self.assertEqual(status, 401)  # même requête rejouée : refusée
         status, body = post("/mcp", {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-                                     "params": {"name": "os_info", "arguments": {}}}, token)
+                                     "params": {"name": "os_info", "arguments": {}}})
         self.assertFalse(body["result"]["isError"])
-        self.assertEqual(executed, [("os_info", "mcp-jarvis")])
-        status, _body = post("/mcp", {"jsonrpc": "2.0", "method": "notifications/initialized"}, token)
+        self.assertEqual(executed, [("os_info", "mcp-jarvis", "f" * 32)])  # session de provenance tenue par root
+        status, _body = post("/mcp", {"jsonrpc": "2.0", "method": "notifications/initialized"})
         self.assertEqual(status, 202)
-        self.assertEqual(store.cap("jarvis"), 1)  # plafond fixé à l'appairage, appliqué par la politique
+        status, body = post("/rotate", {})
+        self.assertEqual(status, 200, body)
+        old, state["token"] = state["token"], body["token"]
+        status, _body = post("/mcp", listing, signed=mcp.sign(old, "jarvis", json.dumps(listing).encode()))
+        self.assertEqual(status, 401)  # ancien jeton invalide après rotation
+        status, _body = post("/mcp", listing)
+        self.assertEqual(status, 200)
+        self.assertEqual(store.cap("jarvis"), 1)  # plafond fixé à l'appairage, jamais au-delà de 1
         self.assertTrue(store.revoke("jarvis"))
-        status, _body = post("/mcp", {"jsonrpc": "2.0", "id": 4, "method": "tools/list"}, token)
+        status, _body = post("/mcp", {"jsonrpc": "2.0", "id": 4, "method": "tools/list"})
         self.assertEqual(status, 401)
         self.assertEqual(store.cap("jarvis"), 0)
         for _ in range(6):
@@ -3102,7 +3123,38 @@ class EngineLayerTests(EngineFixture):
         fresh = store.begin("autre")["code"]
         self.assertIsNone(store.complete(fresh))  # force brute : appairage bloqué une minute
 
+    def test_mcp_rate_limit_cap_and_tailscale_only(self) -> None:
+        from djerba_ai.core import mcp
+        calls = []
+        server = mcp.MCPServer(registry(), lambda name, arguments, origin: calls.append(name) or {"success": True},
+                               lambda method, params: {})
+        call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "os_info", "arguments": {}}}
+        replies = [server.handle({"client": "jarvis", "session": "f" * 32}, call) for _ in range(mcp.CALLS_PER_MINUTE + 1)]
+        self.assertEqual(len(calls), mcp.CALLS_PER_MINUTE)
+        self.assertEqual(replies[-1]["error"]["code"], -32000)  # 61e appel de la minute refusé
+        self.assertIn("result", server.handle({"client": "autre", "session": "e" * 32}, call))  # par appelant
+        store = mcp.ClientStore(self.base / "mcp-cap.json")
+        store.begin("x", cap=3)
+        self.assertLessEqual(json.loads((self.base / "mcp-cap.json").read_text())["pending"].popitem()[1]["cap"], 1)
+        with self.assertRaises(ipc.RPCError):
+            parse_rpc({"jsonrpc": "2.0", "id": 1, "method": "mcp.pair_begin", "params": {"name": "x", "cap": 2}})
+        for address, expected in (("100.101.2.3", True), ("100.64.0.1", True), ("100.128.0.1", False),
+                                  ("192.168.1.5", False), ("0.0.0.0", False), ("127.0.0.1", False), ("x", False)):
+            self.assertEqual(mcp.tailscale_address(address), expected, address)
 
+        def tailscale(output: str):
+            return lambda *a, **k: subprocess.CompletedProcess(a, 0, output, "")
+        self.assertIsNone(mcp.bind_address(tailscale("192.168.1.5\n")))
+        self.assertEqual(mcp.bind_address(tailscale("100.90.1.2\n")), "100.90.1.2")
+        class Settings:
+            @staticmethod
+            def get(key):
+                return {"mcp.enabled": True, "mcp.port": 8765}[key]
+        import contextlib
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(mcp.serve(Settings(), host="0.0.0.0"), 0)
+        self.assertIn("non démarré", output.getvalue())  # jamais hors du réseau Tailscale
 
 class HistoryTests(unittest.TestCase):
     """Phase 4 : historique par moteur, mémoire isolée ou partagée, continuité, sauvegarde, import."""

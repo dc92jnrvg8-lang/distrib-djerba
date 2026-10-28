@@ -277,12 +277,27 @@ class InvariantTests(Fixture):
         self.addCleanup(setattr, mcp, "CLIENTS_FILE", original)
         self.assertLessEqual(rules.engine_cap(policy.Origin("mcp-jarvis", "c" * 32)), 1,
                              "un réglage élève un appelant MCP au-delà du niveau 1")
+        # Session d'un appelant MCP : ouverte par root après vérification de sa requête signée, jamais déclarée.
         dispatcher = self.dispatcher()
-        session = self.call(dispatcher, "session.open", {"channel": "mcp", "client": "jarvis"})["session"]
+        with self.assertRaises(ipc.RPCError):
+            self.call(dispatcher, "session.open", {"channel": "mcp"})
+        paired = mcp.ClientStore(self.base / "mcp-clients.json")
+        token = paired.complete(paired.begin("lecteur", cap=1)["code"])["token"]
+        body = b'{"jsonrpc": "2.0", "id": 1, "method": "tools/call"}'
+        signed = mcp.sign(token, "lecteur", body)
+        verified = self.call(dispatcher, "mcp.verify", {**signed, "body_sha256": __import__("hashlib").sha256(
+            body).hexdigest()})
+        session = verified["session"]
+        self.assertEqual(verified["cap"], 1)
         self.call(dispatcher, "policy.check", {"tool": "web_fetch", "params": {"url": "https://exemple.org/"},
-                                               "origin": {"engine": "mcp-jarvis", "session": session},
+                                               "origin": {"engine": "local:usurpe", "session": session},
                                                "commit": True})
-        self.assertTrue(self.call(dispatcher, "session.status", {"session": session})["tainted"])
+        self.assertTrue(self.call(dispatcher, "session.status", {"session": session})["tainted"],
+                        "un appelant MCP qui lit un contenu externe reste fiable")
+        decision = self.call(dispatcher, "policy.check", {"tool": "service_restart", "params": {"unit": "cups"},
+                                                          "origin": {"engine": "local:usurpe", "session": session},
+                                                          "commit": False})
+        self.assertEqual(decision["engine"], "mcp-lecteur", "identité de l'appelant MCP déclarée par le client")
 
     # ------------------------------------------------------------------ 10
     def test_invariant_10_identite_jamais_auto_declaree(self) -> None:

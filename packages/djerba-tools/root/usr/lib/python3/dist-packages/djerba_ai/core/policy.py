@@ -317,6 +317,7 @@ class Policy:
             level = self.level(tool)
             decision = Decision(False, level, f"provenance indisponible ({exc}) : action refusée",
                                 mode=self.mode(), label=LEVEL_LABELS[level])
+        decision.engine, decision.session = origin.engine, origin.session
         return decision
 
     def _record(self, tool, params: dict, origin: Origin, decision: Decision) -> None:

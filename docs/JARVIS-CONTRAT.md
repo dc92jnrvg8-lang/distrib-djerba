@@ -59,22 +59,34 @@ par le réglage `mcp.enabled`), **lié à l'adresse Tailscale** de la machine
 
 | Méthode | Chemin | Rôle |
 |---|---|---|
-| `POST` | `/pair` | `{"code": "123456", "name": "jarvis"}` → `{"token": "…", "client": "jarvis"}` (5 essais par minute au plus) |
-| `POST` | `/mcp` | JSON-RPC MCP (Bearer) : `initialize`, `notifications/initialized`, `tools/list`, `tools/call` |
+| `POST` | `/pair` | `{"code": "123456", "name": "jarvis"}` → `{"token": "…", "client": "jarvis", "expires_in": 604800}` (5 essais par minute au plus) |
+| `POST` | `/mcp` | JSON-RPC MCP **signé** : `initialize`, `notifications/initialized`, `tools/list`, `tools/call` |
+| `POST` | `/rotate` | Requête signée (corps vide `{}` accepté) → nouveau jeton ; l'ancien est aussitôt invalide |
 
 * **Appairage** : `djerba-ai mcp pair NOM` affiche un code à 6 chiffres
-  (valable 5 minutes) et un QR (`djerba-mcp://<adresse>:<port>?code=…`) ;
-  Jarvis l'échange contre un jeton. Liste et révocation :
-  `djerba-ai mcp list`, `djerba-ai mcp revoke NOM`. Les jetons sont stockés
-  hachés (SHA-256) par le démon root (`/etc/djerba/mcp-clients.json`, 0600).
+  (valable 5 minutes, usage unique) et un QR (`djerba-mcp://<adresse>:<port>?code=…`) ;
+  Jarvis l'échange **une seule fois** contre un jeton. Liste et révocation :
+  `djerba-ai mcp list`, `djerba-ai mcp revoke NOM`.
+* **Requêtes signées (anti-rejeu)** : le jeton ne circule plus après
+  l'appairage. Chaque requête porte
+  `Authorization: Djerba-HMAC client="jarvis", ts="<unix>", nonce="<hex 16-64>", sig="<hex>"` avec
+  `sig = HMAC-SHA256(clé = SHA-256(jeton) en hexadécimal, message = client \n ts \n nonce \n SHA-256(corps brut))`.
+  Le démon root refuse : horodatage à plus de 60 s, nonce déjà vu (rejeu),
+  corps modifié, jeton expiré (7 jours), appelant révoqué. Renouvellement :
+  `/rotate` avant l'expiration. Le démon garde `SHA-256(jeton)`
+  (`/etc/djerba/mcp-clients.json`, root, 0600).
 * **`tools/list`** : toutes les capacités de Djerba, avec leur schéma
   (`inputSchema`) et leur niveau de politique dans la description.
 * **`tools/call`** : `{"name": "...", "arguments": {...}}` → exécution par
-  Djerba sous **sa** politique (origine `mcp-<client>`, plafond réglable par
-  appelant, 2 par défaut), journal d'audit et de transactions (annulable).
-  Résultat MCP : `{"content": [{"type": "text", "text": "<JSON du résultat>"}],
-  "isError": <échec>}`.
+  Djerba sous **sa** politique : session de provenance tenue par root pour
+  l'appelant (origine `mcp-<client>`), **plafond niveau 1 au plus**, jamais
+  relevé ; la session devient non fiable dès qu'il lit un contenu externe
+  (puis plus aucune nouvelle destination réseau) ; journal d'audit et de
+  transactions (annulable). Résultat MCP :
+  `{"content": [{"type": "text", "text": "<JSON du résultat>"}], "isError": <échec>}`.
 * **Débit** : 60 appels par minute et par appelant.
+* **Écoute** : uniquement sur l'adresse Tailscale de la machine
+  (100.64.0.0/10, vérifiée) ; sans elle, le serveur ne démarre pas.
 
 ## 3. Historique de Jarvis (import, phase 4)
 

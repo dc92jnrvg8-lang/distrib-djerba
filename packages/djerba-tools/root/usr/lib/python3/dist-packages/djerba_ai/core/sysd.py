@@ -138,7 +138,7 @@ APP_SCOPE = re.compile(r"/djerba-(?:app|ghost)-[^/\n]*\.(?:scope|service)")
 QUIET = {"sys.ping", "sys.metrics", "sys.list_patches", "config.get", "audit.tail", "audit.verify", "security.status",
          "llm.cloud_health", "llm.cloud_models", "session.report", "tx.list", "tx.show",
          "policy.check", "policy.status", "engines.list", "llm.engine_chat", "llm.engine_health",
-         "mcp.verify", "mcp.list"}
+         "mcp.verify", "mcp.list", "session.status"}
 
 Authorizer = Callable[[int, int, str], bool]
 Emit = Callable[[str, dict], None]
@@ -1066,8 +1066,20 @@ class Dispatcher:
                 return {"success": True, **store.begin(str(params["name"]), int(params.get("cap", 2)))}
             if method == "mcp.pair_complete":
                 return store.complete(str(params["code"]), str(params.get("name", ""))) or {}
+            signed = {key: params[key] for key in ("client", "ts", "nonce", "sig")} if "sig" in params else {}
             if method == "mcp.verify":
-                return store.verify(str(params["token"])) or {}
+                verified = store.verify_request(signed, body_sha256=str(params["body_sha256"]))
+                if not verified:
+                    return {}
+                # Session de provenance de l'appelant, tenue par root (identité liée au jeton vérifié).
+                from djerba_ai.core.provenance import ProvenanceError
+                try:
+                    verified["session"] = self.policy().provenance.client_session(uid, verified["client"])
+                except ProvenanceError:
+                    return {}
+                return verified
+            if method == "mcp.rotate":
+                return store.rotate(str(params["client"]), signed, body_sha256=str(params["body_sha256"])) or {}
             if method == "mcp.list":
                 self.require(pid, uid, ACTION_AUDIT)
                 return {"clients": store.list()}
