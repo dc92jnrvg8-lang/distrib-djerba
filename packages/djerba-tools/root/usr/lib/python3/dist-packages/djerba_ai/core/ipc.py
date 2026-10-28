@@ -8,6 +8,7 @@ aucun secret ne transite par la socket.
 
 from __future__ import annotations
 
+import contextvars
 import itertools
 import json
 import socket
@@ -16,6 +17,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from djerba_ai.core.config import SYSD_SOCKET
+
+#: origin (moteur d'IA, conversation, contenu non fiable) de l'outil en cours d'exécution : les méthodes
+#: root qu'il appelle (réglages…) sont attribuées à la conversation et annulables depuis l'historique
+ORIGIN: contextvars.ContextVar[dict | None] = contextvars.ContextVar("djerba_origin", default=None)
 
 MAX_MESSAGE = 4 * 1024 * 1024
 _ids = itertools.count(1)

@@ -336,7 +336,10 @@ class Config:
             return applied
         from djerba_ai.core import ipc
         try:
-            result = ipc.call("config.set", {"key": key, "value": value}, timeout=120)
+            request: dict[str, Any] = {"key": key, "value": value}
+            if ipc.ORIGIN.get():
+                request["origin"] = ipc.ORIGIN.get()
+            result = ipc.call("config.set", request, timeout=120)
             applied = result.get("value", value)
         except ipc.RPCError as exc:
             if exc.code == ipc.NOT_AUTHORIZED:

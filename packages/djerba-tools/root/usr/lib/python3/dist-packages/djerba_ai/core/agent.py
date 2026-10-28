@@ -35,8 +35,8 @@ from djerba_ai.core.config import Config
 from djerba_ai.core.engine import CognitiveEngine, PromptRejected, SessionStore
 from djerba_ai.core.executor import Executor
 from djerba_ai.core.llm import LLMError
-from djerba_ai.core.memory import Memory
-from djerba_ai.core.schemas import ChatMessage
+from djerba_ai.core.memory import Memory, engine_of
+from djerba_ai.core.schemas import ChatMessage, SessionState
 from djerba_ai.tools import CATEGORY_LABELS, Registry, registry
 
 MAX_STEPS = 8
@@ -122,6 +122,10 @@ class Agent:
         engine_id = getattr(active, "engine_id", None) or ("local" if active is manager.local else active.kind)
         return f"{engine_id}:{active.model}"[:80]
 
+    def engine_id(self) -> str:
+        """Identifiant du moteur qui répond (historique et mémoire par moteur)."""
+        return engine_of(self.engine_label())
+
     def _system_message(self, profile: dict) -> ChatMessage:
         # Confidentialité par moteur : ce qui peut quitter la machine (contexte système, mémoire).
         share = (self.engine.manager.engine.get("share") or {}) if self.engine.manager.remote else {}
@@ -132,9 +136,10 @@ class Agent:
         live = contextbus.context_block(profile["context_lines"]) if allow_context else ""
         if live:
             text = f"{text}\n{live}"
-        facts = self.memory.facts(limit=20) if allow_memory else []
+        engine = self.engine_id()  # mémoire isolée ou partagée selon le réglage de ce moteur
+        facts = self.memory.facts(limit=20, engine=engine) if allow_memory else []
         facts_text = "\n".join(f"- {fact['subject']} : {fact['content']}" for fact in facts) or "- (rien pour l'instant)"
-        lessons = self.memory.lessons(limit=8) if allow_memory else []
+        lessons = self.memory.lessons(limit=8, engine=engine) if allow_memory else []
         if lessons:
             facts_text += "\nLeçons apprises :\n" + "\n".join(f"- {lesson['content']}" for lesson in lessons)
         rules = f"\nProfil du moteur ({profile['name']}) : {profile['rules']}" if profile["rules"] else ""
@@ -180,8 +185,13 @@ class Agent:
             on_event("final", {"text": answer})
             return answer
         self.memory.add_message(conversation, "user", prompt.text)
-        self.executor.origin = {"engine": self.engine_label(), "session": str(conversation)}
+        # Session du journal de transactions : clé unique de la conversation (annulation depuis l'historique).
+        info = self.memory.conversation(conversation) or {}
+        self.executor.origin = {"engine": self.engine_label(), "session": info.get("key") or str(conversation)}
+        self.executor.conversation = conversation
         state = self.engine.session(conversation)
+        if state.key != info.get("key", ""):  # état d'une autre conversation (identifiant réutilisé) : ignoré
+            state = SessionState(conversation=conversation, key=info.get("key", ""))
         state.tainted = False
         if verdict.suspicious:
             telemetry.inc("djerba_guard_flags_total", origin="demande")
@@ -196,14 +206,22 @@ class Agent:
             if not capabilities.reachable and not self.engine.manager.available(2):
                 raise LLMError(f"{self.engine.manager.primary.label} injoignable")
             profile = self.engine.profile(capabilities)
-            history = [ChatMessage.model_validate(message) for message in state.messages][-profile["history"]:]
+            active_provider = self.engine.manager.active
+            same_engine = (state.provider, state.model) == (active_provider.kind, active_provider.model)
+            history = [ChatMessage.model_validate(message) for message in state.messages][-profile["history"]:] \
+                if same_engine else []
+            summary = ""
             if not history:
-                history = [ChatMessage(role=row["role"], content=row["content"])
-                           for row in self.memory.messages(conversation, limit=profile["history"] + 1)[:-1]
-                           if row["role"] in ("user", "assistant")]
+                # Reprise (autre moteur, redémarrage) : historique adapté à la fenêtre de ce moteur.
+                summary, recent = self.memory.context(conversation, capabilities.context_window * 3 // 2,
+                                                      max_messages=profile["history"])
+                history = [ChatMessage(role=row["role"], content=row["content"]) for row in recent]
             while history and history[0].role == "tool":
                 history.pop(0)  # jamais de résultat d'outil orphelin en tête d'historique
             messages: list[ChatMessage] = [self._system_message(profile), *history]
+            if summary:
+                messages.insert(1, ChatMessage(role="system", content="Résumé du début de cette conversation "
+                                               f"(échanges précédents, éventuellement avec un autre moteur) :\n{summary}"))
             examples = self.memory.examples(prompt.text)
             if examples:
                 hints = "; ".join(f"« {row['request'][:80]} » → {row['tool']}" for row in examples)
@@ -267,7 +285,7 @@ class Agent:
         return answer
 
     def _finish(self, state, messages: list[ChatMessage], conversation: int, answer: str, started: float) -> None:
-        self.memory.add_message(conversation, "assistant", answer)
+        self.memory.add_message(conversation, "assistant", answer, engine=self.engine_id())
         messages.append(ChatMessage(role="assistant", content=answer))
         state.messages = [m.model_dump() for m in messages[1:]][-60:]
         self.engine.persist(state)
