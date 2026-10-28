@@ -7,6 +7,7 @@
 #   3. compilation stricte de tous les scripts Python (py_compile, -W error)
 #   4. validation YAML/INI (tests/test-yaml-ini.py)
 #   5. tests de l'agent IA (tests/test-djerba-ai.py)
+#      et invariants de sécurité (tests/test-invariants.py --rapport, cliquet)
 #   5. validation XML (politiques polkit), sudoers (visudo) et QML (qmllint
 #      si disponible)
 set -euo pipefail
@@ -148,6 +149,16 @@ elif python3 tests/test-djerba-ai.py >"${TMPDIR:-/tmp}/djerba-ai-tests.log" 2>&1
 else
     tail -n 40 "${TMPDIR:-/tmp}/djerba-ai-tests.log"
     fail "tests/test-djerba-ai.py"
+fi
+
+section "Invariants de sécurité (docs/INVARIANTS.md, cliquet tests/invariants-verts.txt)"
+if ! python3 -c 'import cryptography, pydantic, sys; sys.exit(int(pydantic.VERSION.split(".")[0]) < 2)' 2>/dev/null; then
+    printf '[SKIP] tests/test-invariants.py : pydantic 2 et python3-cryptography requis (exécuté dans l'\''image Debian 13)\n'
+elif python3 tests/test-invariants.py --rapport >"${TMPDIR:-/tmp}/djerba-invariants.log" 2>&1; then
+    pass "tests/test-invariants.py ($(head -n 1 "${TMPDIR:-/tmp}/djerba-invariants.log"))"
+else
+    tail -n 60 "${TMPDIR:-/tmp}/djerba-invariants.log"
+    fail "tests/test-invariants.py (régression ou vert non déclaré)"
 fi
 
 section "XML (polkit)"

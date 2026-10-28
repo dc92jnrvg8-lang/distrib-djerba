@@ -1,0 +1,7 @@
+# Invariants de sécurité verts (docs/INVARIANTS.md) — cliquet de la CI.
+# Un invariant listé ici qui échoue fait échouer la CI ; un invariant vert non listé aussi.
+# Fichier protégé par CODEOWNERS : toute modification passe par une PR relue.
+19 bac à sable sans évasion
+28 session live différente du système installé
+30 aucune télémétrie sortante
+32 pas d'injection de commande
