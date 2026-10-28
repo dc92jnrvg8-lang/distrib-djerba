@@ -9,8 +9,8 @@ conteneur Debian 13, CI x86_64 et arm64).
 | Phase | Sujet | État |
 |---|---|---|
 | 1 | Réversibilité : transactions, instantanés, undo, rollback auto et au boot | **terminée** |
-| 2 | Moteur de politique dans `sysd` (niveaux 0–3, modes, disjoncteur) | terminée (CI à confirmer) |
-| 3 | Couche unifiée de fournisseurs (Ollama, Tailscale, Jarvis, API cloud), parité | à faire |
+| 2 | Moteur de politique dans `sysd` (niveaux 0–3, modes, disjoncteur) | **terminée** |
+| 3 | Couche unifiée de fournisseurs (Ollama, Tailscale, Jarvis, API cloud), parité | en cours |
 | 4 | Historique par IA, mémoire, continuité | à faire |
 | 5 | Studio unifié : plugins, applications, extensions | à faire |
 | 6 | L'IA au cœur de l'expérience système | à faire |
@@ -178,7 +178,7 @@ conteneur Debian 13, CI x86_64 et arm64).
 - [x] Même décision pour tous les moteurs à plafond égal (test de parité).
 - [x] Lints et 120 tests verts en local ; contrôles ISO et session live
       (pause → action refusée → reprise).
-- [ ] CI verte (x86_64 et arm64).
+- [x] CI verte (x86_64 et arm64) : 120 tests, 48/48 contrôles en session live.
 
 ### Décisions
 
@@ -203,3 +203,61 @@ conteneur Debian 13, CI x86_64 et arm64).
   viendront avec la phase 3 ; aujourd'hui, `policy.set_caps` les fixe.
 * L'interface de la politique (refus, disjoncteur) est minimale : la refonte
   est prévue en phase 8.
+
+---
+
+## Phase 3 — Couche unifiée de fournisseurs d'IA
+
+### Conception
+
+* **Registre des moteurs** (`core/engines.py`) : plusieurs moteurs configurés
+  en parallèle — identifiant, type (`ollama` local ou distant, `jarvis`,
+  `openai`, `gemini`, `anthropic`, `openai_compat`), nom, icône, couleur,
+  rôle, adresse, modèle, fenêtre de contexte, profil de capacité mesuré,
+  règles de confidentialité. Stockage root : `/etc/djerba/engines.json`
+  (0600, secrets compris) et vue publique `/etc/djerba/engines.public.json`
+  (0644, sans secrets). Migration automatique depuis `llm.*`.
+* **Interface unique** : chaque moteur devient un `BaseLLMProvider` (chat en
+  flux, appels d'outils, santé, embeddings si disponible). Les moteurs à
+  secret (Jarvis, API en ligne) sont **relayés par le démon root** : jeton et
+  clés ne quittent jamais root. Ollama local/distant : connexion directe.
+* **Les outils appartiennent à Djerba** : le moteur propose, Djerba valide
+  (schéma) puis la politique de la phase 2 décide. Origine des actions :
+  identifiant du moteur ; plafonds de la politique par moteur ou par type.
+* **Parité** : moteur sans appels d'outils natifs → repli « JSON contraint »
+  (`format` JSON d'Ollama, schéma strict, 2 réessais), même résultat côté
+  agent. Petites fenêtres : résumé de l'historique et outils filtrés.
+* **Profil de capacité** mesuré à l'ajout (poignée de main + mini-banc :
+  appel d'outil, JSON, vitesse, code) → libellé simple (« Très adapté »,
+  « Adapté », « Limité : réparations simples seulement ») et plafond de
+  niveau proposé à la politique.
+* **Jarvis** (aucune information sur son API à ce jour : contrat minimal
+  défini et documenté dans `docs/JARVIS-CONTRAT.md`, adaptateur de référence
+  et serveur factice de test) :
+  * Jarvis comme moteur : HTTP compatible OpenAI (`/v1/chat/completions` en
+    flux SSE, `/v1/models`, `/v1/health`), jeton Bearer obtenu par
+    appairage (`POST /v1/pair` avec un code à 6 chiffres affiché par
+    Jarvis), joignable par Tailscale ;
+  * Djerba comme serveur d'outils pour Jarvis : serveur MCP minimal
+    (`initialize`, `tools/list`, `tools/call`) en HTTP, lié à l'interface
+    Tailscale, jeton par appelant (appairage par code ou QR affiché par
+    Djerba), révocable, débit limité ; chaque appel passe par la politique
+    et l'audit avec l'identité de l'appelant.
+* **Sécurité** : DLP avant tout envoi vers un moteur distant ; par moteur,
+  choix de ce qui peut quitter la machine (contexte système, mémoire) ;
+  sortie anormale d'un moteur distant (outil non proposé, arguments
+  invalides, indices d'injection) → session « tainted ».
+
+### Critères de réussite
+
+- [ ] Plusieurs moteurs configurés, bascule à chaud sans perte de conversation,
+      repli distant → local conservé.
+- [ ] Anthropic et Jarvis (contrat) fonctionnels contre des serveurs factices.
+- [ ] Repli JSON contraint : un modèle sans appels d'outils exécute les mêmes
+      actions.
+- [ ] Suite de parité : mêmes scénarios rejoués sur chaque moteur, mêmes
+      actions et résultats.
+- [ ] Profil de capacité mesuré et affiché ; plafond appliqué par la politique.
+- [ ] Appairage Jarvis par code ; serveur MCP authentifié, révocable, sous
+      politique et audit.
+- [ ] DLP et « tainted » pour les moteurs distants.
