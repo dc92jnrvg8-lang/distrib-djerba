@@ -359,11 +359,25 @@ class Memory:
         return engine if self.engine_memory(engine)["mode"] == "isole" else ""
 
     # ---------------------------------------------------------------- Conversations
-    def new_conversation(self, title: str, engine: str = "", source: str = "", created: float | None = None) -> int:
+    @staticmethod
+    def open_session(tainted: bool = False, reason: str = "", channel: str = "agent") -> str:
+        """Clé de conversation délivrée par le démon root (registre de provenance). Sans démon : clé locale,
+        inconnue de root, donc présumée non fiable par la politique (fail-closed)."""
+        from djerba_ai.core import ipc
+        try:
+            return str(ipc.call("session.open", {"channel": channel, "tainted": tainted, "reason": reason[:160]},
+                                timeout=30)["session"])
+        except (ipc.RPCError, KeyError, TypeError):
+            return uuid.uuid4().hex
+
+    def new_conversation(self, title: str, engine: str = "", source: str = "", created: float | None = None,
+                         key: str | None = None, tainted: bool = False) -> int:
         now = time.time()
+        key = key or self.open_session(tainted, f"conversation importée ({source})" if tainted else "",
+                                       "import" if tainted else "agent")
         with self.transaction():
             return self._insert("conversations", {"title": title[:80] or "Discussion", "created": created or now,
-                                                  "updated": created or now, "key": uuid.uuid4().hex,
+                                                  "updated": created or now, "key": key,
                                                   "engine": engine_of(engine), "source": source[:120]})
 
     def conversation(self, conversation: int) -> dict | None:
@@ -577,6 +591,9 @@ class Memory:
             info = data.get("conversation") or {}
             data = {"conversations": [{"id": info.get("key"), "title": info.get("title"), "created":
                                        info.get("created"), "messages": data.get("messages")}]}
+        # Clés de sessions non fiables ouvertes par root lors d'un import par le relais (contenu externe) ;
+        # import d'un fichier : session non fiable demandée ici.
+        sessions = data.get("sessions") if isinstance(data, dict) and isinstance(data.get("sessions"), dict) else {}
         conversations = data.get("conversations") if isinstance(data, dict) else data
         if not isinstance(conversations, list):
             raise HistoryError("format d'historique inconnu : liste « conversations » attendue")
@@ -590,8 +607,11 @@ class Memory:
                     skipped += 1
                     continue
             created = float(item.get("created") or time.time())
+            key = sessions.get(str(item.get("id")))
             conversation = self.new_conversation(str(item.get("title") or "Conversation importée"), engine=engine,
-                                                 source=origin, created=created)
+                                                 source=origin, created=created,
+                                                 key=key if isinstance(key, str) and re.fullmatch(r"[0-9a-f]{32}", key)
+                                                 else None, tainted=True)
             for message in item["messages"]:
                 role = message.get("role") if isinstance(message, dict) else None
                 if role not in ("user", "assistant") or not isinstance(message.get("content"), str):

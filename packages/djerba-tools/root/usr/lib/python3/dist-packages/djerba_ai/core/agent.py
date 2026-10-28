@@ -39,6 +39,10 @@ from djerba_ai.core.memory import Memory, engine_of
 from djerba_ai.core.schemas import ChatMessage, SessionState
 from djerba_ai.tools import CATEGORY_LABELS, Registry, registry
 
+#: canaux où la demande est saisie par l'humain (interface, Spotlight, terminal) ; tous les autres
+#: (presse-papiers, sélection, fichiers, D-Bus, anneau, autre instance, maintenance) : non fiables (invariant 11)
+TRUSTED_SOURCES = ("chat", "spotlight", "cli")
+
 MAX_STEPS = 8
 ALWAYS = ("tools_search", "health_report", "web_search", "memory_remember", "memory_recall")
 #: actions toujours à haut risque (validation explicite) : système de fichiers, démarrage, pare-feu,
@@ -122,6 +126,23 @@ class Agent:
         engine_id = getattr(active, "engine_id", None) or ("local" if active is manager.local else active.kind)
         return f"{engine_id}:{active.model}"[:80]
 
+    @staticmethod
+    def session_tainted(key: str) -> bool:
+        """État tenu par root ; démon injoignable ou session inconnue : non fiable (présomption)."""
+        from djerba_ai.core import ipc
+        try:
+            return bool(ipc.call("session.status", {"session": key}, timeout=30).get("tainted", True))
+        except ipc.RPCError:
+            return True
+
+    @staticmethod
+    def taint(key: str, reason: str) -> None:
+        from djerba_ai.core import ipc
+        try:
+            ipc.call("session.taint", {"session": key, "reason": reason[:160]}, timeout=30)
+        except ipc.RPCError:
+            pass  # sans démon, la session est déjà présumée non fiable
+
     def engine_id(self) -> str:
         """Identifiant du moteur qui répond (historique et mémoire par moteur)."""
         return engine_of(self.engine_label())
@@ -192,10 +213,18 @@ class Agent:
         state = self.engine.session(conversation)
         if state.key != info.get("key", ""):  # état d'une autre conversation (identifiant réutilisé) : ignoré
             state = SessionState(conversation=conversation, key=info.get("key", ""))
-        state.tainted = False
+        # Drapeau « non fiable » tenu par le démon root (core.provenance) : persistant pour la conversation,
+        # repris au changement de moteur et à la reprise ; l'agent ne peut que l'ajouter, jamais l'effacer.
+        state.tainted = self.session_tainted(info.get("key", ""))
+        if source not in TRUSTED_SOURCES:
+            # Presse-papiers, sélection, fichiers, D-Bus, raccourcis, autre instance : contenu non fiable.
+            state.tainted = True
+            self.taint(info.get("key", ""), f"demande reçue par un canal non fiable ({source})")
         if verdict.suspicious:
             telemetry.inc("djerba_guard_flags_total", origin="demande")
-            state.tainted = verdict.level == "élevé"
+            if verdict.level == "élevé":
+                state.tainted = True
+                self.taint(info.get("key", ""), "demande suspecte (garde anti-injection)")
             trace("garde anti-injection", f"demande : risque {verdict.level} ({', '.join(verdict.findings)})"
                   + (" — vigilance : toute action sensible exigera une validation explicite." if state.tainted
                      else ""), level=verdict.level)

@@ -14,12 +14,20 @@ local, Tailscale, Jarvis, API en ligne), prise dans le démon root à partir :
 * du **mode** choisi par l'utilisateur (``policy.mode`` : « prudent »,
   « autonome » par défaut, « total »), modifiable seulement par une
   authentification administrateur (méthode ``policy.set_mode``) ;
-* de l'**origine** de la demande : session « tainted » (contenu non fiable
-  lu pendant la tâche : page web, fichier, sortie d'outil, réponse d'un moteur
-  distant) → niveau plafonné à 1 ; plafond éventuel par type de moteur
-  (``policy.engine_caps``, ex. ``cloud:1``) ;
+* de l'**origine** de la demande, **établie par le démon** (core.provenance) et
+  non déclarée par le client : moteur de la configuration système ou appelant
+  MCP authentifié, session enregistrée par root ; session « non fiable »
+  (contenu dont root ne garantit pas la provenance, import, session inconnue)
+  → niveau plafonné à 1 et plus de nouvelle destination réseau ;
+* du **plafond du moteur** : 3 pour Ollama local, **1 par défaut pour tout
+  moteur distant**, relevé seulement par un humain (``policy.set_caps``,
+  administrateur) et jamais au-delà de 1 pour un appelant MCP ; un profil
+  mesuré ne peut que l'abaisser ;
 * de l'état : disjoncteur (``djerba-ai pause``), plafonds de débit, détection
   de boucle (même action répétée).
+
+**Fail-closed** (invariant 31) : politique illisible ou registre de provenance
+en erreur → toute action modifiante est refusée.
 
 Niveaux : 0 lecture (libre) ; 1 réversible et local (autonome, transaction) ;
 2 système sensible (autonome, transaction, vérification, rollback,
@@ -38,10 +46,13 @@ import os
 import threading
 import time
 import tomllib
+import urllib.parse
 from collections import defaultdict, deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+from djerba_ai.core.provenance import ProvenanceError, Registry
 
 SHARE = Path(os.environ.get("DJERBA_AI_SHARE", "/usr/share/djerba-ai"))
 POLICY_FILE = Path(os.environ.get("DJERBA_POLICY_FILE", str(SHARE / "policy.toml")))
@@ -54,6 +65,8 @@ PATH_PARAMS = ("path", "source", "target", "file", "directory")
 #: outils d'écriture root limités aux racines de la liste blanche
 ROOT_WRITERS = {"os_sys_file_write", "os_sys_chown", "os_sys_chmod"}
 #: interdits en dur, pour tous les outils et tous les modes (après résolution des liens)
+#: plafond absolu d'un appelant MCP (invariant 09)
+MCP_MAX_CAP = 1
 FORBIDDEN_TREES = (
     "/boot", "/efi", "/etc/grub.d", "/etc/default/grub", "/etc/secureboot", "/var/lib/shim-signed",
     "/etc/shadow", "/etc/gshadow", "/etc/shadow-", "/etc/gshadow-", "/etc/sudoers", "/etc/sudoers.d",
@@ -85,6 +98,9 @@ class Decision:
     notify: bool = False
     mode: str = DEFAULT_MODE
     label: str = ""
+    #: moteur et session établis par root (journal de transactions, audit)
+    engine: str = ""
+    session: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -95,6 +111,12 @@ class Origin:
     engine: str = ""
     session: str = ""
     tainted: bool = False
+    #: humain authentifié par polkit (administrateur) : aucun plafond de moteur
+    human: bool = False
+    #: aucune origine d'agent fournie : non fiable tant que l'humain ne s'est pas authentifié
+    presumed: bool = False
+    #: moteur déclaré par le client (étiquette d'audit seulement, jamais utilisée pour décider)
+    declared: str = ""
 
     @classmethod
     def from_params(cls, data: Any) -> "Origin":
@@ -132,26 +154,37 @@ class Rules:
     per_minute: int = 20
     per_ten_minutes: int = 60
     repetitions: int = 3
+    #: outils dont la sortie ne rend pas la session non fiable (présomption inverse pour tous les autres)
+    trusted: frozenset[str] = frozenset()
+    #: outils qui émettent vers le réseau -> « param:<nom> » ou « hote:<nom> »
+    network: dict[str, str] = field(default_factory=dict)
+    #: politique illisible : plus aucune action modifiante (fail-closed)
+    broken: bool = False
 
     @classmethod
     def load(cls, path: Path = POLICY_FILE) -> "Rules":
         try:
             data = tomllib.loads(path.read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError):
-            return cls()  # politique illisible : valeurs prudentes par défaut
-        levels = {str(name): max(0, min(3, int(level))) for name, level in (data.get("niveaux") or {}).items()}
-        limits = data.get("plafonds") or {}
-        roots = tuple(str(item) for item in (data.get("racines") or {}).get("ecriture_root", cls.root_writable))
-        return cls(int(data.get("version", 1)), levels, roots, int(limits.get("par_minute", 20)),
-                   int(limits.get("par_dix_minutes", 60)), int(limits.get("repetitions", 3)))
+            levels = {str(name): max(0, min(3, int(level))) for name, level in (data.get("niveaux") or {}).items()}
+            limits = data.get("plafonds") or {}
+            roots = tuple(str(item) for item in (data.get("racines") or {}).get("ecriture_root", cls.root_writable))
+            provenance = data.get("provenance") or {}
+            return cls(int(data.get("version", 1)), levels, roots, int(limits.get("par_minute", 20)),
+                       int(limits.get("par_dix_minutes", 60)), int(limits.get("repetitions", 3)),
+                       frozenset(str(name) for name in provenance.get("fiables", [])),
+                       {str(name): str(value) for name, value in (provenance.get("reseau") or {}).items()})
+        except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError, AttributeError):
+            return cls(broken=True)
 
 
 class Policy:
     def __init__(self, rules: Rules | None = None, settings: Any = None, state_dir: Path | None = None,
-                 clock=time.time) -> None:
+                 clock=time.time, active_engine: Callable[[], str] | None = None) -> None:
         self.rules = rules or Rules.load()
         self._settings = settings
         self.state_dir = state_dir or STATE_DIR
+        self.provenance = Registry(self.state_dir / "provenance.db")
+        self._active_engine = active_engine
         self.clock = clock
         self._lock = threading.Lock()
         self._sessions: dict[str, deque] = defaultdict(deque)
@@ -174,28 +207,72 @@ class Policy:
         return value if value in MODES else DEFAULT_MODE
 
     def engine_cap(self, origin: Origin) -> int:
-        """Plafond du moteur : réglage administrateur (par identifiant) et profil de capacité mesuré."""
+        """Plafond du moteur (invariants 09, 10) : 3 pour Ollama local et pour l'humain authentifié ; 1 par
+        défaut pour tout moteur distant, relevé seulement par un humain (``policy.engine_caps``, réglé par
+        ``policy.set_caps``) ; jamais au-delà de 1 pour un appelant MCP. Un profil mesuré ne fait qu'abaisser."""
+        if origin.human:
+            return 3
         caps = {}
         for item in self.settings().get("policy.engine_caps", []) or []:
             kind, _sep, level = str(item).partition(":")
             if level.isdigit():
                 caps[kind] = int(level)
-        configured = caps.get(origin.kind, 3)
-        measured = 3
-        if origin.kind.startswith("mcp-"):
-            # Appelant MCP (Jarvis…) : plafond fixé à l'appairage ; révoqué -> 0 (plus rien au-delà de la lecture).
+        kind = origin.kind
+        if kind.startswith("mcp-"):
             try:
                 from djerba_ai.core.mcp import ClientStore
-                measured = ClientStore().cap(origin.kind[4:])
-            except Exception:  # noqa: BLE001
-                measured = 0
-        elif origin.kind and origin.kind not in ("local", "tailscale", "cloud"):
+                paired = ClientStore().cap(kind[4:])
+            except Exception:  # noqa: BLE001 - appelant inconnu ou registre illisible : lecture seule
+                paired = 0
+            return min(paired, caps.get(kind, 1), MCP_MAX_CAP)
+        configured = caps.get(kind, 3 if kind == "local" else 1)
+        measured = 3
+        if kind and kind not in ("local", "tailscale", "cloud"):
             try:
                 from djerba_ai.core.engines import EngineStore
-                measured = EngineStore().measured_cap(origin.kind)
+                measured = EngineStore().measured_cap(kind)
             except Exception:  # noqa: BLE001 - registre illisible : plafond prudent
                 measured = 1
         return min(configured, measured)
+
+    # ------------------------------------------------------------ identité (établie par root)
+    def active_engine(self) -> str:
+        """Moteur actif selon la configuration système (que seul un humain authentifié change)."""
+        if self._active_engine is not None:
+            return self._active_engine()
+        try:
+            from djerba_ai.core.config import Store
+            values = Store().load()
+        except Exception:  # noqa: BLE001 - configuration illisible : moteur inconnu (plafond 1)
+            return ""
+        return str(values.get("llm.engine") or values.get("llm.provider") or "local")
+
+    def resolve(self, data: Any, uid: int | None) -> Origin:
+        """Origine d'une demande, dérivée par root : session enregistrée (uid compris), moteur de la
+        configuration système ou appelant MCP lié à la session. La déclaration du client ne peut
+        qu'ajouter de la méfiance. Lève ProvenanceError si le registre est illisible."""
+        if not isinstance(data, dict) or not (data.get("engine") or data.get("session")):
+            return Origin(tainted=True, presumed=True)
+        claimed = Origin.from_params(data)
+        session = self.provenance.get(claimed.session)
+        if session is None or (uid is not None and session["uid"] != uid):
+            return Origin(self.active_engine(), claimed.session, True, declared=claimed.engine)
+        if claimed.tainted and not session["tainted"]:
+            self.provenance.taint(claimed.session, "signalé par l'agent (contenu suspect ou canal non fiable)")
+        engine = f"mcp-{session['client']}" if session["channel"] == "mcp" else self.active_engine()
+        return Origin(engine, claimed.session, bool(session["tainted"] or claimed.tainted),
+                      declared=claimed.engine)
+
+    def destination(self, name: str, params: dict) -> str | None:
+        spec = self.rules.network.get(name)
+        if not spec:
+            return None
+        kind, _sep, value = spec.partition(":")
+        if kind == "hote":
+            return value
+        raw = str(params.get(value, ""))
+        host = urllib.parse.urlsplit(raw if "://" in raw else f"//{raw}").hostname or raw
+        return host.lower().rstrip(".")
 
     @property
     def pause_file(self) -> Path:
@@ -229,8 +306,31 @@ class Policy:
 
     # ------------------------------------------------------------ décision
     def decide(self, tool, params: dict | None = None, origin: Origin | None = None, commit: bool = False) -> Decision:
-        """Décision pour une demande ; ``commit`` : l'action sera exécutée (comptée pour les plafonds)."""
+        """Décision pour une demande ; ``commit`` : l'action sera exécutée (comptée pour les plafonds,
+        provenance enregistrée : destination réseau jointe, session rendue non fiable par sa lecture)."""
         origin = origin or Origin()
+        try:
+            decision = self._decide(tool, params or {}, origin, commit)
+            if commit and origin.session:
+                self._record(tool, params or {}, origin, decision)
+        except ProvenanceError as exc:
+            level = self.level(tool)
+            decision = Decision(False, level, f"provenance indisponible ({exc}) : action refusée",
+                                mode=self.mode(), label=LEVEL_LABELS[level])
+        return decision
+
+    def _record(self, tool, params: dict, origin: Origin, decision: Decision) -> None:
+        session = self.provenance.get(origin.session)  # erreur de registre : refus (fail-closed)
+        if not decision.allowed or session is None:
+            return
+        name = tool if isinstance(tool, str) else tool.name
+        host = self.destination(name, params)
+        if host and not origin.tainted:
+            self.provenance.contact(origin.session, host)
+        if decision.level == 0 and name not in self.rules.trusted:
+            self.provenance.taint(origin.session, f"sortie non garantie : {name}")
+
+    def _decide(self, tool, params: dict, origin: Origin, commit: bool) -> Decision:
         params = params or {}
         name = tool if isinstance(tool, str) else tool.name
         level = self.level(tool)
@@ -248,12 +348,20 @@ class Policy:
                 tree = forbidden(params[key])
                 if tree:
                     return refuse(f"chemin protégé ({tree}) : action interdite à l'agent")
+        # 1 bis. Session non fiable : pas de nouvelle destination réseau (invariant 06).
+        host = self.destination(name, params)
+        if host and origin.tainted:
+            session = self.provenance.get(origin.session) if origin.session else None
+            if not session or host not in session["destinations"]:
+                return refuse(f"session non fiable : nouvelle destination réseau interdite ({host})")
         if name in ROOT_WRITERS and isinstance(params.get("path"), str):
             real = resolve(params["path"])
             if not any(_inside(real, root) and real != root for root in self.rules.root_writable):
                 return refuse(f"{real} : écriture root permise seulement sous {', '.join(self.rules.root_writable)}")
         if level == 0:
             return Decision(True, 0, mode=mode, label=LEVEL_LABELS[0])
+        if self.rules.broken:
+            return refuse("politique illisible : aucune action modifiante tant qu'elle n'est pas réparée")
         # 2. Disjoncteur global.
         paused = self.paused()
         if paused:

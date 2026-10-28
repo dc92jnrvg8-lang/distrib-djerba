@@ -45,7 +45,8 @@ class UserPrompt(Strict):
     """Demande de l'utilisateur, validée avant toute inférence."""
 
     text: Annotated[StrictStr, Field(min_length=1, max_length=MAX_PROMPT)]
-    source: Literal["chat", "spotlight", "clipboard", "cli", "system"] = "chat"
+    source: Literal["chat", "spotlight", "clipboard", "cli", "system", "selection", "file", "dbus", "gui",
+                    "hud", "instance"] = "chat"
 
     @field_validator("text")
     @classmethod
@@ -442,6 +443,21 @@ class TxSinceParams(Strict):
     since: Annotated[StrictStr, Field(pattern=SINCE)]
 
 
+class SessionOpenParams(Strict):
+    #: canal « mcp » exclu : la session d'un appelant MCP est ouverte par root après vérification du jeton
+    channel: Literal["agent", "import"] = "agent"
+    tainted: StrictBool = False
+    reason: Annotated[StrictStr, Field(max_length=160)] = ""
+
+
+class SessionKeyParams(Strict):
+    session: Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{32}$")]
+
+
+class SessionTaintParams(SessionKeyParams):
+    reason: Annotated[StrictStr, Field(max_length=160)] = ""
+
+
 class TxSessionParams(Strict):
     #: clé de conversation (historique, phase 4) ou ancien identifiant numérique
     session: Annotated[StrictStr, Field(pattern=r"^([0-9a-f]{32}|\d{1,12})$")]
@@ -475,6 +491,10 @@ RPC_PARAMS: dict[str, type[Strict]] = {
     "tx.undo": TxUndoParams,
     "tx.undo_since": TxSinceParams,
     "tx.undo_session": TxSessionParams,
+    "session.open": SessionOpenParams,
+    "session.status": SessionKeyParams,
+    "session.taint": SessionTaintParams,
+    "session.untaint": SessionKeyParams,
     "engines.jarvis_history": EngineIdParams,
     "policy.check": PolicyCheckParams,
     "policy.status": NoParams,
