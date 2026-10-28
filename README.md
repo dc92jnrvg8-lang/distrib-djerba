@@ -635,9 +635,9 @@ de verre. Il est décliné en SVG et PNG (48 → 256 px) pour l'icône du menu,
 | Djerba (IA) en « mode simplifié » | Modèles et réglages → Installer Ollama, puis télécharger un modèle ; `djerba-ai doctor` |
 | Un correctif de Djerba pose problème | Auto-réparation → « Annuler le correctif », ou `djerba-ai run patch_rollback '{"name": "djerba-…"}'` |
 | L'assistant ne s'ouvre plus | `djerba-welcome`, ou `Autostart=true` dans `~/.config/djerba-welcomerc` |
-| Discover bloqué, « dpkg was interrupted », « trying to overwrite » | `djerba-dpkg-repair --check`, puis `pkexec /usr/libexec/djerba-dpkg-repair --repair` (journal : `/var/log/djerba/dpkg-repair.log`) |
+| Discover bloqué, « dpkg was interrupted », « trying to overwrite » | `/usr/libexec/djerba-dpkg-repair --check`, puis `pkexec /usr/libexec/djerba-dpkg-repair --repair` (journal : `/var/log/djerba/dpkg-repair.log`) |
 | « moteur injoignable … Remote end closed connection » | `djerba-ai doctor` ; le client rejoue 3 fois (attente exponentielle) puis tente une requête minimale ; si Ollama écoute sur l'adresse Tailscale ou du réseau local (`OLLAMA_HOST`), l'adresse est trouvée automatiquement |
-| Session GNOME qui revient à l'écran de connexion | `sudo djerba-dpkg-repair --repair` (installation GNOME interrompue), puis `/var/log/djerba/gnome-crash.log` et `~/.local/state/djerba-ai/gnome-crash.log` |
+| Session GNOME qui revient à l'écran de connexion | `sudo /usr/libexec/djerba-dpkg-repair --repair` (installation GNOME interrompue), puis `/var/log/djerba/gnome-crash.log` et `~/.local/state/djerba-ai/gnome-crash.log` |
 
 ---
 

@@ -155,14 +155,14 @@ OFFLINE_CHECKS = [
      "t, e = load_plugins([\"sonde\"]); r = t[\"plugin.sonde\"].run({}); print(r); "
      "assert r[\"message\"] == \"bloque\" and r[\"data\"][\"pid\"] != os.getpid(), r'", 90),
     ("Paquets : dpkg cohérent, minuterie de réparation et veille de session actives",
-     "djerba-dpkg-repair --check && systemctl is-enabled --quiet djerba-dpkg-repair.timer "
-     "&& for i in $(seq 60); do pgrep -u 1000 -f 'djerba-dpkg-repair --watch' >/dev/null && break; sleep 1; done; "
-     "pgrep -u 1000 -f 'djerba-dpkg-repair --watch' >/dev/null", 90),
+     "for i in $(seq 60); do pgrep -u 1000 -f 'djerba-dpkg-repair --watch' >/dev/null && break; sleep 1; done; "
+     "/usr/libexec/djerba-dpkg-repair --check && systemctl is-enabled --quiet djerba-dpkg-repair.timer "
+     "&& pgrep -u 1000 -f 'djerba-dpkg-repair --watch' >/dev/null", 90),
     ("Identité Plasma : /etc/xdg/djerba prioritaire (kcm-about-distrorc sans conflit avec desktop-base)",
      "e=$(tr '\\0' '\\n' < /proc/$(pgrep -u 1000 -x plasmashell | head -n 1)/environ "
      "| grep '^XDG_CONFIG_DIRS='); echo \"plasmashell : $e\"; "
      f"{SESSION}; systemctl --user show-environment | grep '^XDG_CONFIG_DIRS='; "
-     "printf '%s\\n' \"$e\" | grep -q '^XDG_CONFIG_DIRS=/etc/xdg/djerba:' "
+     "printf '%s\\n' \"$e\" | grep -Eq '^XDG_CONFIG_DIRS=([^:]*:)*/etc/xdg/djerba:([^:]*:)*/etc/xdg(:|$)' "
      "&& test -f /etc/xdg/djerba/kcm-about-distrorc "
      "&& ! dpkg -S /etc/xdg/kcm-about-distrorc 2>/dev/null | grep -q djerba", 30),
     ("Store : catalogue JSON",
@@ -214,7 +214,7 @@ NETWORK_CHECKS = [
      "sudo djerba-apps install gnome-desktop && sudo apt-get clean "
      "&& dpkg-query -W -f='${Status}\\n' desktop-base gnome-shell gnome-session xwayland | grep -c 'ok installed' "
      "| grep -qx 4 && test -z \"$(dpkg --audit)\" && ! dpkg -s gdm3 >/dev/null 2>&1 "
-     "&& djerba-dpkg-repair --check && test -f /usr/share/wayland-sessions/gnome.desktop "
+     "&& /usr/libexec/djerba-dpkg-repair --check && test -f /usr/share/wayland-sessions/gnome.desktop "
      "&& grep -q 'LogoPath=/usr/share/pixmaps/djerba-os.png' /etc/xdg/djerba/kcm-about-distrorc", 1800),
     ("Bureau GNOME : GNOME Shell démarre et charge l'extension Djerba sans erreur",
      "rm -f /tmp/gs.log /tmp/ext.txt; timeout 150 dbus-run-session -- sh -c '"
