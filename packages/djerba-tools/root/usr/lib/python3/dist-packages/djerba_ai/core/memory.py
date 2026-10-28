@@ -8,7 +8,15 @@
   sert pour mieux classer les outils et se donner des exemples (amélioration
   continue, sans réentraînement) ;
 * incidents de l'auto-réparation, historique des réglages ;
-* index sémantique et vectoriel (embeddings).
+* index sémantique et vectoriel (embeddings) ;
+* **historique par moteur d'IA** (phase 4) : chaque conversation, réponse,
+  action, fait et leçon porte le moteur qui l'a produit ; mémoire « isolée »
+  ou « partagée » et rétention réglables par moteur ; recherche plein texte et
+  sémantique, épinglage, export, résumé pour la reprise par un autre moteur,
+  sauvegarde, restauration et import (Jarvis).
+
+Schéma versionné (``PRAGMA user_version``) : migrations ordonnées, chacune
+dans une transaction, précédées d'une sauvegarde automatique de la base.
 
 Sécurité :
 
@@ -30,15 +38,18 @@ import re
 import sqlite3
 import threading
 import time
+import unicodedata
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from djerba_ai.core import dlp
 from djerba_ai.core.config import MEMORY_DB
 from djerba_ai.core.crypto import Box
 
-VERSION = 2
+VERSION = 3
+#: schéma de base (version 2) ; les colonnes et tables suivantes sont ajoutées par les migrations
 SCHEMA = """
 PRAGMA journal_mode = WAL;
 CREATE TABLE IF NOT EXISTS conversations (
@@ -73,7 +84,7 @@ CREATE INDEX IF NOT EXISTS lessons_kind ON lessons(kind);
 """
 #: colonnes textuelles chiffrées, par table
 ENCRYPTED = {
-    "conversations": ("title",),
+    "conversations": ("title", "summary"),
     "messages": ("content",),
     "facts": ("subject", "content"),
     "lessons": ("content", "source"),
@@ -84,11 +95,33 @@ ENCRYPTED = {
     "embeddings": ("text",),
 }
 LESSON_KINDS = ("leçon", "préférence", "retour")
+MEMORY_MODES = ("isole", "partage")
+#: moteurs dont la mémoire est partagée par défaut (tout reste sur la machine) ; les autres sont isolés
+SHARED_BY_DEFAULT = ("", "local")
+EXPORT_FORMAT = "djerba-history/1"
+KEEP_BACKUPS = 10
+
+
+class HistoryError(Exception):
+    """Opération d'historique impossible (format, intégrité, clé)."""
+
+
+def fold(text: str) -> str:
+    """Forme de comparaison : minuscules, sans accents, espaces normalisés."""
+    plain = unicodedata.normalize("NFKD", text.lower()).encode("ascii", "ignore").decode()
+    return re.sub(r"\s+", " ", plain).strip()
+
+
+def engine_of(label: str) -> str:
+    """Identifiant du moteur à partir d'une étiquette « moteur:modèle »."""
+    return (label or "").split(":", 1)[0][:40]
 
 
 class Memory:
     def __init__(self, path: Path = MEMORY_DB, box: Box | None = None) -> None:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.path = path
+        existed = path.exists() and path.stat().st_size > 0
         self.lock = threading.RLock()
         self.box = box or Box()
         self.db = sqlite3.connect(path, check_same_thread=False, timeout=10, isolation_level=None)
@@ -97,8 +130,12 @@ class Memory:
         self.db.execute("PRAGMA secure_delete = ON")  # contenu supprimé ou remplacé : écrasé sur le disque
         self.db.executescript(SCHEMA)
         path.chmod(0o600)
-        if self.db.execute("PRAGMA user_version").fetchone()[0] < VERSION:
-            self._migrate()
+        version = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if version > VERSION:
+            self.db.close()
+            raise HistoryError(f"historique d'une version plus récente de Djerba ({version} > {VERSION})")
+        if version < VERSION:
+            self._migrate(backup=existed)
 
     def close(self) -> None:
         with self.lock:
@@ -157,10 +194,24 @@ class Memory:
         with self.lock:
             return [self._reveal(table, row) for row in self.db.execute(query, args).fetchall()]
 
-    def _migrate(self) -> None:
+    def _migrate(self, backup: bool = True) -> None:
+        """Applique dans l'ordre les migrations manquantes (une transaction chacune). Avant la première
+        migration de schéma, copie intégrale de la base (déjà chiffrée : la migration v2, qui chiffre une
+        base antérieure en clair, passe avant pour ne laisser aucune copie en clair)."""
+        for version, step in ((2, self._migrate_v2), (3, self._migrate_v3)):
+            current = self.db.execute("PRAGMA user_version").fetchone()[0]
+            if current < version:
+                if backup and version >= 3:
+                    self.backup(automatic=f"avant-migration-v{current}")
+                    backup = False
+                step()
+
+    def _migrate_v2(self) -> None:
         """Chiffre (et passe au DLP) les données d'une base antérieure en clair."""
         with self.transaction() as db:
-            for table, columns in ENCRYPTED.items():
+            for table, encrypted in ENCRYPTED.items():
+                present = {row["name"] for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
+                columns = tuple(column for column in encrypted if column in present)  # colonnes de la v2
                 for row in db.execute(f"SELECT id, {', '.join(columns)} FROM {table}").fetchall():
                     updates = {column: self._protect(table, column, row[column]) for column in columns
                                if isinstance(row[column], str) and not row[column].startswith("enc1:")}
@@ -171,27 +222,193 @@ class Memory:
                 if isinstance(row["vector"], bytes) and row["vector"][:1] != b"\x01":
                     db.execute("UPDATE embeddings SET vector = ? WHERE id = ?",
                                (b"\x01" + self.box.encrypt_bytes(row["vector"], aad="embeddings.vector"), row["id"]))
-            db.execute(f"PRAGMA user_version = {VERSION}")
+            db.execute("PRAGMA user_version = 2")
         # Aucune trace en clair ne doit subsister dans les pages libres ni dans le journal WAL.
         with self.lock:
             self.db.execute("VACUUM")
             self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
+    def _migrate_v3(self) -> None:
+        """Historique par moteur : clé de session, moteur, épinglage, résumé, mémoire par moteur."""
+        with self.transaction() as db:
+            for table, column in (("conversations", "key TEXT"), ("conversations", "engine TEXT NOT NULL DEFAULT ''"),
+                                  ("conversations", "pinned INTEGER NOT NULL DEFAULT 0"),
+                                  ("conversations", "summary TEXT"),
+                                  ("conversations", "summary_upto INTEGER NOT NULL DEFAULT 0"),
+                                  ("conversations", "source TEXT NOT NULL DEFAULT ''"),
+                                  ("messages", "engine TEXT NOT NULL DEFAULT ''"),
+                                  ("facts", "engine TEXT NOT NULL DEFAULT ''"),
+                                  ("lessons", "engine TEXT NOT NULL DEFAULT ''"),
+                                  ("tool_runs", "conversation INTEGER"),
+                                  ("tool_runs", "engine TEXT NOT NULL DEFAULT ''"), ("tool_runs", "tx TEXT")):
+                db.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
+            for row in db.execute("SELECT id FROM conversations").fetchall():
+                db.execute("UPDATE conversations SET key = ? WHERE id = ?", (uuid.uuid4().hex, row["id"]))
+            # Une instruction à la fois : executescript validerait la transaction en cours.
+            for statement in (
+                    "CREATE UNIQUE INDEX IF NOT EXISTS conversations_key ON conversations(key)",
+                    "CREATE UNIQUE INDEX IF NOT EXISTS conversations_source ON conversations(source) "
+                    "WHERE source != ''",
+                    "CREATE INDEX IF NOT EXISTS messages_engine ON messages(engine)",
+                    "CREATE INDEX IF NOT EXISTS tool_runs_conversation ON tool_runs(conversation)",
+                    "CREATE TABLE IF NOT EXISTS engine_memory (engine TEXT PRIMARY KEY, mode TEXT NOT NULL, "
+                    "retention_days INTEGER NOT NULL DEFAULT 0, updated REAL NOT NULL)"):
+                db.execute(statement)
+            db.execute("PRAGMA user_version = 3")
+
+    # ---------------------------------------------------------------- Sauvegarde et restauration
+    def backup(self, destination: Path | None = None, automatic: str = "") -> Path:
+        """Copie cohérente de la base (API de sauvegarde SQLite), fichier 0600, toujours chiffrée."""
+        folder = self.path.parent / "backups"
+        if destination is None:
+            folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            destination = folder / f"memory-{stamp}-{automatic or 'manuelle'}-{uuid.uuid4().hex[:6]}.db"
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        target = sqlite3.connect(destination)
+        try:
+            destination.chmod(0o600)
+            with self.lock:
+                self.db.backup(target)
+        finally:
+            target.close()
+        if automatic:
+            for old in sorted(folder.glob("memory-*.db"))[:-KEEP_BACKUPS]:
+                old.unlink(missing_ok=True)
+        return destination
+
+    def restore(self, source: Path) -> dict[str, Any]:
+        """Restaure une sauvegarde après contrôle d'intégrité, de version et de clé ; l'état courant est
+        d'abord sauvegardé (restauration elle-même annulable)."""
+        source = Path(source)
+        if not source.is_file():
+            raise HistoryError(f"sauvegarde introuvable : {source}")
+        from djerba_ai.core.crypto import CryptoError
+        candidate = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
+        try:
+            candidate.row_factory = sqlite3.Row
+            try:
+                if candidate.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    raise HistoryError("sauvegarde corrompue (contrôle d'intégrité en échec)")
+                version = candidate.execute("PRAGMA user_version").fetchone()[0]
+                sample = candidate.execute("SELECT title FROM conversations WHERE title LIKE 'enc1:%' "
+                                           "LIMIT 1").fetchone()
+            except sqlite3.DatabaseError as exc:
+                raise HistoryError(f"sauvegarde illisible : {exc}") from exc
+            if version > VERSION:
+                raise HistoryError(f"sauvegarde d'une version plus récente de Djerba ({version})")
+            if sample is not None:
+                try:
+                    self.box.decrypt(sample["title"], aad="conversations.title")
+                except CryptoError as exc:
+                    raise HistoryError("sauvegarde chiffrée avec une autre clé : restauration refusée") from exc
+            safety = self.backup(automatic="avant-restauration")
+            with self.lock:
+                candidate.backup(self.db)
+        finally:
+            candidate.close()
+        with self.lock:
+            if self.db.execute("PRAGMA user_version").fetchone()[0] < VERSION:
+                self._migrate(backup=False)
+            count = self.db.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+        return {"success": True, "restored": str(source), "safety": str(safety), "conversations": count,
+                "message": f"historique restauré ({count} conversation(s)) ; état précédent sauvegardé : {safety}"}
+
+    # ---------------------------------------------------------------- Mémoire par moteur
+    def engine_memory(self, engine: str) -> dict[str, Any]:
+        engine = engine_of(engine)
+        with self.lock:
+            row = self.db.execute("SELECT * FROM engine_memory WHERE engine = ?", (engine,)).fetchone()
+        if row:
+            return dict(row)
+        return {"engine": engine, "mode": "partage" if engine in SHARED_BY_DEFAULT else "isole",
+                "retention_days": 0, "updated": 0}
+
+    def set_engine_memory(self, engine: str, mode: str | None = None, retention_days: int | None = None) -> dict:
+        current = self.engine_memory(engine)
+        mode = mode or current["mode"]
+        if mode not in MEMORY_MODES:
+            raise HistoryError(f"mode de mémoire inconnu : {mode} (isole ou partage)")
+        days = current["retention_days"] if retention_days is None else max(0, int(retention_days))
+        with self.transaction() as db:
+            db.execute("INSERT INTO engine_memory(engine, mode, retention_days, updated) VALUES (?, ?, ?, ?) "
+                       "ON CONFLICT(engine) DO UPDATE SET mode = excluded.mode, "
+                       "retention_days = excluded.retention_days, updated = excluded.updated",
+                       (current["engine"], mode, days, time.time()))
+        return self.engine_memory(engine)
+
+    def engine_memories(self) -> list[dict]:
+        with self.lock:
+            return [dict(row) for row in self.db.execute("SELECT * FROM engine_memory ORDER BY engine").fetchall()]
+
+    def _scope(self, engine: str | None) -> tuple[str, tuple]:
+        """Filtre SQL de la mémoire visible par un moteur (None : toute la mémoire)."""
+        if engine is None:
+            return "1", ()
+        engine = engine_of(engine)
+        if self.engine_memory(engine)["mode"] == "isole":
+            return "engine = ?", (engine,)
+        return "engine IN ('', ?)", (engine,)
+
+    def _owner(self, engine: str | None) -> str:
+        """Propriétaire d'une écriture : le moteur s'il est isolé, la mémoire commune sinon."""
+        if not engine:
+            return ""
+        engine = engine_of(engine)
+        return engine if self.engine_memory(engine)["mode"] == "isole" else ""
+
     # ---------------------------------------------------------------- Conversations
-    def new_conversation(self, title: str) -> int:
+    def new_conversation(self, title: str, engine: str = "", source: str = "", created: float | None = None) -> int:
         now = time.time()
         with self.transaction():
-            return self._insert("conversations", {"title": title[:80] or "Discussion", "created": now, "updated": now})
+            return self._insert("conversations", {"title": title[:80] or "Discussion", "created": created or now,
+                                                  "updated": created or now, "key": uuid.uuid4().hex,
+                                                  "engine": engine_of(engine), "source": source[:120]})
 
-    def conversations(self, limit: int = 50) -> list[dict]:
-        return self._rows("conversations", "SELECT * FROM conversations ORDER BY updated DESC LIMIT ?", (limit,))
+    def conversation(self, conversation: int) -> dict | None:
+        rows = self._rows("conversations", "SELECT * FROM conversations WHERE id = ?", (conversation,))
+        return rows[0] if rows else None
 
-    def add_message(self, conversation: int, role: str, content: str, tool: str | None = None) -> None:
-        now = time.time()
+    def conversations(self, limit: int = 50, engine: str | None = None) -> list[dict]:
+        """Conversations (épinglées d'abord) ; ``engine`` : celles qu'un moteur a ouvertes ou alimentées."""
+        if engine is None:
+            return self._rows("conversations", "SELECT * FROM conversations ORDER BY pinned DESC, updated DESC "
+                              "LIMIT ?", (limit,))
+        engine = engine_of(engine)
+        return self._rows("conversations", "SELECT * FROM conversations c WHERE c.engine = ? OR EXISTS "
+                          "(SELECT 1 FROM messages m WHERE m.conversation = c.id AND m.engine = ?) "
+                          "ORDER BY pinned DESC, updated DESC LIMIT ?", (engine, engine, limit))
+
+    def engines_used(self, conversation: int) -> list[str]:
+        with self.lock:
+            rows = self.db.execute("SELECT DISTINCT engine FROM messages WHERE conversation = ? AND engine != '' "
+                                   "ORDER BY id", (conversation,)).fetchall()
+        return [row["engine"] for row in rows]
+
+    def rename_conversation(self, conversation: int, title: str) -> bool:
+        title = title.strip()[:80]
+        if not title:
+            raise HistoryError("titre vide")
+        with self.transaction() as db:
+            return db.execute("UPDATE conversations SET title = ? WHERE id = ?",
+                              (self._protect("conversations", "title", title), conversation)).rowcount > 0
+
+    def pin_conversation(self, conversation: int, pinned: bool = True) -> bool:
+        with self.transaction() as db:
+            return db.execute("UPDATE conversations SET pinned = ? WHERE id = ?",
+                              (int(pinned), conversation)).rowcount > 0
+
+    def add_message(self, conversation: int, role: str, content: str, tool: str | None = None,
+                    engine: str = "", created: float | None = None) -> None:
+        now = created or time.time()
+        engine = engine_of(engine)
         with self.transaction() as db:
             self._insert("messages", {"conversation": conversation, "role": role, "content": content, "tool": tool,
-                                      "created": now})
+                                      "created": now, "engine": engine})
             db.execute("UPDATE conversations SET updated = ? WHERE id = ?", (now, conversation))
+            if engine:  # première réponse : le moteur d'origine de la conversation
+                db.execute("UPDATE conversations SET engine = ? WHERE id = ? AND engine = ''", (engine, conversation))
 
     def messages(self, conversation: int, limit: int = 40) -> list[dict]:
         rows = self._rows("messages", "SELECT * FROM messages WHERE conversation = ? ORDER BY id DESC LIMIT ?",
@@ -199,16 +416,218 @@ class Memory:
         return list(reversed(rows))
 
     def delete_conversation(self, conversation: int) -> None:
+        with self.lock:
+            refs = [str(row["id"]) for row in
+                    self.db.execute("SELECT id FROM messages WHERE conversation = ?", (conversation,)).fetchall()]
         with self.transaction() as db:
             db.execute("DELETE FROM conversations WHERE id = ?", (conversation,))
+            db.execute("UPDATE tool_runs SET conversation = NULL WHERE conversation = ?", (conversation,))
+        if refs:
+            self.delete_embeddings("message", refs)
+
+    def actions(self, conversation: int) -> list[dict]:
+        """Actions menées dans une conversation (outil, moteur, résultat, transaction root éventuelle)."""
+        return self._rows("tool_runs", "SELECT id, tool, params, success, message, engine, tx, created "
+                          "FROM tool_runs WHERE conversation = ? ORDER BY id", (conversation,))
+
+    # ---------------------------------------------------------------- Continuité entre moteurs
+    def context(self, conversation: int, budget: int, max_messages: int = 40) -> tuple[str, list[dict]]:
+        """(résumé, messages récents) pour un moteur dont l'historique tient en ``budget`` caractères :
+        derniers échanges intégraux, plus anciens condensés (résumé extractif déterministe, chiffré, en
+        cache). Le dernier message (la demande en cours) est exclu."""
+        rows = [row for row in self.messages(conversation, limit=1000) if row["role"] in ("user", "assistant")]
+        rows = rows[:-1]
+        recent: list[dict] = []
+        used = 0
+        for row in reversed(rows):
+            size = len(row["content"])
+            if recent and (used + size > budget * 3 // 4 or len(recent) >= max_messages):
+                break
+            recent.insert(0, row)
+            used += size
+        older = rows[:len(rows) - len(recent)]
+        if not older:
+            return "", recent
+        info = self.conversation(conversation) or {}
+        if info.get("summary") and info.get("summary_upto") == older[-1]["id"]:
+            return info["summary"], recent
+        lines = []
+        for row in older:
+            text = re.sub(r"\s+", " ", row["content"]).strip()
+            who = "Utilisateur" if row["role"] == "user" else f"Réponse ({row.get('engine') or 'Djerba'})"
+            lines.append(f"- {who} : {text[:160]}{'…' if len(text) > 160 else ''}")
+        # Toujours conservés : la demande d'origine et les actions menées (absentes des messages récents).
+        actions = self.actions(conversation)
+        footer = ("- Actions déjà menées : " + ", ".join(
+            f"{row['tool']} ({'réussi' if row['success'] else 'échec'})" for row in actions[-12:])) if actions else ""
+        limit = max(400, budget // 4)
+        head, middle = lines[:1], lines[1:]
+
+        def assemble() -> str:
+            gap = ["- … (échanges intermédiaires omis)"] if len(middle) < len(lines) - 1 else []
+            return "\n".join(head + gap + middle + ([footer] if footer else []))
+        summary = assemble()
+        while len(summary) > limit and middle:
+            middle.pop(0)  # le milieu, du plus ancien au plus récent
+            summary = assemble()
+        summary = summary[:limit]
+        with self.transaction() as db:
+            db.execute("UPDATE conversations SET summary = ?, summary_upto = ? WHERE id = ?",
+                       (self._protect("conversations", "summary", summary), older[-1]["id"], conversation))
+        return summary, recent
+
+    # ---------------------------------------------------------------- Recherche
+    def search(self, query: str, engine: str | None = None, limit: int = 20) -> list[dict]:
+        """Recherche plein texte (titres et messages, insensible à la casse et aux accents)."""
+        needles = fold(query).split()
+        if not needles:
+            return []
+        allowed = None if engine is None else {row["id"] for row in self.conversations(10000, engine)}
+        titles = {row["id"]: row for row in self.conversations(10000)}
+        hits: list[dict] = []
+        for conversation_id, row in titles.items():
+            if (allowed is None or conversation_id in allowed) and all(n in fold(row["title"]) for n in needles):
+                hits.append(self._hit(row, None, row["title"], 2.0))
+        for message in self._rows("messages", "SELECT * FROM messages ORDER BY id DESC LIMIT 20000"):
+            info = titles.get(message["conversation"])
+            if info is None or (allowed is not None and message["conversation"] not in allowed):
+                continue
+            folded = fold(message["content"])
+            if all(n in folded for n in needles):
+                hits.append(self._hit(info, message, message["content"], 1.0 + sum(folded.count(n) for n in needles)
+                                      / 100))
+        hits.sort(key=lambda hit: (-hit["score"], -hit["created"]))
+        return hits[:limit]
+
+    @staticmethod
+    def _hit(conversation: dict, message: dict | None, text: str, score: float) -> dict:
+        clean = re.sub(r"\s+", " ", text).strip()
+        return {"conversation": conversation["id"], "title": conversation["title"], "engine":
+                (message or {}).get("engine") or conversation.get("engine", ""), "role": (message or {}).get("role", ""),
+                "message": (message or {}).get("id"), "snippet": clean[:200], "score": round(score, 3),
+                "created": (message or conversation)["created"]}
+
+    def index_history(self, embed: Callable[[list[str]], tuple[str, list[list[float]]]], batch: int = 32) -> int:
+        """Indexe sémantiquement les messages non encore indexés (embeddings locaux)."""
+        from djerba_ai.core.embeddings import pack
+        known = self.embedding_refs("message")
+        pending = [row for row in self._rows("messages", "SELECT id, content FROM messages ORDER BY id")
+                   if str(row["id"]) not in known and row["content"].strip()]
+        for start in range(0, len(pending), batch):
+            chunk = pending[start:start + batch]
+            model, vectors = embed([row["content"][:2000] for row in chunk])
+            for row, vector in zip(chunk, vectors):
+                self.upsert_embedding("message", str(row["id"]), row["content"][:400], model, pack(vector))
+        return len(pending)
+
+    def semantic_search(self, query: str, embed: Callable[[list[str]], tuple[str, list[list[float]]]],
+                        engine: str | None = None, limit: int = 10) -> list[dict]:
+        """Recherche sémantique (similarité cosinus) dans les messages indexés."""
+        from djerba_ai.core.embeddings import cosine, unpack
+        self.index_history(embed)
+        model, vectors = embed([query])
+        allowed = None if engine is None else {row["id"] for row in self.conversations(10000, engine)}
+        titles = {row["id"]: row for row in self.conversations(10000)}
+        scored = []
+        for entry in self.embeddings("message", model):
+            rows = self._rows("messages", "SELECT * FROM messages WHERE id = ?", (int(entry["ref"]),))
+            if not rows or rows[0]["conversation"] not in titles:
+                continue
+            if allowed is not None and rows[0]["conversation"] not in allowed:
+                continue
+            scored.append(self._hit(titles[rows[0]["conversation"]], rows[0], rows[0]["content"],
+                                    cosine(vectors[0], unpack(entry["vector"]))))
+        scored.sort(key=lambda hit: -hit["score"])
+        return scored[:limit]
+
+    # ---------------------------------------------------------------- Export, import, rétention
+    def export(self, conversation: int, fmt: str = "markdown") -> str:
+        info = self.conversation(conversation)
+        if info is None:
+            raise HistoryError(f"conversation introuvable : {conversation}")
+        messages = self.messages(conversation, limit=100000)
+        actions = self.actions(conversation)
+        if fmt == "json":
+            return json.dumps({
+                "format": EXPORT_FORMAT,
+                "conversation": {key: info[key] for key in ("key", "title", "engine", "pinned", "created", "updated",
+                                                             "source")},
+                "messages": [{"role": row["role"], "content": row["content"], "engine": row["engine"],
+                              "tool": row["tool"], "created": row["created"]} for row in messages],
+                "actions": [{"tool": row["tool"], "success": bool(row["success"]), "message": row["message"],
+                             "engine": row["engine"], "transaction": row["tx"], "created": row["created"]}
+                            for row in actions]}, ensure_ascii=False, indent=2)
+        if fmt != "markdown":
+            raise HistoryError(f"format d'export inconnu : {fmt} (markdown ou json)")
+        when = time.strftime("%d/%m/%Y %H:%M", time.localtime(info["created"]))
+        engines = ", ".join(self.engines_used(conversation)) or info["engine"] or "—"
+        lines = [f"# {info['title']}", "", f"*Moteurs : {engines} · créée le {when}*", ""]
+        for row in messages:
+            who = "Vous" if row["role"] == "user" else (row["engine"] or "Djerba")
+            lines += [f"**{who}** : {row['content']}", ""]
+        if actions:
+            lines += ["## Actions", ""]
+            lines += [f"- {'✔' if row['success'] else '✘'} `{row['tool']}` ({row['engine'] or '?'}) — "
+                      f"{row['message']}" + (f" · transaction {row['tx']}" if row["tx"] else "") for row in actions]
+        return "\n".join(lines).rstrip() + "\n"
+
+    def import_history(self, data: Any, engine: str = "jarvis", source: str = "jarvis") -> dict[str, Any]:
+        """Importe des conversations (contrat Jarvis §4 ou export Djerba) ; dédoublonnage par origine."""
+        if isinstance(data, dict) and data.get("format") == EXPORT_FORMAT:
+            info = data.get("conversation") or {}
+            data = {"conversations": [{"id": info.get("key"), "title": info.get("title"), "created":
+                                       info.get("created"), "messages": data.get("messages")}]}
+        conversations = data.get("conversations") if isinstance(data, dict) else data
+        if not isinstance(conversations, list):
+            raise HistoryError("format d'historique inconnu : liste « conversations » attendue")
+        imported = skipped = 0
+        for item in conversations:
+            if not isinstance(item, dict) or not isinstance(item.get("messages"), list):
+                raise HistoryError("conversation invalide : « messages » attendu")
+            origin = f"{source}:{item.get('id') or hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest()[:16]}"
+            with self.lock:
+                if self.db.execute("SELECT 1 FROM conversations WHERE source = ?", (origin[:120],)).fetchone():
+                    skipped += 1
+                    continue
+            created = float(item.get("created") or time.time())
+            conversation = self.new_conversation(str(item.get("title") or "Conversation importée"), engine=engine,
+                                                 source=origin, created=created)
+            for message in item["messages"]:
+                role = message.get("role") if isinstance(message, dict) else None
+                if role not in ("user", "assistant") or not isinstance(message.get("content"), str):
+                    continue
+                self.add_message(conversation, role, message["content"], engine=engine if role == "assistant" else "",
+                                 created=float(message.get("created") or created))
+            imported += 1
+        return {"success": True, "imported": imported, "skipped": skipped,
+                "message": f"{imported} conversation(s) importée(s), {skipped} déjà présente(s)"}
+
+    def prune(self, now: float | None = None) -> int:
+        """Rétention par moteur : supprime les conversations non épinglées plus anciennes que la durée
+        réglée pour leur moteur d'origine (0 = conservation illimitée)."""
+        now = now or time.time()
+        doomed = []
+        for setting in self.engine_memories():
+            if setting["retention_days"] > 0:
+                limit = now - setting["retention_days"] * 86400
+                with self.lock:
+                    doomed += [row["id"] for row in self.db.execute(
+                        "SELECT id FROM conversations WHERE engine = ? AND pinned = 0 AND updated < ?",
+                        (setting["engine"], limit)).fetchall()]
+        for conversation in doomed:
+            self.delete_conversation(conversation)
+        return len(doomed)
 
     # ---------------------------------------------------------------- Faits
-    def remember(self, subject: str, content: str) -> int:
+    def remember(self, subject: str, content: str, engine: str = "") -> int:
         with self.transaction():
-            return self._insert("facts", {"subject": subject[:80], "content": content[:1000], "created": time.time()})
+            return self._insert("facts", {"subject": subject[:80], "content": content[:1000], "created": time.time(),
+                                          "engine": self._owner(engine)})
 
-    def facts(self, query: str = "", limit: int = 30) -> list[dict]:
-        rows = self._rows("facts", "SELECT * FROM facts ORDER BY id DESC LIMIT 1000")
+    def facts(self, query: str = "", limit: int = 30, engine: str | None = None) -> list[dict]:
+        """Faits visibles par ``engine`` (mémoire commune et/ou la sienne selon son mode ; None : tous)."""
+        where, args = self._scope(engine)
+        rows = self._rows("facts", f"SELECT * FROM facts WHERE {where} ORDER BY id DESC LIMIT 1000", args)
         if query:
             needle = query.lower()
             rows = [row for row in rows if needle in row["subject"].lower() or needle in row["content"].lower()]
@@ -219,18 +638,20 @@ class Memory:
             return db.execute("DELETE FROM facts WHERE id = ?", (fact_id,)).rowcount > 0
 
     # ---------------------------------------------------------------- Leçons et préférences
-    def learn(self, kind: str, content: str, source: str = "", weight: float = 1.0) -> int:
+    def learn(self, kind: str, content: str, source: str = "", weight: float = 1.0, engine: str = "") -> int:
         if kind not in LESSON_KINDS:
             raise ValueError(f"type de leçon inconnu : {kind}")
         with self.transaction():
             return self._insert("lessons", {"kind": kind, "content": content[:600], "source": source[:200],
-                                            "weight": weight, "created": time.time()})
+                                            "weight": weight, "created": time.time(), "engine": self._owner(engine)})
 
-    def lessons(self, kind: str | None = None, limit: int = 20) -> list[dict]:
+    def lessons(self, kind: str | None = None, limit: int = 20, engine: str | None = None) -> list[dict]:
+        where, args = self._scope(engine)
         if kind:
-            return self._rows("lessons", "SELECT * FROM lessons WHERE kind = ? ORDER BY weight DESC, id DESC LIMIT ?",
-                              (kind, limit))
-        return self._rows("lessons", "SELECT * FROM lessons ORDER BY weight DESC, id DESC LIMIT ?", (limit,))
+            return self._rows("lessons", f"SELECT * FROM lessons WHERE kind = ? AND {where} "
+                              "ORDER BY weight DESC, id DESC LIMIT ?", (kind, *args, limit))
+        return self._rows("lessons", f"SELECT * FROM lessons WHERE {where} ORDER BY weight DESC, id DESC LIMIT ?",
+                          (*args, limit))
 
     def forget_lesson(self, lesson_id: int) -> bool:
         with self.transaction() as db:
@@ -244,12 +665,14 @@ class Memory:
         return [{**row, "fingerprint": row["fingerprint"][:12]} for row in rows]
 
     # ---------------------------------------------------------------- Apprentissage
-    def record_run(self, tool: str, request: str, params: dict, success: bool, message: str) -> int:
+    def record_run(self, tool: str, request: str, params: dict, success: bool, message: str,
+                   conversation: int | None = None, engine: str = "", tx: str | None = None) -> int:
         with self.transaction():
             return self._insert("tool_runs", {"tool": tool, "request": request[:500],
                                               "params": json.dumps(params, ensure_ascii=False)[:2000],
                                               "success": int(success), "message": message[:500],
-                                              "created": time.time()})
+                                              "created": time.time(), "conversation": conversation,
+                                              "engine": engine_of(engine), "tx": tx})
 
     def feedback(self, run_id: int, value: int) -> None:
         value = max(-1, min(1, value))
