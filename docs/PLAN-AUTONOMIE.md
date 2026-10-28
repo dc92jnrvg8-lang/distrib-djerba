@@ -123,3 +123,54 @@ conteneur Debian 13, CI x86_64 et arm64).
   (phase 2) et l'historique (phase 4).
 * Les sondes ne couvrent pas encore les symptômes spécifiques (playbooks de
   la phase 7).
+
+---
+
+## Phase 2 — Moteur de politique dans `sysd`
+
+### Conception
+
+* **`core/policy.py`** (démon root uniquement) : décision déterministe
+  `decide(outil, paramètres, origine) → Décision(autorisé, niveau, exigences,
+  raison)`. L'agent **demande**, le démon **décide** ; la décision est la même
+  quel que soit le moteur d'IA (local, Tailscale, Jarvis, cloud).
+* **Politique versionnée** livrée par le paquet :
+  `/usr/share/djerba-ai/policy.toml` (lecture seule, hors de portée de
+  l'agent : aucune méthode RPC ne l'écrit, chemin interdit en dur) :
+  niveaux par outil, racines autorisées (listes blanches) pour
+  `os_sys_file_write` / `os_sys_chown` / `os_sys_chmod`, chemins et actions
+  interdits en dur, plafonds de débit.
+* **Niveaux** (par réversibilité) : 0 lecture ; 1 réversible local (service,
+  caches, paquet) → autonome + transaction ; 2 `/etc`, noyau, GRUB, pare-feu,
+  pilotes → autonome + transaction + vérification + rollback + notification
+  après coup ; 3 irréversible → refusé en autonomie (mode « total » : exige une
+  sauvegarde préalable explicite).
+* **Interdits en dur** (code, pas configuration) : bootloader et ESP en
+  écriture directe, clés Secure Boot, `/etc/shadow`, `/etc/gshadow`, code de
+  `sysd`, politique, instantanés, journal d'audit, journal de transactions,
+  manifeste de confiance.
+* **Modes** : « prudent » (confirmation hors bande par polkit pour tout
+  niveau ≥ 1), « autonome » (défaut), « total » (avertissement explicite).
+  Changement de mode : méthode dédiée `policy.set_mode`, polkit `auth_admin`
+  (mot de passe à chaque fois) → l'IA ne peut pas l'activer seule.
+* **Session « tainted »** (contenu non fiable lu pendant la tâche) : niveau
+  plafonné à 1 jusqu'à la fin de la tâche (`origin.tainted`).
+* **Plafonds** : N actions de niveau ≥ 1 par minute et par session ; même
+  correction 3 fois → arrêt (détection de boucle) ; **disjoncteur global**
+  `djerba-ai pause` / `resume` (`/var/lib/djerba-ai/paused`).
+* **Profil de confiance par moteur** (préparé pour la phase 3) : plafond de
+  niveau par moteur dans la politique, sans retirer de fonctionnalité visible.
+* **Refus journalisés** (audit + compteur Prometheus), visibles au tableau
+  de bord.
+* Côté agent : `needs_confirmation` remplacé par la décision du démon
+  (plus de confirmation en mode autonome jusqu'au niveau 2).
+
+### Critères de réussite
+
+- [ ] Table de décision testée (niveaux × modes × tainted × moteur).
+- [ ] Chemins interdits refusés pour tous les outils d'écriture, y compris
+      par traversée (`..`, liens symboliques).
+- [ ] Page web piégée (contenu non fiable) → aucune action de niveau ≥ 2.
+- [ ] Boucle (même correction 3 fois) arrêtée ; disjoncteur effectif.
+- [ ] Changement de mode impossible sans authentification administrateur.
+- [ ] Même décision pour tous les moteurs à profil égal (test de parité).
