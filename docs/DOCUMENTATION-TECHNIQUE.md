@@ -22,7 +22,7 @@
 7. [Paquet `djerba-tools` : outils en ligne de commande](#7-paquet-djerba-tools--outils-en-ligne-de-commande)
 8. [Agent IA `djerba_ai` : architecture](#8-agent-ia-djerba_ai--architecture)
 9. [Agent IA : module par module](#9-agent-ia--module-par-module)
-10. [Capacités de l'agent (263 outils)](#10-capacités-de-lagent-263-outils)
+10. [Capacités de l'agent (265 outils)](#10-capacités-de-lagent-265-outils)
 11. [Configuration centrale (`/etc/djerba/config.toml`)](#11-configuration-centrale-etcdjerbaconfigtoml)
 12. [Démon root `djerba-ai-sysd` et protocole JSON-RPC](#12-démon-root-djerba-ai-sysd-et-protocole-json-rpc)
 13. [Sécurité : modèle de menace et défenses](#13-sécurité--modèle-de-menace-et-défenses)
@@ -51,7 +51,7 @@ livrée sous forme d'**ISO live hybride installable** (amd64 et arm64) :
 | Amorçage | GRUB EFI signé (shim, Secure Boot) + grub-pc (BIOS) sur amd64, iso-hybrid |
 | Identité | paquet Debian `djerba-branding` (os-release par diversion dpkg, thèmes Plymouth/SDDM/GRUB/Plasma) |
 | Outils | paquet Debian `djerba-tools` : assistant d'accueil, catalogue d'apps, mode anonyme (Tor), mode discret (look Windows), mode jeu, **agent IA « Djerba »** |
-| Agent IA | Python 3.13 + PyQt6/QML ; moteurs : Ollama local, Ollama distant via Tailscale, API OpenAI/Gemini via démon root ; 263 capacités |
+| Agent IA | Python 3.13 + PyQt6/QML ; moteurs (registre `core/engines.py`) : Ollama local, Ollama distant, Jarvis, Anthropic, API compatibles OpenAI/Gemini (relayés par le démon root) ; serveur MCP pour Jarvis ; 265 capacités |
 | CI | GitHub Actions : lints, construction ISO amd64/arm64, tests de contenu, démarrage QEMU UEFI, tests en session live avec réseau, publication en pré-release |
 
 Fonctionnalités principales visibles par l'utilisateur :
@@ -311,7 +311,7 @@ Code : `packages/djerba-tools/root/usr/lib/python3/dist-packages/djerba_ai/`.
              │ core/llm.py (Ollama local / Tailscale / Cloud via root ; transport    │
              │              persistant, reprises, repli d'adresse)                   │
              │ core/guard.py (anti-injection) · core/dlp.py · core/memory.py         │
-             │ tools/ (263 capacités) · core/executor.py                              │
+             │ tools/ (265 capacités) · core/executor.py                              │
              ├──────────────────────────────────────────────────────────────────────┤
  Démon user  │ core/daemon.py (djerba-ai.service) : adaptateur de bureau, bus de     │
              │ contexte, télémétrie, auto-réparation, chien de garde, maintenance    │
@@ -376,6 +376,8 @@ Flux d'une demande :
 | **`transactions.py`** | Journal de transactions du démon root (voir §15 bis) : sauvegarde avant action, relevé des chemins touchés, sondes avant/après, **rollback automatique** sur régression ou échec partiel, undo, undo depuis une date, conflits, rétention. | `Journal`, `Origin`, `TransactionError` |
 | **`snapshots.py`** | Sauvegardes : `BtrfsBackend` (instantanés, `btrfs send --no-data` → chemins exacts), `FilesBackend` (copie de /etc, /usr/local, /boot + manifeste) ; restauration commune ; `tree_digest`. | `detect`, `restore`, `parse_dump`, `Changes` |
 | **`policy.py`** | **Moteur de politique** (démon root) : niveaux 0–3, interdits en dur, listes blanches, modes, contenu non fiable, plafonds par moteur, débit, boucles, disjoncteur ; `check()` côté agent (repli local prudent). Voir §13 bis. | `Policy`, `Rules`, `Decision`, `Origin`, `check` |
+| **`engines.py`** | **Registre des moteurs** (phase 3) : moteurs intégrés et enregistrés (`/etc/djerba/engines.json` 0600, vue publique `engines.public.json`), fabrique de fournisseurs, relais root (`engine_request`), appairage Jarvis, mesure du profil de capacité. Voir §13 ter. | `EngineStore`, `catalog`, `find`, `make_provider`, `pair_jarvis`, `measure` |
+| **`mcp.py`** | **Serveur MCP** (Djerba serveur d'outils pour Jarvis) : appairage par code, jetons hachés, révocation, débit, anti-force brute ; chaque appel passe par la politique. | `ClientStore`, `MCPServer`, `serve` |
 | **`probes.py`** | Sondes de santé déterministes (unités en échec, dpkg, NetworkManager, route, résolveur, unités ciblées) et détection de régression. | `collect`, `regressions` |
 | **`bootguard.py`** | Rollback au démarrage : clone `@djerba-last-good`, compteur GRUB sur l'ESP, entrée de restauration, rendre définitif. | `BootGuard`, `main` |
 
@@ -419,11 +421,11 @@ Flux d'une demande :
 
 ---
 
-## 10. Capacités de l'agent (263 outils)
+## 10. Capacités de l'agent (265 outils)
 
 Notation : `*` = exécuté par le démon root, `!` = dangereux (confirmation). Les outils root sont `mutates` (exécutés dans une transaction annulable) sauf les 15 outils de lecture : apparmor_status, auth_failures, btrfs_scrub_status, btrfs_usage, grub_entries, listening_ports, nft_ruleset, smart_health, smart_scan, snapshot_create, snapshot_delete, snapshot_list, suid_binaries, ufw_status, unattended_upgrades_log.
 
-* **agentic (44)** : transactions_list, transaction_undo, audit_log, audit_verify, brain_switch!, capability_create, context_now, conversations_list, daemon_status, dlp_vault, engine_handshake, engine_status, feedback, ghost_list, ghost_logs, ghost_run, ghost_stop, health_report, incident_analyze, incidents_list, learning_stats, lesson_record, lessons_list, memory_forget!, memory_recall, memory_remember, model_list, model_pull!, model_recommend, model_set, ollama_install!, patch_deploy!, patch_list, patch_propose, patch_rollback!, self_update*!, settings_get, settings_history, settings_set!, tools_categories, tools_search, venv_install!, web_fetch, web_search.
+* **agentic (46)** : transactions_list, transaction_undo, engines_list, engine_use, audit_log, audit_verify, brain_switch!, capability_create, context_now, conversations_list, daemon_status, dlp_vault, engine_handshake, engine_status, feedback, ghost_list, ghost_logs, ghost_run, ghost_stop, health_report, incident_analyze, incidents_list, learning_stats, lesson_record, lessons_list, memory_forget!, memory_recall, memory_remember, model_list, model_pull!, model_recommend, model_set, ollama_install!, patch_deploy!, patch_list, patch_propose, patch_rollback!, self_update*!, settings_get, settings_history, settings_set!, tools_categories, tools_search, venv_install!, web_fetch, web_search.
 * **apps (27)** : apps_catalog, apps_install*!, apps_remove*!, apps_retry_pending*, apps_status, apt_history, apt_install*!, apt_remove*!, default_apps, default_browser_set, flatpak_install*!, flatpak_list, flatpak_remotes, flatpak_remove*!, flatpak_search, heroic_install*!, lutris_install*!, multilib_enable*, multilib_status, open_discover, open_store, package_files, package_owner, proton_install_ge, proton_list, steam_install*!, wine_install*!.
 * **desktop (26)** : audio_default, audio_devices, colorscheme_apply, colorschemes_list, dark_mode, desktop_apps, keyboard_layout, lock_screen, mute_toggle, night_light, notify, open_app, open_welcome, screen_mode!, screen_scale, screen_vrr, screens_list, screenshot, theme_apply!, themes_list, undercover_off, undercover_on, undercover_status, volume_get, volume_set, wallpaper_set.
 * **devtools (19)** : app_delete!, app_export, app_generator, app_history, app_iterate, app_open_folder, app_revert!, app_run, apps_generated_list, compile_c, compile_rust, git_status, plugin_disable, plugin_enable!, plugin_generate, plugins_list, python_check, shellcheck_file, studio_templates.
@@ -444,7 +446,8 @@ Fichier root 0600, écrit uniquement par le démon root (`config.set`) ; vue pub
 
 | Clé | Défaut | Rôle |
 |---|---|---|
-| `llm.provider` | `local` | `local` / `tailscale` / `cloud` |
+| `llm.provider` | `local` | `local` / `tailscale` / `cloud` (ancien réglage, repris si `llm.engine` est vide) |
+| `llm.engine` | `""` | Moteur actif du registre (`local`, `tailscale`, `cloud` ou identifiant enregistré) |
 | `llm.fallback_to_local` | `true` | Repli transparent sur Ollama local |
 | `llm.remote_timeout` | `5` | Délai (s) du contrôle de santé distant |
 | `llm.context_window` | `8192` | `num_ctx` |
@@ -468,6 +471,7 @@ Fichier root 0600, écrit uniquement par le démon root (`config.set`) ; vue pub
 | `context.interval` / `context.window_titles` | `5` / `true` | Bus de contexte |
 | `telemetry.enabled` / `telemetry.port` | `true` / `9464` | Prometheus |
 | `ui.onboarded` | `false` | Assistant de premier lancement |
+| `mcp.enabled` / `mcp.port` | `false` / `8765` | Serveur MCP lié à l'adresse Tailscale |
 
 ---
 
@@ -497,6 +501,12 @@ Fichier root 0600, écrit uniquement par le démon root (`config.set`) ; vue pub
 | `tx.undo {id, force}` / `tx.undo_since {since}` | `org.djerba.ai.undo` | Annulation depuis la sauvegarde |
 | `policy.check {tool, params, origin, commit}` | — (+ `org.djerba.ai.confirm` / `critical` si requis) | Décision de la politique pour un outil de l'utilisateur |
 | `policy.status` | — | Mode, pause, plafonds, derniers refus |
+| `engines.list` | — | Registre public des moteurs (sans secrets) |
+| `engines.save {engine, secret}` / `engines.remove {id}` / `engines.set_profile {id, profile}` / `engines.pair_jarvis {endpoint, code, …}` | `org.djerba.ai.configure` (+ politique) | Gestion des moteurs ; le jeton Jarvis reste root |
+| `llm.engine_chat {id, messages, tools, json_mode}` / `llm.engine_health {id}` | `org.djerba.ai.cloud` | Relais vers un moteur à secret (Jarvis, Anthropic, API en ligne), jetons `llm.token` |
+| `mcp.pair_begin {name, cap}` / `mcp.revoke {client}` | `org.djerba.ai.configure` | Code d'appairage MCP, révocation |
+| `mcp.pair_complete {code, name}` / `mcp.verify {token}` | — (appelant de confiance) | Échange code → jeton, vérification de jeton (serveur MCP) |
+| `mcp.list` | `org.djerba.ai.audit` | Appelants MCP |
 | `policy.set_mode {mode}` / `policy.set_caps {caps}` / `policy.resume` | `org.djerba.ai.policy` (auth_admin) | Changement de la politique, reprise après pause |
 | `policy.pause {reason}` | `org.djerba.ai.undo` | Disjoncteur : plus aucune action de niveau ≥ 1 |
 
@@ -530,6 +540,16 @@ Les méthodes qui modifient le système (`sys.exec_tool` d'un outil `mutates`, c
 * **Plafond par moteur** (`policy.engine_caps`, ex. `cloud:1`) : même décision pour tous les moteurs à plafond égal.
 * **Disjoncteur** : `djerba-ai pause [raison]` (`/var/lib/djerba-ai/paused`), `djerba-ai resume` (administrateur) ; boucles (même action répétée) et débits bornés.
 * **Traçabilité** : chaque refus est inscrit au journal d'audit (`refus politique`, niveau, mode, moteur, session, contenu non fiable), compté (`djerba_policy_refusals_total`) et listé par `djerba-ai policy`.
+
+## 13 ter. Moteurs d'IA unifiés, Jarvis et MCP (phase 3)
+
+* **Registre** (`core/engines.py`) : moteurs intégrés `local`, `tailscale`, `cloud` (issus de `llm.*`) et moteurs enregistrés (`ollama`, `jarvis`, `anthropic`, `openai`, `gemini`, `openai_compat`) dans `/etc/djerba/engines.json` (root 0600, secrets) ; vue publique `engines.public.json`. Moteur actif : `llm.engine`. CLI : `djerba-ai engines [list|add|pair-jarvis|use|test|measure|remove]`.
+* **Interface unique** : Ollama (local ou distant) en direct ; moteurs à secret par `RelayProvider` → `llm.engine_chat` du démon root (le jeton ne quitte jamais root). Anthropic : API Messages en flux SSE (`anthropic_request`).
+* **Les outils appartiennent à Djerba** : modèle sans appels d'outils natifs → repli « JSON contraint » (`core/engine.py`, `structured_chat` : consigne décrivant les outils, `format: json`, validation stricte, 3 essais). Suite de parité : même scénario, mêmes actions sur chaque moteur.
+* **Profil de capacité** mesuré à l'ajout (`measure` : appel d'outil, JSON, code) → « Très adapté » (plafond 3), « Adapté » (2), « Limité : réparations simples seulement » (1) ; plafond appliqué par la politique (`engine_cap`).
+* **Confidentialité** : DLP sur tout message vers un moteur distant ; règles `share` par moteur (contexte système, mémoire) ; réponse anormale (outil non proposé, indices d'injection) → tâche « tainted » (niveau 1).
+* **Bascule à chaud** : le moteur est relu à chaque tâche, l'historique de la conversation suit ; moteur distant injoignable → repli Ollama local (`llm.fallback_to_local`).
+* **MCP** (`core/mcp.py`, `djerba-ai mcp-serve`, unité utilisateur `djerba-ai-mcp.service`, inactif tant que `mcp.enabled` est faux) : JSON-RPC sur HTTP lié à l'adresse Tailscale ; appairage par code à 6 chiffres / QR (`djerba-ai mcp pair NOM`), jetons hachés, révocation, 60 appels/min, origine `mcp-<client>` avec plafond (2 par défaut). Contrat complet : `docs/JARVIS-CONTRAT.md`.
 
 ## 14. Multi-bureau (KDE Plasma / GNOME)
 
@@ -604,6 +624,7 @@ Module `core/dpkgstate.py`, exécutable `/usr/libexec/djerba-dpkg-repair`.
 
 **Utilisateur** (`/usr/lib/systemd/user/`) :
 * `djerba-ai.service` — démon utilisateur (`WantedBy=graphical-session.target`, activé globalement).
+* `djerba-ai-mcp.service` — serveur MCP (activé globalement, sans effet tant que `mcp.enabled` est faux).
 * `djerba-gnome-crash.service` + compléments `org.gnome.Shell@wayland.service.d/`, `org.gnome.Shell@x11.service.d/`, `gnome-session-failed.target.d/`.
 * `djerba-ghost-*` (transitoires) — Ghost Runner ; `djerba-app-*` (scopes) — applications du Studio.
 

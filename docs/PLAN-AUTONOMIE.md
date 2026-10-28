@@ -250,14 +250,53 @@ conteneur Debian 13, CI x86_64 et arm64).
 
 ### Critères de réussite
 
-- [ ] Plusieurs moteurs configurés, bascule à chaud sans perte de conversation,
-      repli distant → local conservé.
-- [ ] Anthropic et Jarvis (contrat) fonctionnels contre des serveurs factices.
-- [ ] Repli JSON contraint : un modèle sans appels d'outils exécute les mêmes
+- [x] Plusieurs moteurs configurés, bascule à chaud sans perte de conversation,
+      repli distant → local conservé (`test_hot_switch_keeps_conversation_and_falls_back_to_local`).
+- [x] Anthropic et Jarvis (contrat) fonctionnels contre des serveurs factices.
+- [x] Repli JSON contraint : un modèle sans appels d'outils exécute les mêmes
       actions.
-- [ ] Suite de parité : mêmes scénarios rejoués sur chaque moteur, mêmes
-      actions et résultats.
-- [ ] Profil de capacité mesuré et affiché ; plafond appliqué par la politique.
-- [ ] Appairage Jarvis par code ; serveur MCP authentifié, révocable, sous
+- [x] Suite de parité : mêmes scénarios rejoués sur chaque moteur (local,
+      Ollama sans outils, Jarvis, Claude), mêmes actions et résultats.
+- [x] Profil de capacité mesuré et affiché ; plafond appliqué par la politique.
+- [x] Appairage Jarvis par code ; serveur MCP authentifié, révocable, sous
       politique et audit.
-- [ ] DLP et « tainted » pour les moteurs distants.
+- [x] DLP et « tainted » pour les moteurs distants.
+- [x] Lints et 129 tests verts en local ; contrôles ISO (modules, unité MCP)
+      et session live (registre, MCP inactif par défaut) ajoutés.
+- [ ] CI verte (x86_64 et arm64).
+
+### Décisions
+
+* **Registre à côté de `llm.*`** plutôt que migration destructive : `local`,
+  `tailscale`, `cloud` restent des moteurs intégrés dérivés de la
+  configuration existante ; `llm.engine` choisit le moteur actif (vide →
+  `llm.provider`). Aucune configuration existante n'est réécrite.
+* **Relais root pour tout moteur à secret** (Jarvis, Anthropic, API en
+  ligne) : la session n'a que la vue publique ; un compromis de la session ne
+  révèle aucun jeton.
+* **Jarvis privé uniquement** : adresse Tailscale, réseau local ou boucle
+  locale, refus sinon. Contrat minimal compatible OpenAI (le plus répandu),
+  documenté dans `docs/JARVIS-CONTRAT.md` ; seul l'adaptateur changera.
+* **MCP minimal sans flux** (HTTP + JSON-RPC, `initialize`, `tools/list`,
+  `tools/call`) : pas de dépendance hors APT ; serveur inactif par défaut,
+  lié à l'adresse Tailscale seulement ; jetons hachés, 5 essais
+  d'appairage/min, 60 appels/min, plafond 2 par appelant.
+* **Anomalie = tainted, pas refus** : une réponse distante anormale ne coupe
+  pas la conversation mais plafonne la tâche au niveau 1, audité comme
+  « moteur distant ».
+* **Profil mesuré → plafond** : un moteur « Limité » ne peut pas dépasser le
+  niveau 1 quel que soit le mode ; le profil est remesurable
+  (`djerba-ai engines measure ID`).
+
+### Limites restantes
+
+* L'API réelle de Jarvis est inconnue : adaptateur et tests reposent sur le
+  contrat v1 (questions ouvertes listées en fin de `docs/JARVIS-CONTRAT.md`).
+* Parité limitée à l'agent (outils, politique, transactions) : parité des
+  extensions, applications et installations rapportée à la phase 5 (Studio).
+* Pas d'embeddings pour les moteurs relayés (la recherche sémantique reste
+  sur Ollama local).
+* Petites fenêtres de contexte : filtrage des outils existant, résumé de
+  l'historique à généraliser en phase 4 (historique par IA).
+* Interface graphique de gestion des moteurs : CLI et réglages seulement ;
+  page dédiée en phase 8.

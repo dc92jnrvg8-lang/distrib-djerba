@@ -135,6 +135,18 @@ fichier, réponse d'un moteur distant) plafonne la tâche au niveau 1.
 `djerba-ai policy`, `djerba-ai pause` / `resume` ; changer de mode
 (« prudent », « autonome », « total ») demande le mot de passe administrateur.
 
+**N'importe quel moteur, les mêmes outils.** Plusieurs moteurs d'IA
+coexistent (Ollama local ou distant, Jarvis, Claude, API compatibles
+OpenAI/Gemini) et se remplacent à chaud sans perdre la conversation :
+`djerba-ai engines`, `djerba-ai engines use ID`. Les jetons restent dans le
+démon root ; tout envoi distant passe par le DLP. Un modèle sans appels
+d'outils passe par un « JSON contraint » : mêmes actions, même politique.
+Chaque moteur ajouté est mesuré (« Très adapté », « Adapté », « Limité ») et
+plafonné en conséquence. Jarvis s'appaire par code
+(`djerba-ai engines pair-jarvis`) et peut piloter Djerba comme serveur
+d'outils MCP sur Tailscale (`djerba-ai mcp pair jarvis`), toujours sous la
+politique et l'audit. Contrat : `docs/JARVIS-CONTRAT.md`.
+
 **dpkg toujours réparable.** Une transaction interrompue (coupure, conflit
 de fichiers, script en échec) bloquait Discover sur un écran vide.
 `djerba-dpkg-repair` détecte l'incohérence sans privilège (`dpkg --audit`,
@@ -315,7 +327,7 @@ depuis une barre flottante ou une application complète.
 | `core/telemetry.py` | **télémétrie** native : `http://127.0.0.1:9464/metrics` (Prometheus ; tableau de bord Grafana fourni) et `/health` (Uptime Kuma) — mémoire, CPU et latences de l'agent, du moteur, des capacités et du démon root |
 | `core/ghost.py` | **Ghost Runner** : tâches de fond dans des services systemd utilisateur dédiés (`djerba-ghost-*`, quotas cgroups v2, sans privilège, sans accès au démon root) |
 | `core/memory.py`, `core/dlp.py` | **mémoire permanente chiffrée** (SQLite, AES-256-GCM par colonne, transactions, leçons et préférences, index vectoriel) et **DLP à deux niveaux** (règles déterministes puis analyse contextuelle par tokenizer et entropie : les secrets réels vont chiffrés au coffre, les gabarits et exemples de code restent intacts) |
-| `djerba_ai.tools` | **263 capacités** découvertes par introspection (`BaseTool`) : maintenance 31, performances 27 (dont `game_optimizer`), sécurité 30, bureau 26, applications 27, matériel 20, agent 44, système 21, Studio 19, **os 18** (apt, Flatpak, fichiers, `chmod`/`chown`, recherche par nom et **sémantique**) |
+| `djerba_ai.tools` | **265 capacités** découvertes par introspection (`BaseTool`) : maintenance 31, performances 27 (dont `game_optimizer`), sécurité 30, bureau 26, applications 27, matériel 20, agent 46, système 21, Studio 19, **os 18** (apt, Flatpak, fichiers, `chmod`/`chown`, recherche par nom et **sémantique**) |
 | `djerba-ai-sysd` | démon root activé par la socket `/run/djerba-ai/sysd.sock` : JSON-RPC analysé par **schémas Pydantic stricts** (champ inconnu, type approximatif ou méthode absente : rejet immédiat), appelant identifié par `SO_PEERCRED` puis **vérifié** (`core/trust.py` : interpréteur système en mode isolé `-I`, point d'entrée `/usr/bin/djerba-ai` dont l'empreinte figure au manifeste signé du paquet, aucune injection `LD_*`), autorisation **polkit** (`exec`, `patch`, `deploy`, `setup`, `configure`, `cloud`, `audit`, `extend`), **seul** à lire la clé d'API et à écrire `config.toml` ; refuse les applications du Studio et les tâches de fond ; **registre d'audit immuable** (`/var/log/djerba/audit.log` : demande consignée *avant* exécution, chaîne de hachages SHA-256 et tête de chaîne, attribut noyau « ajout seul », rotation interne) ; ordonné après `network-online.target` et `tailscaled.service` |
 | `core/sandbox.py` | **runtime hybride** du code non fiable : service transitoire systemd (DynamicUser, espaces de noms réseau/IPC/PID/utilisateurs/montages, `SystemCallFilter` seccomp-bpf, `RestrictAddressFamilies=AF_UNIX`, MemoryMax/CPUQuota/TasksMax cgroups v2, durée bornée) ; repli `unshare` + cgroup v2 + filtre libseccomp ; **gVisor** (`runsc`) pour les instructions arbitraires si installé ; dossiers jetables purgés après chaque exécution |
 | `djerba-ai.service` (utilisateur) | surveillance du journal (incidents), chien de garde (disque sous le seuil, services en échec), maintenance quotidienne, mise à jour hebdomadaire du modèle local |
