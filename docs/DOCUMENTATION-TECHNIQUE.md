@@ -268,7 +268,7 @@ Scripts de maintenance :
 | `djerba-ai-sysd` | Démon root de l'agent (activé par socket). |
 | `djerba-ai-ids` | Service root de détection d'intrusion. |
 | `djerba-dpkg-repair` | Santé de dpkg : `--check [--json]` (sans privilège), `--auto` / `--repair [--json]` (root), `--schedule` (crochet APT), `--watch` (session). Voir §15. |
-| `djerba-boot` | Rollback au démarrage : `ok`, `status`, `make-permanent [--force]`, `grub-snippet counter|entry`. Voir §15 bis. |
+| `djerba-boot` | Rollback au démarrage : `ok [--wait]`, `start`, `clean-shutdown`, `status`, `make-permanent [--force]`, `grub-snippet counter|entry`. Voir §15 bis. |
 
 ### 7.3 Données (`/usr/share`)
 
@@ -613,7 +613,7 @@ Module `core/dpkgstate.py`, exécutable `/usr/libexec/djerba-dpkg-repair`.
   * Jamais restaurés : `/var/log`, caches, `/var/lib/djerba-ai*`, `/var/lib/systemd`, listes APT, baux réseau, `/home`, `.snapshots`…
 * **Journal** : SQLite root 0600 `/var/lib/djerba-ai/transactions.db` (`PRAGMA user_version` = 1) — id `tAAAAMMJJhhmmssXXXX`, dates, uid, **moteur d'IA** (`kind:modèle`, transmis par l'agent) et **session** (conversation), méthode, outil, paramètres masqués, sauvegarde, chemins, paquets, sondes, régressions, état (`appliquée`, `sans effet`, `échec`, `annulée`, `annulée automatiquement`, `annulation partielle`, `expirée`). Rétention : 60 dernières transactions, 30 jours.
 * **Undo** : `djerba-ai transactions [N]`, `djerba-ai undo ID [--force]`, `djerba-ai undo --since AAAA-MM-JJ[THH:MM]` (antichronologique) ; outils de l'agent `transactions_list`, `transaction_undo`. Refus si une transaction plus récente encore appliquée a touché les mêmes chemins.
-* **Rollback au démarrage** (`core/bootguard.py`, `/usr/libexec/djerba-boot`, Btrfs + UEFI, racine non chiffrée) : `djerba-boot-ok.timer` (3 min après l'amorçage) → si le démarrage est sain, compteur remis à 0 et clone inscriptible `@djerba-last-good` rafraîchi (fstab pointé sur lui, noyau/initrd aux noms stables `boot/djerba-vmlinuz`, `boot/djerba-initrd.img`). `/etc/grub.d/09_djerba_bootcount` incrémente `djerba_boot_tries` dans `EFI/djerba/grubenv` sur l'ESP ; à 2, GRUB démarre l'entrée `djerba-last-good` (`/etc/grub.d/42_djerba_rollback`). `djerba-ai rollback --make-permanent` (pkexec, `org.djerba.boot-rollback`) conserve l'état restauré (l'ancien `@` est gardé en `@djerba-broken-<date>`).
+* **Rollback au démarrage** (`core/bootguard.py`, `/usr/libexec/djerba-boot`, Btrfs + UEFI, racine non chiffrée) : `djerba-boot-ok.service` (attend la fin du démarrage, `systemctl is-system-running --wait`, sans délai fixe) → si le démarrage est sain (`running`/`degraded`, gestionnaire de connexion actif), compteur remis à 0 et clone inscriptible `@djerba-last-good` rafraîchi (fstab pointé sur lui, noyau/initrd aux noms stables `boot/djerba-vmlinuz`, `boot/djerba-initrd.img`). `/etc/grub.d/09_djerba_bootcount` incrémente `djerba_boot_tries` dans `EFI/djerba/grubenv` sur l'ESP ; à 2, GRUB démarre l'entrée `djerba-last-good` (`/etc/grub.d/42_djerba_rollback`). `djerba-ai rollback --make-permanent` (pkexec, `org.djerba.boot-rollback`) conserve l'état restauré (l'ancien `@` est gardé en `@djerba-broken-<date>`). **Démarrage raté** : démarrage qui n'atteint pas la validation et ne finit pas par un arrêt propre (panique, init absent, blocage puis arrêt forcé, mode de secours, gestionnaire de connexion en échec) ; un arrêt propre demandé avant la validation (`djerba-boot-guard.service`, `ExecStop`, état `stopping`) rend au compteur sa valeur précédente ; un démarrage lent n'est pas un échec. `/home` et les autres sous-volumes ne sont jamais clonés ni restaurés (seule la ligne « / » du fstab du clone est réécrite). ESP en lecture seule : compteur non remis à zéro, dernier bon état rafraîchi quand même, unité en échec et avis. `grubenv` corrompu : GRUB ignore le compteur (démarrage normal, sans rollback) et la validation suivante recrée le bloc. Avis de session : `/var/lib/djerba-boot/notice.json` (restauration, état rendu définitif, ESP), notifié une fois par le démon utilisateur.
 
 ## 16. Chemins installés et données à l'exécution
 
@@ -650,7 +650,8 @@ Module `core/dpkgstate.py`, exécutable `/usr/libexec/djerba-dpkg-repair`.
 * `djerba-anonsurf-tor.service` — Tor du mode anonyme.
 * `djerba-apps-firstboot.service` — installation des applications choisies au premier démarrage.
 * `djerba-dpkg-repair.service` + `.timer` — vérification/réparation de dpkg.
-* `djerba-boot-ok.service` + `.timer` — validation du démarrage (compteur GRUB, `@djerba-last-good`).
+* `djerba-boot-ok.service` — validation du démarrage à la fin de l'amorçage (compteur GRUB, `@djerba-last-good`).
+* `djerba-boot-guard.service` — relève du compteur au démarrage ; arrêt propre non compté comme un échec.
 
 **Utilisateur** (`/usr/lib/systemd/user/`) :
 * `djerba-ai.service` — démon utilisateur (`WantedBy=graphical-session.target`, activé globalement).

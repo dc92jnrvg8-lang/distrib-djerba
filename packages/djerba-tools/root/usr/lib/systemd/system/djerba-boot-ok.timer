@@ -1,9 +1,0 @@
-# Djerba OS — validation du démarrage trois minutes après l'amorçage.
-[Unit]
-Description=Djerba : validation du démarrage
-
-[Timer]
-OnBootSec=3min
-
-[Install]
-WantedBy=timers.target

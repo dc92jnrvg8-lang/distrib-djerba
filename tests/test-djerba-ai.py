@@ -51,6 +51,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -2361,6 +2362,65 @@ class FakeBootGuard:
         return Guard(backend=None, esp=esp)
 
 
+class FakeBootSystem:
+    """grub-editenv (bloc de 1024 octets, ESP en lecture seule simulable), systemctl et findmnt simulés."""
+
+    HEADER = "# GRUB Environment Block\n"
+
+    def __init__(self) -> None:
+        self.base = Path(tempfile.mkdtemp())
+        (self.base / "esp").mkdir()
+        self.readonly = False
+        self.state = "running"
+        self.finish_on_wait = False
+        self.manager = "active"
+        self.manager_sequence: list[str] = []
+        self.root = "/@"
+        self.timeouts: list = []
+        self.sleeps: list = []
+
+    def guard(self):
+        from djerba_ai.core import bootguard
+        return bootguard.BootGuard(backend=None, esp=self.base / "esp", runner=self.run, run_dir=self.base / "run",
+                                   notice=self.base / "var/lib/djerba-boot/notice.json", sleep=self.sleeps.append)
+
+    def run(self, argv: list[str], timeout=120) -> subprocess.CompletedProcess:
+        self.timeouts.append((argv, timeout))
+        out, code, err = "", 0, ""
+        if argv[0] == "grub-editenv":
+            path, action = Path(argv[1]), argv[2]
+            text = path.read_bytes().decode("latin-1") if path.exists() else None
+            valid = text is not None and text.startswith(self.HEADER) and len(text) == 1024
+            if action == "list":
+                if text is None or not valid:
+                    code, err = 1, "grub-editenv: error: invalid environment block."
+                else:
+                    out = "".join(line + "\n" for line in text[len(self.HEADER):].rstrip("#").splitlines() if line)
+            elif self.readonly:
+                code, err = 1, f"grub-editenv: error: cannot open `{path}.new': Read-only file system."
+            elif action == "create":
+                path.write_bytes((self.HEADER + "#" * (1024 - len(self.HEADER))).encode())
+            elif action == "set" and valid:
+                name, value = argv[3].split("=", 1)
+                lines = [line for line in text[len(self.HEADER):].rstrip("#").splitlines()
+                         if line and not line.startswith(f"{name}=")] + [f"{name}={value}"]
+                body = self.HEADER + "".join(line + "\n" for line in lines)
+                path.write_bytes((body + "#" * (1024 - len(body))).encode())
+            else:
+                code, err = 1, "grub-editenv: error: invalid environment block."
+        elif argv[:2] == ["systemctl", "is-system-running"]:
+            if "--wait" in argv and self.finish_on_wait:
+                self.state = "running"
+            out = self.state
+        elif argv[:2] == ["systemctl", "is-enabled"]:
+            out = "enabled"
+        elif argv[:2] == ["systemctl", "is-active"]:
+            out = self.manager_sequence.pop(0) if self.manager_sequence else self.manager
+        elif argv[0] == "findmnt":
+            out = self.root
+        return subprocess.CompletedProcess(argv, code, out + "\n", err)
+
+
 class BootRollbackTests(unittest.TestCase):
     def test_grub_snippets_are_valid(self) -> None:
         guard = FakeBootGuard.make(Path(tempfile.mkdtemp()))
@@ -2386,6 +2446,101 @@ class BootRollbackTests(unittest.TestCase):
         self.assertEqual(guard.tries(), 2)
         self.assertTrue(guard.set_tries(0))
         self.assertEqual(guard.tries(), 0)
+
+    def test_corrupted_grubenv_is_recreated(self) -> None:
+        system = FakeBootSystem()
+        guard = system.guard()
+        guard.env_file.parent.mkdir(parents=True)
+        guard.env_file.write_bytes(b"\x00garbage" * 50)
+        self.assertEqual(guard.env_state(), "corrompu")
+        self.assertEqual(guard.tries(), 0)  # GRUB comme Linux : compteur illisible = aucun rollback
+        success, message = guard.mark_success()
+        self.assertTrue(success, message)
+        self.assertIn("corrompu recréé", message)
+        self.assertEqual((guard.env_state(), guard.tries()), ("valide", 0))
+
+    def test_readonly_esp_is_reported_not_fatal(self) -> None:
+        system = FakeBootSystem()
+        guard = system.guard()
+        self.assertTrue(guard.set_tries(1))
+        system.readonly = True
+        success, message = guard.mark_success()
+        self.assertFalse(success)
+        self.assertIn("Read-only file system", message)
+        self.assertEqual(guard.tries(), 1)
+        notice = json.loads(guard.notice_path.read_text())
+        self.assertTrue(notice["id"].startswith("esp:"))
+        self.assertTrue((guard.run_dir / "ok").exists())  # démarrage sain : un arrêt propre ne touche à rien
+        self.assertEqual(guard.clean_shutdown(), "démarrage déjà validé")
+
+    def test_slow_boot_is_waited_for_not_failed(self) -> None:
+        system = FakeBootSystem()
+        guard = system.guard()
+        guard.set_tries(1)
+        system.state = "starting"
+        system.finish_on_wait = True
+        success, message = guard.mark_success(wait=True)
+        self.assertTrue(success, message)
+        self.assertIn((["systemctl", "is-system-running", "--wait"], None), system.timeouts)
+        self.assertEqual(guard.tries(), 0)
+
+    def test_failed_boot_keeps_counter(self) -> None:
+        for state, manager in (("maintenance", "active"), ("running", "failed")):
+            system = FakeBootSystem()
+            guard = system.guard()
+            guard.set_tries(2)
+            system.state, system.manager = state, manager
+            self.assertFalse(guard.mark_success()[0])
+            self.assertEqual(guard.tries(), 2)
+            self.assertTrue((guard.run_dir / "echec").exists())
+            system.state = "stopping"
+            self.assertIn("conservé", guard.clean_shutdown())
+            self.assertEqual(guard.tries(), 2)
+
+    def test_display_manager_still_starting_is_waited_for(self) -> None:
+        system = FakeBootSystem()
+        guard = system.guard()
+        system.manager_sequence = ["activating", "activating", "active"]
+        self.assertTrue(guard.healthy_boot())
+        self.assertEqual(len(system.sleeps), 2)
+
+    def test_clean_shutdown_does_not_count(self) -> None:
+        system = FakeBootSystem()
+        guard = system.guard()
+        guard.set_tries(1)  # incrément de GRUB pour ce démarrage
+        self.assertEqual(guard.record_start(), "compteur au démarrage : 1")
+        system.state = "starting"  # bascule vers le mode de secours : pas un arrêt du système
+        self.assertIn("conservé", guard.clean_shutdown())
+        self.assertEqual(guard.tries(), 1)
+        system.state = "stopping"
+        system.root = "/@djerba-last-good"
+        self.assertIn("conservé", guard.clean_shutdown())
+        system.root = "/@"
+        self.assertIn("ramené à 0", guard.clean_shutdown())
+        self.assertEqual(guard.tries(), 0)
+        self.assertEqual(guard.clean_shutdown(), "compteur inchangé")  # idempotent
+        self.assertEqual(guard.tries(), 0)
+
+    def test_rollback_notice_reaches_session_once(self) -> None:
+        from djerba_ai.core import daemon
+        system = FakeBootSystem()
+        guard = system.guard()
+        guard.set_tries(2)
+        system.root = "/@djerba-last-good"
+        success, message = guard.mark_success()
+        self.assertTrue(success, message)
+        self.assertEqual(guard.tries(), 2)  # pas de retour automatique sur l'état cassé
+        notice = json.loads(guard.notice_path.read_text())
+        self.assertTrue(notice["id"].startswith("restauration:"))
+        self.assertIn("/home", notice["body"])
+        self.assertEqual(oct(guard.notice_path.stat().st_mode & 0o777), "0o644")
+        sent: list = []
+        state: dict = {}
+        with mock.patch.object(daemon, "notify", lambda *args, **kwargs: sent.append(args)), \
+                mock.patch.object(daemon, "save_state", lambda _state: None):
+            self.assertEqual(daemon.boot_notice(state, guard.notice_path)["id"], notice["id"])
+            self.assertIsNone(daemon.boot_notice(state, guard.notice_path))
+        self.assertEqual([item[0] for item in sent], ["Djerba OS a été restauré"])
 
     def test_fstab_and_kernel_selection(self) -> None:
         from djerba_ai.core import bootguard

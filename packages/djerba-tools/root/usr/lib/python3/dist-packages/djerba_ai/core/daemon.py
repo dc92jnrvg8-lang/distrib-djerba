@@ -24,8 +24,10 @@ import signal
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 from djerba_ai.core import contextbus, health, ipc, telemetry
+from djerba_ai.core.bootguard import NOTICE as BOOT_NOTICE
 from djerba_ai.core.contextbus import ContextBus
 from djerba_ai.core.telemetry import Exporter
 from djerba_ai.core.config import STATE_HOME, Config
@@ -90,6 +92,23 @@ def maintenance(config: Config, state: dict) -> None:
                     save_state(state)
                 except LLMError:
                     pass
+
+
+def boot_notice(state: dict, path: Path = BOOT_NOTICE) -> dict | None:
+    """Avis du rollback au démarrage (écrit par djerba-boot, root) : notifié une seule fois par avis."""
+    try:
+        notice = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(notice, dict) or not notice.get("id") or not notice.get("title"):
+        return None
+    seen = state.setdefault("boot_notices", [])
+    if notice["id"] in seen:
+        return None
+    state["boot_notices"] = (seen + [str(notice["id"])])[-20:]
+    save_state(state)
+    notify(str(notice["title"])[:120], str(notice.get("body", ""))[:400], page="system")
+    return notice
 
 
 WATCHED_MOUNTS = ("/", "/home", "/var")
@@ -188,6 +207,7 @@ def main() -> int:
             print(f"djerba-ai : maintenance : {exc}", flush=True)
         ticks += 1
         if ticks % 10 == 1:  # toutes les 10 minutes
+            boot_notice(state)
             try:
                 watchdog(config, state)
             except Exception as exc:  # noqa: BLE001 - idem

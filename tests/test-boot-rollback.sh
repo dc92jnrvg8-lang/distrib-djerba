@@ -3,26 +3,38 @@
 # Djerba OS — test réel du rollback au démarrage (invariant de réversibilité, phase 1).
 #
 # Construit un vrai système Debian 13 installé — GPT, ESP FAT32, racine Btrfs
-# dans le sous-volume @, noyau Debian, initramfs, GRUB EFI — et y installe les
-# fichiers de rollback livrés par le paquet djerba-tools (djerba_ai, djerba-boot,
-# /etc/grub.d/09_djerba_bootcount et 42_djerba_rollback, unités djerba-boot-ok).
-# Puis le démarre plusieurs fois dans QEMU (UEFI OVMF, console série) :
+# dans le sous-volume @, /home dans le sous-volume @home, noyau Debian,
+# initramfs, GRUB EFI — et y installe les fichiers de rollback livrés par le
+# paquet djerba-tools (djerba_ai, djerba-boot, /etc/grub.d/09_djerba_bootcount
+# et 42_djerba_rollback, unités djerba-boot-ok et djerba-boot-guard, activées
+# comme par le postinst). Puis le démarre plusieurs fois dans QEMU (UEFI OVMF,
+# console série) ; le pilote du test garde son état dans /home (jamais restauré) :
 #
-#   1. démarrage sain : djerba-boot-ok.service (l'unité réelle) clone @ en
-#      @djerba-last-good, remet le compteur GRUB à zéro sur l'ESP et ajoute
-#      l'entrée de restauration (update-grub) ; le test casse alors @ (son
-#      /sbin/init s'arrête aussitôt : panique noyau) et redémarre ;
+#   1. démarrage sain : djerba-boot-ok.service clone @ en @djerba-last-good,
+#      remet le compteur à zéro et ajoute l'entrée de restauration ; le pilote
+#      écrit deux témoins APRÈS le clone (/var/lib/djerba-temoin sur @,
+#      /home/djerba-temoin sur @home), casse @ (/sbin/init s'arrête aussitôt :
+#      panique noyau) et redémarre ;
 #   2. et 3. GRUB incrémente le compteur (1 puis 2) et démarre @ : panique ;
-#   4. compteur à 2 : GRUB démarre seul l'entrée « dernier démarrage
-#      réussi » ; le système tourne sur @djerba-last-good, djerba-boot-ok
-#      garde le compteur à 2 (pas de retour sur l'état cassé).
+#   4. compteur à 2 : GRUB démarre seul « dernier démarrage réussi » ; témoin
+#      racine absent (état restauré), témoin /home présent (/home non restauré),
+#      avis de restauration déposé ; « djerba-boot make-permanent » ;
+#   5. démarrage sur le nouveau @ (promotion de @djerba-last-good, ancien @
+#      conservé en @djerba-broken-*, avis « état conservé ») ;
+#   6. démarrage lent (unité de 200 s) : validé à la fin, pas compté comme échec ;
+#   7. grubenv rempli d'octets aléatoires : GRUB démarre normalement, la
+#      validation recrée le bloc ;
+#   8. validation désactivée, arrêt propre (systemctl reboot) avant validation ;
+#   9. le compteur relevé au démarrage vaut 1 (et non 2) : l'arrêt propre n'a
+#      pas compté ; ESP remontée en lecture seule : la validation échoue
+#      proprement (code 1, avis), sans planter.
 #
 # Succès : la console série montre ces étapes dans cet ordre. Aucun
 # raccourci : GRUB, le noyau, l'initramfs, Btrfs, l'ESP et les scripts du
 # paquet sont les vrais. KVM si /dev/kvm est accessible, TCG sinon.
 #
 # Usage (root, dans l'image de construction) : tests/test-boot-rollback.sh
-# Variables : DJERBA_MIRROR (miroir Debian), DJERBA_ROLLBACK_TIMEOUT (s, 2400).
+# Variables : DJERBA_MIRROR (miroir Debian), DJERBA_ROLLBACK_TIMEOUT (s, 3600).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,7 +42,7 @@ PACKAGE="${ROOT}/packages/djerba-tools/root"
 OUT="${ROOT}/tests/out"
 SERIAL="${OUT}/rollback-serial.log"
 MIRROR="${DJERBA_MIRROR:-http://deb.debian.org/debian}"
-TIMEOUT="${DJERBA_ROLLBACK_TIMEOUT:-2400}"
+TIMEOUT="${DJERBA_ROLLBACK_TIMEOUT:-3600}"
 WORK="$(mktemp -d /var/tmp/djerba-rollback.XXXXXX)"
 IMAGE="${WORK}/disque.raw"
 TOP="${WORK}/sommet"
@@ -64,7 +76,7 @@ trap cleanup EXIT
 log() { printf '[rollback] %s\n' "$*"; }
 
 # ---------------------------------------------------------------- Disque : GPT, ESP, Btrfs @
-log "disque : GPT, ESP FAT32, Btrfs (sous-volume @)"
+log "disque : GPT, ESP FAT32, Btrfs (sous-volumes @ et @home)"
 truncate -s 6G "${IMAGE}"
 printf 'label: gpt\nsize=256MiB, type=uefi, name=ESP\ntype=linux, name=racine\n' | sfdisk -q "${IMAGE}"
 LOOP="$(losetup -P --show -f "${IMAGE}")"
@@ -99,6 +111,7 @@ mkfs.btrfs -q -f -L djerba "${ROOT_DEV}"
 mkdir -p "${TOP}" "${TARGET}"
 mount "${ROOT_DEV}" "${TOP}"
 btrfs -q subvolume create "${TOP}/@"
+btrfs -q subvolume create "${TOP}/@home"
 mount -o subvol=@ "${ROOT_DEV}" "${TARGET}"
 ROOT_UUID="$(blkid -s UUID -o value "${ROOT_DEV}")"
 ESP_UUID="$(blkid -s UUID -o value "${ESP_DEV}")"
@@ -125,6 +138,7 @@ for fs in dev dev/pts proc sys; do
 done
 cat >"${TARGET}/etc/fstab" <<EOF
 UUID=${ROOT_UUID} / btrfs subvol=/@,noatime 0 0
+UUID=${ROOT_UUID} /home btrfs subvol=/@home,noatime 0 0
 UUID=${ESP_UUID} /boot/efi vfat umask=0077 0 1
 EOF
 echo djerba-rollback >"${TARGET}/etc/hostname"
@@ -152,43 +166,131 @@ install -m 0755 "${PACKAGE}/usr/libexec/djerba-boot" "${TARGET}/usr/libexec/djer
 install -m 0755 "${PACKAGE}/etc/grub.d/09_djerba_bootcount" "${PACKAGE}/etc/grub.d/42_djerba_rollback" \
     "${TARGET}/etc/grub.d/"
 install -m 0644 "${PACKAGE}/usr/lib/systemd/system/djerba-boot-ok.service" \
-    "${PACKAGE}/usr/lib/systemd/system/djerba-boot-ok.timer" "${TARGET}/usr/lib/systemd/system/"
+    "${PACKAGE}/usr/lib/systemd/system/djerba-boot-guard.service" "${TARGET}/usr/lib/systemd/system/"
+chroot "${TARGET}" systemctl enable djerba-boot-guard.service djerba-boot-ok.service >/dev/null 2>&1
+# Démarrage lent (étape 6) : unité de 200 s dans multi-user.target, activée par le pilote le moment venu.
+cat >"${TARGET}/etc/systemd/system/djerba-test-lent.service" <<'EOF'
+[Unit]
+Description=Djerba : démarrage lent simulé (200 s)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sleep 200
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
 # Pilote du test : chaque démarrage annonce sur la console série où il a démarré et agit en conséquence.
 cat >"${TARGET}/usr/local/sbin/djerba-test-etape" <<'EOF'
 #!/bin/sh
 set -u
 dire() { echo "DJERBA-TEST: $*" >/dev/ttyS0; }
+echouer() { dire "ECHEC : $*"; systemctl poweroff; exit 1; }
+boot=/usr/libexec/djerba-boot
+etat=/home/djerba-test                       # sur @home : jamais restauré
+mkdir -p "${etat}"
+etape="$(cat "${etat}/etape" 2>/dev/null || echo 0)"
+suivante() { echo "$1" >"${etat}/etape"; sync; }
+compteur() { ${boot} status | cut -d' ' -f3; }
+valide() {   # attend la décision de djerba-boot-ok.service (unité réelle, activée comme par le postinst)
+    n=0
+    while [ ! -e /run/djerba-boot/ok ] && [ ! -e /run/djerba-boot/echec ] && [ "${n}" -lt 900 ]; do
+        sleep 1; n=$((n + 1))
+    done
+    [ -e /run/djerba-boot/ok ] || echouer "démarrage non validé (étape ${etape})"
+}
 systemctl is-system-running --wait >/dev/null 2>&1
 racine="$(findmnt -n -o FSROOT /)"
-dire "démarré depuis ${racine} ; $(/usr/libexec/djerba-boot status)"
-if [ "${racine}" = "/@djerba-last-good" ]; then
-    systemctl start djerba-boot-ok.service
-    dire "$(/usr/libexec/djerba-boot status)"
-    dire "ROLLBACK-REUSSI"
-    systemctl poweroff
-    exit 0
-fi
-if [ ! -e /var/lib/djerba-test/etape1 ]; then
-    systemctl start djerba-boot-ok.service        # unité réelle : clone, compteur, entrée GRUB
-    if ! grep -q "djerba-last-good" /boot/grub/grub.cfg; then
-        dire "ECHEC : entrée de restauration absente de grub.cfg"
-        systemctl poweroff
-        exit 1
-    fi
-    mkdir -p /var/lib/djerba-test
-    touch /var/lib/djerba-test/etape1
+dire "démarré depuis ${racine} (étape ${etape}) ; $(${boot} status)"
+findmnt / | while IFS= read -r ligne; do dire "findmnt / : ${ligne}"; done
+dire "compteur relevé au démarrage : $(cat /run/djerba-boot/debut 2>/dev/null || echo absent)"
+case "${etape}" in
+0)
+    valide
+    grep -q "djerba-last-good" /boot/grub/grub.cfg || echouer "entrée de restauration absente de grub.cfg"
+    # Témoins écrits APRÈS le clone : celui de la racine doit disparaître, celui de /home survivre.
+    echo "racine après clone" >/var/lib/djerba-temoin
+    echo "home après clone" >/home/djerba-temoin
+    suivante 1
     # Panne : l'init de @ (et seulement de @) s'arrête aussitôt -> panique noyau.
     rm -f /usr/sbin/init
     printf '#!/bin/sh\necho "DJERBA-TEST: INIT-CASSE" > /dev/console\nexit 1\n' >/usr/sbin/init
     chmod 0755 /usr/sbin/init
     sync
-    dire "ETAPE1-OK : dernier bon état enregistré, @ cassé, redémarrage"
-    systemctl reboot
-    exit 0
-fi
-dire "ECHEC : @ cassé a démarré"
-systemctl poweroff
+    dire "ETAPE1-OK : dernier bon état enregistré, témoins écrits, @ cassé, redémarrage"
+    systemctl reboot ;;
+1)
+    [ "${racine}" = "/@djerba-last-good" ] || echouer "@ cassé a démarré"
+    valide
+    dire "$(${boot} status)"
+    [ ! -e /var/lib/djerba-temoin ] || echouer "témoin racine présent : la racine n'a pas été restaurée"
+    dire "TEMOIN-RACINE-ABSENT (racine restaurée)"
+    [ "$(cat /home/djerba-temoin 2>/dev/null)" = "home après clone" ] || echouer "témoin /home perdu"
+    dire "TEMOIN-HOME-PRESENT (/home jamais restauré)"
+    dire "avis : $(cat /var/lib/djerba-boot/notice.json 2>/dev/null)"
+    grep -q '"restauration:' /var/lib/djerba-boot/notice.json || echouer "avis de restauration absent"
+    dire "ROLLBACK-REUSSI"
+    dire "$(${boot} make-permanent 2>&1)"
+    suivante 2
+    systemctl reboot ;;
+2)
+    [ "${racine}" = "/@" ] || echouer "le nouveau @ n'a pas démarré"
+    valide
+    [ ! -e /var/lib/djerba-temoin ] || echouer "témoin racine présent sur le @ promu"
+    btrfs subvolume list / | while IFS= read -r ligne; do dire "sous-volume : ${ligne}"; done
+    btrfs subvolume list / | grep -q "@djerba-broken-" || echouer "ancien @ non conservé"
+    dire "avis : $(cat /var/lib/djerba-boot/notice.json 2>/dev/null)"
+    grep -q '"definitif:@djerba-broken-' /var/lib/djerba-boot/notice.json || echouer "avis de promotion absent"
+    [ "$(compteur)" = "0" ] || echouer "compteur non nul après promotion"
+    dire "PROMOTION-REUSSIE"
+    systemctl enable djerba-test-lent.service >/dev/null 2>&1
+    suivante 3
+    systemctl reboot ;;
+3)
+    valide
+    secondes="$(cut -d' ' -f1 /proc/uptime)"
+    dire "validé ${secondes} s après l'amorçage ; $(${boot} status)"
+    [ "${secondes%.*}" -ge 200 ] || echouer "démarrage pas assez lent (${secondes} s)"
+    [ "$(compteur)" = "0" ] || echouer "démarrage lent compté comme échec"
+    dire "BOOT-LENT-VALIDE"
+    systemctl disable djerba-test-lent.service djerba-boot-ok.service >/dev/null 2>&1
+    head -c 1024 /dev/urandom >/boot/efi/EFI/djerba/grubenv
+    sync
+    dire "grubenv corrompu : $(${boot} status)"
+    suivante 4
+    systemctl reboot ;;
+4)
+    [ "${racine}" = "/@" ] || echouer "grubenv corrompu : mauvaise racine"
+    ${boot} status | grep -q "grubenv corrompu" || echouer "grubenv non corrompu au démarrage"
+    dire "$(${boot} ok 2>&1)"
+    ${boot} status | grep -q "^compteur : 0 (grubenv valide)" || echouer "grubenv non recréé"
+    dire "GRUBENV-REPARE : $(${boot} status)"
+    suivante 5
+    systemctl reboot ;;
+5)
+    [ "$(cat /run/djerba-boot/debut)" = "1" ] || echouer "compteur au démarrage inattendu"
+    dire "arrêt propre avant validation (validation désactivée)"
+    suivante 6
+    systemctl reboot ;;
+6)
+    [ "$(cat /run/djerba-boot/debut)" = "1" ] || echouer "l'arrêt propre a compté comme un échec"
+    dire "ARRET-PROPRE-NON-COMPTE"
+    mount -o remount,ro /boot/efi || echouer "remontage de l'ESP en lecture seule impossible"
+    code=0
+    sortie="$(${boot} ok 2>&1)" || code=$?
+    dire "ESP en lecture seule : code ${code} ; ${sortie}"
+    [ "${code}" -eq 1 ] || echouer "ESP en lecture seule : code ${code}"
+    grep -q '"esp:' /var/lib/djerba-boot/notice.json || echouer "avis ESP absent"
+    dire "avis : $(cat /var/lib/djerba-boot/notice.json)"
+    dire "ESP-LECTURE-SEULE-SIGNALEE"
+    mount -o remount,rw /boot/efi
+    dire "FIN"
+    systemctl poweroff ;;
+*)
+    echouer "étape inconnue ${etape}" ;;
+esac
 EOF
 chmod 0755 "${TARGET}/usr/local/sbin/djerba-test-etape"
 cat >"${TARGET}/etc/systemd/system/djerba-test-etape.service" <<'EOF'
@@ -308,20 +410,31 @@ expect() {
         exit 1
     fi
 }
-expect "DJERBA-TEST: démarré depuis /@ ;"
+expect "DJERBA-TEST: démarré depuis /@ (étape 0)"
 expect "ETAPE1-OK"
 [[ "$(grep -c "DJERBA-TEST: INIT-CASSE" <<<"${text}")" -eq 2 ]] \
     || { echo "[rollback] ÉCHEC : deux démarrages cassés attendus avant la restauration" >&2
          grep -a "DJERBA-TEST" <<<"${text}" >&2; exit 1; }
-expect "DJERBA-TEST: démarré depuis /@djerba-last-good"
+expect "DJERBA-TEST: démarré depuis /@djerba-last-good (étape 1)"
+expect "[/@djerba-last-good]"
 expect "sur le dernier bon état : True"
-expect "ROLLBACK-REUSSI"
+for step in TEMOIN-RACINE-ABSENT TEMOIN-HOME-PRESENT ROLLBACK-REUSSI "état restauré rendu définitif" \
+            PROMOTION-REUSSIE BOOT-LENT-VALIDE GRUBENV-REPARE ARRET-PROPRE-NON-COMPTE \
+            ESP-LECTURE-SEULE-SIGNALEE "DJERBA-TEST: FIN"; do
+    expect "${step}"
+done
 if grep -qF "ECHEC" <<<"${text}"; then
     echo "[rollback] ÉCHEC signalé par le pilote" >&2
     grep -a "DJERBA-TEST" <<<"${text}" >&2
     exit 1
 fi
-order="$(grep -aoE "ETAPE1-OK|INIT-CASSE|démarré depuis /@djerba-last-good|ROLLBACK-REUSSI" <<<"${text}" | tr '\n' '|')"
-[[ "${order}" == "ETAPE1-OK|INIT-CASSE|INIT-CASSE|démarré depuis /@djerba-last-good|ROLLBACK-REUSSI|" ]] \
-    || { echo "[rollback] ÉCHEC : ordre inattendu : ${order}" >&2; exit 1; }
-log "rollback au démarrage vérifié : 2 échecs, puis retour automatique au dernier démarrage réussi"
+pattern="ETAPE1-OK|INIT-CASSE|démarré depuis /@djerba-last-good|ROLLBACK-REUSSI|PROMOTION-REUSSIE|BOOT-LENT-VALIDE"
+pattern+="|GRUBENV-REPARE|ARRET-PROPRE-NON-COMPTE|ESP-LECTURE-SEULE-SIGNALEE|DJERBA-TEST: FIN"
+order="$(grep -aoE "${pattern}" <<<"${text}" | tr '\n' '|')"
+expected="ETAPE1-OK|INIT-CASSE|INIT-CASSE|démarré depuis /@djerba-last-good|ROLLBACK-REUSSI|PROMOTION-REUSSIE|"
+expected+="BOOT-LENT-VALIDE|GRUBENV-REPARE|ARRET-PROPRE-NON-COMPTE|ESP-LECTURE-SEULE-SIGNALEE|DJERBA-TEST: FIN|"
+[[ "${order}" == "${expected}" ]] || { echo "[rollback] ÉCHEC : ordre inattendu : ${order}" >&2; exit 1; }
+log "journal du pilote (console série brute complète : ${SERIAL}, artefact qemu-logs-amd64) :"
+grep -a "DJERBA-TEST" <<<"${text}"
+log "rollback au démarrage vérifié : 2 échecs, retour automatique, /home intact, promotion, démarrage lent," \
+    "grubenv corrompu, arrêt propre, ESP en lecture seule"

@@ -25,7 +25,10 @@ case "$1" in
         systemctl enable djerba-ai-sysd.socket >/dev/null 2>&1 || true
         systemctl enable djerba-ai-ids.service >/dev/null 2>&1 || true
         systemctl enable djerba-dpkg-repair.timer >/dev/null 2>&1 || true
-        systemctl enable djerba-boot-ok.timer >/dev/null 2>&1 || true
+        # Validation du démarrage : service qui attend la fin du démarrage (remplace la minuterie de 3 min).
+        systemctl disable djerba-boot-ok.timer >/dev/null 2>&1 || true
+        rm -f /etc/systemd/system/timers.target.wants/djerba-boot-ok.timer
+        systemctl enable djerba-boot-guard.service djerba-boot-ok.service >/dev/null 2>&1 || true
         install -d -m 0700 /var/lib/djerba-ai
         install -d -m 0755 /etc/apparmor.d/djerba-generated
         systemctl --global enable djerba-ai.service >/dev/null 2>&1 || true
