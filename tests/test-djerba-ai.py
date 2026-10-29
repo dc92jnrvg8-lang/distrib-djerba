@@ -2386,7 +2386,8 @@ class FakeBootSystem:
     def guard(self):
         from djerba_ai.core import bootguard
         return bootguard.BootGuard(backend=None, esp=self.base / "esp", runner=self.run, run_dir=self.base / "run",
-                                   notice=self.base / "var/lib/djerba-boot/notice.json", sleep=self.sleeps.append)
+                                   notice=self.base / "var/lib/djerba-boot/notice.json", sleep=self.sleeps.append,
+                                   clock=lambda: 0.0)
 
     def run(self, argv: list[str], timeout=120) -> subprocess.CompletedProcess:
         self.timeouts.append((argv, timeout))
@@ -2548,6 +2549,16 @@ class BootRollbackTests(unittest.TestCase):
         self.assertTrue(success, message)
         # Attente bornée par le délai maximal (15 min), pas par une minuterie fixe de 3 min.
         self.assertIn((["systemctl", "is-system-running", "--wait"], 900), system.timeouts)
+
+    def test_deadline_counts_from_kernel_boot(self) -> None:
+        system = FakeBootSystem()
+        guard = system.guard()
+        guard.clock = lambda: 37.0  # le service démarre 37 s après le noyau
+        guard.mark_success(wait=True)
+        self.assertIn((["systemctl", "is-system-running", "--wait"], 863), system.timeouts)
+        guard.clock = lambda: 2000.0  # déjà au-delà du délai : attente minimale, puis échec si non terminé
+        guard.mark_success(wait=True)
+        self.assertIn((["systemctl", "is-system-running", "--wait"], 1), system.timeouts)
         self.assertEqual(guard.tries(), 0)
 
     def test_failed_boot_keeps_counter(self) -> None:

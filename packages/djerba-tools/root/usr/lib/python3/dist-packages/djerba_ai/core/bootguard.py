@@ -100,6 +100,14 @@ def _run(argv: list[str], timeout: int | None = 120) -> subprocess.CompletedProc
         return subprocess.CompletedProcess(argv, 127, "", str(exc))
 
 
+def uptime() -> float:
+    """Secondes écoulées depuis l'amorçage du noyau."""
+    try:
+        return float(Path("/proc/uptime").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return 0.0
+
+
 def _version_key(name: str) -> list:
     return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", name)]
 
@@ -138,8 +146,10 @@ def point_fstab(root: Path, subvolume: str) -> bool:
 class BootGuard:
     def __init__(self, backend: BtrfsBackend | None = None, esp: Path = ESP, runner: Runner = _run,
                  run_dir: Path = RUN, notice: Path = NOTICE, sleep: Callable[[float], None] = time.sleep,
-                 deadline: int | None = None, spacing: int | None = None) -> None:
+                 deadline: int | None = None, spacing: int | None = None,
+                 clock: Callable[[], float] = uptime) -> None:
         self._backend = backend
+        self.clock = clock
         self.esp = esp
         self.runner = runner
         self.run_dir = run_dir
@@ -342,7 +352,9 @@ class BootGuard:
         échec (un arrêt propre ne le rattrape plus) ; s'il finit par aboutir, il est jugé normalement.
         """
         if wait:
-            result = self.runner(["systemctl", "is-system-running", "--wait"], timeout=self.deadline)
+            # Délai compté depuis l'amorçage du noyau, pas depuis le lancement de ce service.
+            remaining = max(1, int(self.deadline - self.clock()))
+            result = self.runner(["systemctl", "is-system-running", "--wait"], timeout=remaining)
             if result.returncode == 127 and "timed out" in result.stderr:
                 self._flag("echec")
                 print(f"djerba-boot : démarrage non terminé après {self.deadline} s : compté comme un échec",
