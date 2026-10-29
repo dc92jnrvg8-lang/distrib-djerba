@@ -458,7 +458,8 @@ consignés dans `tests/garde/derogations.txt`.
 ### Critères de réussite
 
 - [x] Invariants : document, 33 tests réels, cliquet en CI (12 verts / 33 à
-      ce stade : 01, 06, 09, 10, 11, 15, 19, 26, 28, 30, 31, 32).
+      ce stade : 01, 06, 09, 10, 11, 15, 19, 26, 28, 30, 31, 32 ; étape verte
+      sur x86_64 et arm64, run 40778105889).
 - [x] Phase 0 : CODEOWNERS, garde des gardes, réglages protégés,
       `llm.cloud.endpoint` refusé à `settings_set`, `engine_use` hors agent.
 - [x] Provenance tenue par root, drapeau persistant ; test : il survit au
@@ -469,8 +470,16 @@ consignés dans `tests/garde/derogations.txt`.
 - [x] Tests négatifs : base et sauvegarde plus récentes, imports malformés
       ou trop gros, identifiant réutilisé.
 - [x] Tableau des entrées de `policy.toml`.
-- [x] Test QEMU réel du rollback au démarrage (`tests/test-boot-rollback.sh`) :
-      démarrage sain sur `@`, panne de `@`, deux paniques, puis GRUB démarre seul
-      `@djerba-last-good` (compteur 2). Vert en local (TCG) ; étape CI x86_64.
+- [ ] Test QEMU réel du rollback au démarrage (`tests/test-boot-rollback.sh`) —
+      **décochée** : pas de CI verte. Run 40778105889 (aa00cae, x86_64, KVM,
+      vrai `grub-install`) : la séquence s'est déroulée (deux paniques de
+      l'init de `@`, puis GRUB démarre seul `@djerba-last-good`, compteur 2),
+      mais l'étape a échoué sur le contrôle du test (écho `INIT-CASSE` absent
+      de la console sous KVM ; la panique fait désormais foi).
+- [ ] Preuves du rollback (démarrage raté défini, `findmnt /`, témoins racine
+      et `/home`, promotion de `@djerba-last-good` avec ancien `@` conservé,
+      avis de session, démarrage lent et arrêt propre non comptés, ESP en
+      lecture seule, `grubenv` corrompu) : codées et testées en unitaire ;
+      étapes VM ajoutées, CI non encore passée.
 - [ ] CI verte (x86_64 et arm64) et PR relue.
 
