@@ -2,7 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """djerba-boot — rollback au démarrage de Djerba OS (Btrfs + UEFI).
 
-  ok                         démarrage réussi : compteur GRUB à zéro, dernier bon état rafraîchi
+  ok [--wait]                démarrage réussi : compteur GRUB à zéro, dernier bon état rafraîchi
+                             (--wait : attend la fin du démarrage)
+  start                      relève le compteur au démarrage (djerba-boot-guard.service)
+  clean-shutdown             arrêt propre avant la validation : compteur rétabli
   status                     compteur et état courant
   make-permanent [--force]   conserve l'état restauré (après un rollback au démarrage)
   grub-snippet counter|entry code GRUB pour /etc/grub.d (09_djerba_bootcount, 42_djerba_rollback)

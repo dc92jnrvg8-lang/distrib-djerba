@@ -1,0 +1,19 @@
+# Djerba OS — garde du compteur de démarrages. Au démarrage : relève le
+# compteur (après l'incrément de GRUB). À l'arrêt propre du système demandé
+# avant la validation du démarrage : rend au compteur sa valeur d'avant ce
+# démarrage (un arrêt propre n'est pas un échec). Bascule en mode de secours,
+# panique, arrêt forcé : compteur conservé.
+[Unit]
+Description=Djerba : garde du compteur de démarrages
+ConditionPathIsMountPoint=/boot/efi
+RequiresMountsFor=/boot/efi
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/djerba-boot start
+ExecStop=/usr/libexec/djerba-boot clean-shutdown
+
+[Install]
+WantedBy=multi-user.target

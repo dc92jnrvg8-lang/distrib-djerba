@@ -92,7 +92,6 @@ timezone_set = 1
 
 # --- niveau 1 : réversible et local (utilisateur)
 settings_set = 1
-brain_switch = 1
 model_pull = 1
 model_set = 1
 ollama_install = 1
@@ -139,16 +138,16 @@ rfkill_unblock = 1
 wifi_connect = 1
 suspend = 1
 proton_install_ge = 1
-transaction_undo = 1
-# --- niveau 1 : registre des moteurs d'IA (méthodes du démon root)
-engine_save = 1
-engine_remove = 1
+# --- annulations : défaire un correctif de sécurité est sensible (jamais depuis une session non fiable)
+transaction_undo = 2
+history_undo = 2
+# --- registre des moteurs d'IA (méthodes du démon root, réservées à l'humain authentifié)
+engine_save = 2
+engine_remove = 2
 engine_profile = 1
-jarvis_pair = 1
-engine_use = 1
+jarvis_pair = 2
+# --- historique : export local, import (conversations importées toujours non fiables)
 history_export = 1
-history_undo = 1
-memory_mode = 1
 history_import = 1
 
 [racines]
@@ -163,3 +162,31 @@ par_minute = 20
 par_dix_minutes = 60
 # Même action (outil + paramètres identiques) au plus N fois par heure.
 repetitions = 3
+
+[provenance]
+# Invariant 06 : présomption « non fiable ». Lire la sortie de tout outil absent de cette liste
+# rend la session non fiable (niveau 1 au plus, plus de nouvelle destination réseau), drapeau tenu
+# par le démon root. Une action (niveau ≥ 1) rend un compte rendu produit par Djerba : sa sortie
+# n'est pas considérée comme un contenu externe. Ne figurent ici que des lectures d'état dont le
+# contenu vient du système (nombres, états, noms fixés par les paquets), jamais de texte saisi
+# par un tiers (journaux, fichiers, pages web, noms de réseaux Wi-Fi ou d'appareils, processus).
+fiables = [
+    "os_info", "time_status", "disk_usage", "memory_usage", "load_average", "cpu_frequencies",
+    "cpu_governor", "temperatures", "battery", "gpu_info", "hardware_summary", "zram_status",
+    "swappiness_get", "power_profile_get", "gamemode_status", "io_schedulers", "btrfs_usage",
+    "btrfs_scrub_status", "smart_health", "failed_units", "network_connectivity", "dns_status",
+    "ufw_status", "apparmor_status", "anonsurf_status", "undercover_status", "apt_upgradable",
+    "package_installed", "multilib_status", "locale_status", "kernel_cmdline", "snapshot_list",
+    "settings_get", "tools_search", "tools_categories", "engines_list", "engine_status",
+    "daemon_status", "learning_stats", "model_list", "model_recommend", "apps_status", "volume_get",
+    "screens_list", "rfkill_list", "block_devices", "pci_devices", "security_updates",
+]
+
+[provenance.reseau]
+# Outils qui émettent vers le réseau : destination (« param:<paramètre> » pour une adresse ou un
+# nom fourni, « hote:<nom> » pour une destination fixe). Une session non fiable ne joint plus que
+# les destinations contactées avant de le devenir.
+web_fetch = "param:url"
+web_search = "hote:html.duckduckgo.com"
+dns_query = "param:name"
+model_pull = "hote:registry.ollama.ai"

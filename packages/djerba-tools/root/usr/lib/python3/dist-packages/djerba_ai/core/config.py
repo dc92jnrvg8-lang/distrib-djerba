@@ -119,6 +119,22 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "ui.onboarded": {"type": "boolean", "default": False},
 }
 
+#: Réglages de politique et de sécurité (invariant 01) : seul un humain authentifié (polkit, mot de passe
+#: administrateur) les change ; jamais un outil, un moteur, un greffon ni une session de l'agent. Le démon
+#: root refuse toute demande qui porte une origine d'agent. Liste surveillée par tests/check-guards.py.
+PROTECTED_PREFIXES = ("policy.", "llm.", "mcp.", "security.", "sandbox.", "telemetry.")
+PROTECTED_KEYS = ("agent.plugins_approved", "agent.auto_extend", "agent.autonomy", "system.sandbox_timeout",
+                  "system.sandbox_attempts", "system.watchdog", "system.audit_max_mb")
+#: exceptions explicites (modèle Ollama local : choix sans effet sur la sécurité ni sur les coûts) ;
+#: toute nouvelle exception est signalée par tests/check-guards.py
+AGENT_SETTABLE = ("llm.local.model",)
+
+
+def protected(key: str) -> bool:
+    """Réglage réservé à l'humain authentifié."""
+    return (key in PROTECTED_KEYS or key.startswith(PROTECTED_PREFIXES)) and key not in AGENT_SETTABLE
+
+
 CLOUD_ENDPOINTS = {
     "openai": "https://api.openai.com/v1",
     # API compatible OpenAI de Google Gemini (chat, appels d'outils, flux).
@@ -329,12 +345,15 @@ class Config:
 
     def set(self, key: str, value: Any) -> Any:
         value = validate(key, value)
+        from djerba_ai.core import ipc
+        if protected(key) and ipc.ORIGIN.get():
+            raise ConfigError(f"{key} est un réglage protégé : seul un humain le change, avec authentification "
+                              "administrateur (Réglages de Djerba)")
         if key.startswith(USER_PREFIX):
             applied = self._set_fallback(key, value)
             self._record(key, value)
             self.values[key] = applied
             return applied
-        from djerba_ai.core import ipc
         try:
             request: dict[str, Any] = {"key": key, "value": value}
             if ipc.ORIGIN.get():

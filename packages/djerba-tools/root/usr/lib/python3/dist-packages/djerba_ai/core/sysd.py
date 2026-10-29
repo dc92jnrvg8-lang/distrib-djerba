@@ -99,7 +99,7 @@ from typing import Any, Callable
 
 from djerba_ai import __version__
 from djerba_ai.core import audit, ipc, llm, sandbox, telemetry, trust
-from djerba_ai.core.config import CLOUD_ENDPOINTS, SCHEMA, ConfigError, Store, public_view
+from djerba_ai.core.config import CLOUD_ENDPOINTS, SCHEMA, ConfigError, Store, protected, public_view
 from djerba_ai.core.config import validate as validate_setting
 from djerba_ai.core.schemas import parse_rpc
 
@@ -138,7 +138,7 @@ APP_SCOPE = re.compile(r"/djerba-(?:app|ghost)-[^/\n]*\.(?:scope|service)")
 QUIET = {"sys.ping", "sys.metrics", "sys.list_patches", "config.get", "audit.tail", "audit.verify", "security.status",
          "llm.cloud_health", "llm.cloud_models", "session.report", "tx.list", "tx.show",
          "policy.check", "policy.status", "engines.list", "llm.engine_chat", "llm.engine_health",
-         "mcp.verify", "mcp.list"}
+         "mcp.verify", "mcp.list", "session.status"}
 
 Authorizer = Callable[[int, int, str], bool]
 Emit = Callable[[str, dict], None]
@@ -732,11 +732,30 @@ class Dispatcher:
             self._policy = Policy()
         return self._policy
 
-    def gate(self, tool, arguments: dict, params: dict, pid: int, uid: int, method: str):
-        """Décision de la politique (comptée), confirmation hors bande si requise ; refus consignés."""
+    def origin(self, params: dict, uid: int):
+        """Origine établie par root (core.provenance) ; registre illisible : origine non fiable, sans session
+        (la politique refuse alors toute action au-delà du niveau 1)."""
         from djerba_ai.core.policy import Origin
-        origin = Origin.from_params(params.get("origin"))
+        from djerba_ai.core.provenance import ProvenanceError
+        try:
+            return self.policy().resolve(params.get("origin"), uid)
+        except ProvenanceError:
+            return Origin(tainted=True)
+
+    def gate(self, tool, arguments: dict, params: dict, pid: int, uid: int, method: str, human: bool = False):
+        """Décision de la politique (comptée), confirmation hors bande si requise ; refus consignés.
+
+        Sans origine d'agent, la demande est présumée non fiable ; au-delà du niveau 1, elle n'aboutit que
+        si un humain s'authentifie (polkit administrateur, sans rétention)."""
+        from djerba_ai.core.policy import Origin
+        # human : l'appelant vient de s'authentifier comme administrateur (human_only), sans origine d'agent.
+        origin = Origin("humain", human=True) if human else self.origin(params, uid)
         decision = self.policy().decide(tool, arguments, origin, commit=True)
+        if not decision.allowed and origin.presumed and decision.level >= 2 and \
+                self.authorizer(pid, uid, ACTION_POLICY):
+            origin = Origin("humain", human=True)
+            decision = self.policy().decide(tool, arguments, origin, commit=True)
+        decision.engine, decision.session = origin.engine, origin.session
         name = tool if isinstance(tool, str) else tool.name
         if decision.allowed and decision.confirm:
             action = ACTION_CRITICAL if decision.admin else ACTION_CONFIRM
@@ -746,7 +765,8 @@ class Dispatcher:
             telemetry.inc("djerba_policy_refusals_total", tool=name, level=str(decision.level))
             audit.record("refus politique", uid=uid, pid=pid, method=method, tool=name,
                          params={"niveau": decision.level, "mode": decision.mode, "moteur": origin.engine,
-                                 "session": origin.session, "non_fiable": origin.tainted},
+                                 "moteur_declare": origin.declared, "session": origin.session,
+                                 "non_fiable": origin.tainted},
                          success=False, message=decision.reason)
         return decision
 
@@ -756,13 +776,13 @@ class Dispatcher:
                 "policy": decision.to_dict()}
 
     def guarded(self, method: str, params: dict, pid: int, uid: int, action, tool: str = "",
-                targets: tuple[str, ...] = (), boot: bool = False) -> Any:
+                targets: tuple[str, ...] = (), boot: bool = False, human: bool = False) -> Any:
         """Méthode qui modifie le système : politique, puis transaction annulable."""
         from djerba_ai.core.policy import METHOD_TOOLS
-        decision = self.gate(METHOD_TOOLS.get(method, tool or method), params, params, pid, uid, method)
+        decision = self.gate(METHOD_TOOLS.get(method, tool or method), params, params, pid, uid, method, human)
         if not decision.allowed:
             return self.refused(decision)
-        result = self.transact(action, method, params, uid, tool=tool, targets=targets, boot=boot)
+        result = self.transact(action, method, params, uid, tool=tool, targets=targets, boot=boot, decision=decision)
         if isinstance(result, dict):
             result["policy"] = decision.to_dict()
         return result
@@ -775,14 +795,15 @@ class Dispatcher:
         return self._journal
 
     def transact(self, action: Callable[[], Any], method: str, params: dict, uid: int, tool: str = "",
-                 targets: tuple[str, ...] = (), boot: bool = False) -> Any:
+                 targets: tuple[str, ...] = (), boot: bool = False, decision=None) -> Any:
+        """Transaction annulable, étiquetée par le moteur et la session établis par root (jamais par la
+        déclaration du client)."""
         from djerba_ai.core.transactions import Origin
-        origin = params.get("origin") or {}
         recorded = self._audit_params(method, params)
         if isinstance(recorded, dict):
             recorded = {key: value for key, value in recorded.items() if key != "origin"}
-        return self.journal().run(action, method=method, tool=tool, params=recorded, uid=uid,
-                                  origin=Origin(str(origin.get("engine", "")), str(origin.get("session", ""))),
+        origin = Origin(getattr(decision, "engine", ""), getattr(decision, "session", ""))
+        return self.journal().run(action, method=method, tool=tool, params=recorded, uid=uid, origin=origin,
                                   targets=targets, boot=boot)
 
     def registry(self):
@@ -790,6 +811,43 @@ class Dispatcher:
             from djerba_ai.tools import registry
             self._registry = registry()
         return self._registry
+
+    def session_method(self, method: str, params: dict, pid: int, uid: int) -> dict:
+        """Sessions de provenance (core.provenance) : ouverture, état, signalement, effacement humain."""
+        from djerba_ai.core.provenance import ProvenanceError
+        registry = self.policy().provenance
+        try:
+            if method == "session.open":
+                return {"session": registry.open(uid, str(params.get("channel", "agent")),
+                                                 tainted=bool(params.get("tainted")),
+                                                 reason=str(params.get("reason", "")))}
+            key = str(params["session"])
+            session = registry.get(key)
+            if session is None or session["uid"] != uid:
+                if method == "session.status":
+                    return {"session": key, "known": False, "tainted": True,
+                            "reasons": ["session inconnue du démon : présumée non fiable"]}
+                raise ipc.RPCError(ipc.INVALID_PARAMS, "session inconnue")
+            if method == "session.status":
+                return {"session": key, "known": True, "tainted": session["tainted"], "reasons": session["reasons"],
+                        "channel": session["channel"]}
+            if method == "session.taint":
+                registry.taint(key, str(params.get("reason", "")) or "signalé par l'agent")
+                return {"success": True, "tainted": True}
+            self.human_only(params, pid, uid)  # session.untaint : seul un humain authentifié efface le drapeau
+            registry.untaint(key)
+            audit.record("session de nouveau fiable", uid=uid, pid=pid, method=method, params={"session": key},
+                         success=True, message="drapeau non fiable effacé par un humain authentifié")
+            return {"success": True, "tainted": False}
+        except ProvenanceError as exc:
+            raise ipc.RPCError(ipc.TOOL_FAILED, str(exc)) from exc
+
+    def human_only(self, params: dict, pid: int, uid: int) -> None:
+        """Invariant 01 : réservé à l'humain authentifié. Une demande qui porte une origine d'agent (moteur,
+        session) est refusée même autorisée ; sinon authentification administrateur (polkit, sans rétention)."""
+        if params.get("origin"):
+            raise ipc.RPCError(ipc.NOT_AUTHORIZED, "réservé à l'humain : l'agent ne peut pas modifier ce réglage")
+        self.require(pid, uid, ACTION_POLICY)
 
     def require(self, pid: int, uid: int, action: str) -> None:
         if not self.authorizer(pid, uid, action):
@@ -809,7 +867,10 @@ class Dispatcher:
             self._refuse(method, params, pid, uid, "les applications isolées et tâches de fond n'ont pas accès "
                                                    "au démon root")
         if method not in trust.OPEN_METHODS:
-            trusted, reason = self.verifier(pid, uid)
+            try:
+                trusted, reason = self.verifier(pid, uid)
+            except Exception as exc:  # noqa: BLE001 - identité illisible : refus (fail-closed, invariant 31)
+                trusted, reason = False, f"identité de l'appelant illisible ({exc})"
             if not trusted:
                 self._refuse(method, params, pid, uid, f"appelant non fiable : {reason}")
         intent = None
@@ -898,7 +959,8 @@ class Dispatcher:
             else:
                 targets = (str(arguments["unit"]),) if tool.name in TARGETED_TOOLS and arguments.get("unit") else ()
                 result = self.transact(lambda: tool.run(arguments, verbose=bool(params.get("verbose"))), method,
-                                       params, uid, tool=tool.name, targets=targets, boot=tool.name in BOOT_TOOLS)
+                                       params, uid, tool=tool.name, targets=targets, boot=tool.name in BOOT_TOOLS,
+                                       decision=decision)
             if isinstance(result, dict) and decision.level:
                 result["policy"] = decision.to_dict()
             return result
@@ -925,11 +987,14 @@ class Dispatcher:
         if method == "config.get":
             return public_view(Store().load())
         if method == "config.set":
-            self.require(pid, uid, ACTION_CONFIGURE)
             key = str(params.get("key", ""))
             if key.startswith("policy."):
                 raise ipc.RPCError(ipc.NOT_AUTHORIZED, "la politique ne se modifie que par policy.set_mode ou "
                                                        "policy.set_caps (authentification administrateur)")
+            if protected(key):
+                self.human_only(params, pid, uid)
+            else:
+                self.require(pid, uid, ACTION_CONFIGURE)
             try:
                 validate_setting(key, params.get("value"))
             except ConfigError as exc:
@@ -939,7 +1004,7 @@ class Dispatcher:
             def change() -> dict:
                 _old, new = Store().set(key, params.get("value"))
                 return {"success": True, "key": key, "value": None if secret else new, "message": f"{key} modifié"}
-            return self.guarded(method, params, pid, uid, change)
+            return self.guarded(method, params, pid, uid, change, human=protected(key))
         if method == "llm.cloud_chat":
             self.require(pid, uid, ACTION_CLOUD)
             return cloud_chat(params, emit)
@@ -957,15 +1022,25 @@ class Dispatcher:
             from djerba_ai.core.engines import EngineStore
             return {"engines": EngineStore().list()}
         if method in ("engines.save", "engines.remove", "engines.set_profile", "engines.pair_jarvis"):
-            self.require(pid, uid, ACTION_CONFIGURE)
-            return self.guarded(method, params, pid, uid, lambda: engines_change(method, params))
+            self.human_only(params, pid, uid)  # où partent les conversations : choix humain
+            return self.guarded(method, params, pid, uid, lambda: engines_change(method, params), human=True)
         if method == "engines.jarvis_history":
             self.require(pid, uid, ACTION_CLOUD)
             from djerba_ai.core import engines as engine_registry
             try:
                 engine, secret = engine_registry.EngineStore().get(str(params["id"]))
-                return engine_registry.jarvis_history(engine, secret)
+                history = engine_registry.jarvis_history(engine, secret)
             except engine_registry.EngineError as exc:
+                raise ipc.RPCError(ipc.TOOL_FAILED, str(exc)) from exc
+            # Contenu externe : chaque conversation importée reçoit une session non fiable tenue par root.
+            from djerba_ai.core.provenance import ProvenanceError
+            try:
+                registry = self.policy().provenance
+                history["sessions"] = {str(item.get("id", index)): registry.open(
+                    uid, "import", tainted=True, reason=f"historique importé de {params['id']}")
+                    for index, item in enumerate(history["conversations"]) if isinstance(item, dict)}
+                return history
+            except ProvenanceError as exc:
                 raise ipc.RPCError(ipc.TOOL_FAILED, str(exc)) from exc
         if method in ("llm.engine_chat", "llm.engine_health"):
             self.require(pid, uid, ACTION_CLOUD)
@@ -988,25 +1063,37 @@ class Dispatcher:
             from djerba_ai.core.mcp import ClientStore
             store = ClientStore()
             if method == "mcp.pair_begin":
-                self.require(pid, uid, ACTION_CONFIGURE)
-                return {"success": True, **store.begin(str(params["name"]), int(params.get("cap", 2)))}
+                self.human_only(params, pid, uid)
+                return {"success": True, **store.begin(str(params["name"]), int(params.get("cap", 1)))}
             if method == "mcp.pair_complete":
                 return store.complete(str(params["code"]), str(params.get("name", ""))) or {}
+            signed = {key: params[key] for key in ("client", "ts", "nonce", "sig")} if "sig" in params else {}
             if method == "mcp.verify":
-                return store.verify(str(params["token"])) or {}
+                verified = store.verify_request(signed, body_sha256=str(params["body_sha256"]))
+                if not verified:
+                    return {}
+                # Session de provenance de l'appelant, tenue par root (identité liée au jeton vérifié).
+                from djerba_ai.core.provenance import ProvenanceError
+                try:
+                    verified["session"] = self.policy().provenance.client_session(uid, verified["client"])
+                except ProvenanceError:
+                    return {}
+                return verified
+            if method == "mcp.rotate":
+                return store.rotate(str(params["client"]), signed, body_sha256=str(params["body_sha256"])) or {}
             if method == "mcp.list":
                 self.require(pid, uid, ACTION_AUDIT)
                 return {"clients": store.list()}
-            self.require(pid, uid, ACTION_CONFIGURE)
+            self.human_only(params, pid, uid)
             found = store.revoke(str(params["client"]))
             return {"success": found, "message": f"accès de {params['client']} révoqué" if found else "inconnu"}
         if method == "policy.check":
-            from djerba_ai.core.policy import Origin
             tool = self.registry().get(str(params["tool"])) or str(params["tool"])
             if params.get("commit"):
                 return self.gate(tool, params.get("params") or {}, params, pid, uid, method).to_dict()
-            return self.policy().decide(tool, params.get("params") or {}, Origin.from_params(params.get("origin"))
-                                        ).to_dict()
+            return self.policy().decide(tool, params.get("params") or {}, self.origin(params, uid)).to_dict()
+        if method in ("session.open", "session.status", "session.taint", "session.untaint"):
+            return self.session_method(method, params, pid, uid)
         if method == "policy.status":
             return self.policy().status()
         if method in ("policy.set_mode", "policy.set_caps", "policy.resume"):

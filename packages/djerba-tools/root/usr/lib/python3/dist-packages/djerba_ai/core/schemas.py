@@ -45,7 +45,8 @@ class UserPrompt(Strict):
     """Demande de l'utilisateur, validée avant toute inférence."""
 
     text: Annotated[StrictStr, Field(min_length=1, max_length=MAX_PROMPT)]
-    source: Literal["chat", "spotlight", "clipboard", "cli", "system"] = "chat"
+    source: Literal["chat", "spotlight", "clipboard", "cli", "system", "selection", "file", "dbus", "gui",
+                    "hud", "instance"] = "chat"
 
     @field_validator("text")
     @classmethod
@@ -403,7 +404,8 @@ class JarvisPairParams(Strict):
 
 class MCPBeginParams(Strict):
     name: Annotated[StrictStr, Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,31}$")]
-    cap: Annotated[StrictInt, Field(ge=0, le=2)] = 2
+    #: invariant 09 : un appelant MCP ne dépasse jamais le niveau 1
+    cap: Annotated[StrictInt, Field(ge=0, le=1)] = 1
 
 
 class MCPCompleteParams(Strict):
@@ -411,8 +413,14 @@ class MCPCompleteParams(Strict):
     name: Annotated[StrictStr, Field(max_length=40)] = ""
 
 
-class MCPTokenParams(Strict):
-    token: Annotated[StrictStr, Field(min_length=16, max_length=200)]
+class MCPSignedParams(Strict):
+    """Requête signée d'un appelant MCP (anti-rejeu : horodatage, nonce, empreinte du corps)."""
+
+    client: Annotated[StrictStr, Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,31}$")]
+    ts: Annotated[StrictInt, Field(ge=0)]
+    nonce: Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{16,64}$")]
+    sig: Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
+    body_sha256: Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
 class MCPClientParams(Strict):
@@ -440,6 +448,21 @@ class TxUndoParams(Strict):
 
 class TxSinceParams(Strict):
     since: Annotated[StrictStr, Field(pattern=SINCE)]
+
+
+class SessionOpenParams(Strict):
+    #: canal « mcp » exclu : la session d'un appelant MCP est ouverte par root après vérification du jeton
+    channel: Literal["agent", "import"] = "agent"
+    tainted: StrictBool = False
+    reason: Annotated[StrictStr, Field(max_length=160)] = ""
+
+
+class SessionKeyParams(Strict):
+    session: Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{32}$")]
+
+
+class SessionTaintParams(SessionKeyParams):
+    reason: Annotated[StrictStr, Field(max_length=160)] = ""
 
 
 class TxSessionParams(Strict):
@@ -475,6 +498,10 @@ RPC_PARAMS: dict[str, type[Strict]] = {
     "tx.undo": TxUndoParams,
     "tx.undo_since": TxSinceParams,
     "tx.undo_session": TxSessionParams,
+    "session.open": SessionOpenParams,
+    "session.status": SessionKeyParams,
+    "session.taint": SessionTaintParams,
+    "session.untaint": SessionKeyParams,
     "engines.jarvis_history": EngineIdParams,
     "policy.check": PolicyCheckParams,
     "policy.status": NoParams,
@@ -491,7 +518,8 @@ RPC_PARAMS: dict[str, type[Strict]] = {
     "llm.engine_health": EngineIdParams,
     "mcp.pair_begin": MCPBeginParams,
     "mcp.pair_complete": MCPCompleteParams,
-    "mcp.verify": MCPTokenParams,
+    "mcp.verify": MCPSignedParams,
+    "mcp.rotate": MCPSignedParams,
     "mcp.list": NoParams,
     "mcp.revoke": MCPClientParams,
 }

@@ -453,6 +453,13 @@ class Backend(QObject):
 
     @pyqtSlot(str)
     def send(self, text: str) -> None:
+        """Demande saisie par l'humain dans l'interface (canal de confiance)."""
+        self.sendFrom(text, "chat")
+
+    @pyqtSlot(str, str)
+    def sendFrom(self, text: str, source: str) -> None:
+        """Demande reçue par un autre canal (presse-papiers, anneau, autre instance, fichiers) : la conversation
+        devient non fiable côté root (invariant 11)."""
         text = text.strip()
         if not text or self._busy:
             return
@@ -516,7 +523,7 @@ class Backend(QObject):
             return answer[0]
 
         def work():
-            return self.agent.run(text, conversation, on_event, confirm)
+            return self.agent.run(text, conversation, on_event, confirm, source=source)
 
         def finished(result) -> None:
             if isinstance(result, dict) and result.get("success") is False:
@@ -985,7 +992,7 @@ class Backend(QObject):
     def _ask_now(self, text: str) -> None:
         if not self._busy:
             self.newConversation()
-            self.send(text)
+            self.sendFrom(text, "instance")  # transmise par la ligne de commande ou une autre instance
 
     def dispatch(self, argv: list[str]) -> None:
         """Demande transmise au lancement ou par une autre instance."""

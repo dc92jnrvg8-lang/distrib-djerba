@@ -140,6 +140,15 @@ jobs:
           docker run --rm --privileged -e DJERBA_AI_ROOT_TESTS=1 -e QT_QPA_PLATFORM=offscreen \
             -v "${PWD}:/build" -w /build "${DOCKER_IMAGE}" python3 tests/test-djerba-ai.py
 
+      # Invariants de sécurité : rapport complet (verts et rouges) ; échec seulement en cas de
+      # régression d'un invariant déclaré vert ou d'un vert non déclaré (cliquet relu en PR).
+      - name: Invariants de sécurité (cliquet)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --privileged -e DJERBA_AI_ROOT_TESTS=1 -e QT_QPA_PLATFORM=offscreen \
+            -v "${PWD}:/build" -w /build "${DOCKER_IMAGE}" python3 tests/test-invariants.py --rapport
+
       - name: Feature tests (contenu de l'ISO)
         shell: bash
         run: |
@@ -154,6 +163,16 @@ jobs:
           docker run --rm --privileged -v "${PWD}:/build" -w /build \
             -e DJERBA_QEMU_TIMEOUT="${{ matrix.qemu_timeout }}" "${DOCKER_IMAGE}" \
             ./tests/test-iso-qemu.sh "artifacts/djerba-os-${{ steps.version.outputs.version }}-${{ matrix.debarch }}.iso"
+
+      # Rollback au démarrage, en vrai : système Debian 13 installé (GPT, ESP, Btrfs @, GRUB EFI,
+      # noyau) avec les fichiers de rollback du paquet djerba-tools ; deux démarrages ratés, puis
+      # retour automatique au dernier démarrage réussi (@djerba-last-good). Console série en artefact.
+      - name: Rollback au démarrage (QEMU, système installé)
+        if: matrix.debarch == 'amd64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --privileged -v "${PWD}:/build" -w /build "${DOCKER_IMAGE}" ./tests/test-boot-rollback.sh
 
       # Session live réelle (KVM) : DNS, HTTPS, Firefox, mode anonyme via Tor,
       # mode discret, mode jeu, store, agent IA (démon root activé par socket).

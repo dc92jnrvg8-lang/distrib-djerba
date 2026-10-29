@@ -34,7 +34,7 @@ Usage :
     djerba-ai engines pair-jarvis ADRESSE CODE [ID]
                                       appairage avec Jarvis (code à 6 chiffres affiché par Jarvis)
     djerba-ai engines use|test|measure|remove ID
-    djerba-ai mcp pair NOM [--cap 0-2] | list | revoke NOM
+    djerba-ai mcp pair NOM [--cap 0-1] | list | revoke NOM
                                       Djerba serveur d'outils pour un assistant distant (Jarvis)
     djerba-ai mcp-serve               serveur MCP (service djerba-ai-mcp.service)
     djerba-ai history [--engine ID]   historique des conversations (par moteur d'IA)
@@ -341,7 +341,7 @@ def history_command(argv: list[str]) -> int:
             return 0
         if action == "import":
             engine = options.get("engine", "jarvis")
-            data = json.loads(Path(rest[1]).read_text(encoding="utf-8")) if len(rest) > 1 else \
+            data = Memory.read_history_file(Path(rest[1])) if len(rest) > 1 else \
                 ipc.call("engines.jarvis_history", {"id": engine}, timeout=120)
             print(memory.import_history(data, engine=engine, source=engine)["message"])
             return 0
@@ -393,7 +393,7 @@ def mcp_command(argv: list[str]) -> int:
     action = argv[1] if len(argv) > 1 else "list"
     try:
         if action == "pair" and len(argv) >= 3:
-            cap = int(argv[argv.index("--cap") + 1]) if "--cap" in argv else 2
+            cap = int(argv[argv.index("--cap") + 1]) if "--cap" in argv else 1
             result = ipc.call("mcp.pair_begin", {"name": argv[2], "cap": cap}, timeout=330)
             address = mcp.bind_address() or "<adresse Tailscale>"
             link = f"djerba-mcp://{address}:{Config().get('mcp.port')}?code={result['code']}"

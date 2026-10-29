@@ -50,7 +50,7 @@ Window {
         if (prompt.trim() === "" || backend.busy) return
         answer = ""; active = true
         backend.newConversation()
-        backend.send(prompt)
+        backend.sendFrom(prompt, "hud")  // invite liée au contexte (fenêtre, fichier) : non fiable
     }
 
     NumberAnimation { id: revealAnimation; target: win; property: "reveal"; from: 0; to: 1; duration: 320; easing.type: Easing.OutBack }

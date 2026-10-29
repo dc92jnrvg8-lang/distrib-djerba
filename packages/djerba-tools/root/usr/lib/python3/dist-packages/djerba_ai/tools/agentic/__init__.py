@@ -120,26 +120,13 @@ def _history_undo(params: dict, _verbose: bool) -> dict:
         if result.get("success") else fail(result["message"])
 
 
-def _memory_mode(params: dict, _verbose: bool) -> dict:
-    from djerba_ai.core.memory import HistoryError
-    try:
-        setting = _memory().set_engine_memory(params["engine"], params.get("mode"), params.get("retention_days"))
-    except HistoryError as exc:
-        return fail(str(exc))
-    days = setting["retention_days"]
-    return ok(f"Mémoire de {setting['engine']} : {'isolée' if setting['mode'] == 'isole' else 'partagée'}, "
-              f"historique conservé {f'{days} jour(s)' if days else 'sans limite'}.", **setting)
-
-
 def _history_import(params: dict, _verbose: bool) -> dict:
-    import json
-    from pathlib import Path
     from djerba_ai.core import ipc
-    from djerba_ai.core.memory import HistoryError
+    from djerba_ai.core.memory import HistoryError, Memory
     engine = params.get("engine", "jarvis")
     try:
         if params.get("path"):
-            data = json.loads(Path(params["path"]).expanduser().read_text(encoding="utf-8"))
+            data = Memory.read_history_file(params["path"])
         else:
             data = ipc.call("engines.jarvis_history", {"id": engine}, timeout=120)
         return ok(**_memory().import_history(data, engine=engine, source=engine))
@@ -316,21 +303,6 @@ def _engine_status(_params: dict, _verbose: bool) -> dict:
               provider=provider, **health)
 
 
-def _brain_switch(params: dict, _verbose: bool) -> dict:
-    from djerba_ai.core.config import ConfigError
-    config = _config()
-    try:
-        config.set("llm.provider", params["provider"])
-        config.set("llm.engine", params["provider"])
-        if params.get("model"):
-            config.set(MODEL_KEYS[params["provider"]], params["model"])
-    except ConfigError as exc:
-        return fail(str(exc))
-    health = _client().health(5)
-    return (ok if health.get("ok") else fail)(
-        f"Cerveau : {PROVIDER_LABELS[params['provider']]} — {health.get('detail')}", **health)
-
-
 def _engines_list(_params: dict, _verbose: bool) -> dict:
     from djerba_ai.core import engines
     config = _config()
@@ -340,20 +312,6 @@ def _engines_list(_params: dict, _verbose: bool) -> dict:
               "capacité": (engine.get("profile") or {}).get("label", "non mesurée")}
              for engine in engines.catalog(config)]
     return ok(f"{len(items)} moteur(s) d'IA configuré(s) ; actif : {active}", engines=items)
-
-
-def _engine_use(params: dict, _verbose: bool) -> dict:
-    from djerba_ai.core import engines
-    from djerba_ai.core.config import ConfigError
-    config = _config()
-    engine = engines.find(params["id"], config)
-    if engine is None:
-        return fail(f"moteur inconnu : {params['id']} (engines_list)")
-    try:
-        config.set("llm.engine", engine["id"])
-    except ConfigError as exc:
-        return fail(str(exc))
-    return ok(f"Moteur actif : {engine['name']} — la conversation continue avec lui.")
 
 
 def _model_list(_params: dict, _verbose: bool) -> dict:
@@ -384,7 +342,11 @@ def _model_pull(params: dict, _verbose: bool) -> dict:
 def _model_set(params: dict, _verbose: bool) -> dict:
     from djerba_ai.core.config import ConfigError
     config = _config()
-    provider = params.get("provider") or config.get("llm.provider")
+    provider = params.get("provider") or "local"
+    if provider != "local":
+        # Le modèle d'un moteur distant ou en ligne (coût, confidentialité) est un choix humain (invariant 01).
+        return fail("seul le modèle Ollama local se change par l'agent ; les autres moteurs se règlent dans "
+                    "Réglages de Djerba (authentification administrateur)")
     try:
         config.set(MODEL_KEYS[provider], params["model"])
     except ConfigError as exc:
@@ -424,9 +386,13 @@ def _settings_get(_params: dict, _verbose: bool) -> dict:
 
 
 def _settings_set(params: dict, _verbose: bool) -> dict:
-    from djerba_ai.core.config import SCHEMA, ConfigError
+    from djerba_ai.core.config import SCHEMA, ConfigError, protected
     if SCHEMA.get(params["key"], {}).get("secret"):
         return fail("une clé d'API se saisit dans Réglages → Cerveau, jamais dans la conversation")
+    if protected(params["key"]):
+        # Un outil n'est jamais l'humain : réglage de politique ou de sécurité (invariant 01).
+        return fail(f"{params['key']} est un réglage protégé : seul vous pouvez le changer, dans les Réglages de "
+                    "Djerba (authentification administrateur)")
     try:
         value = _config().set(params["key"], params["value"])
     except ConfigError as exc:
@@ -585,14 +551,6 @@ TOOLS = [
                   _history_undo,
                   parameters={"conversation": {"type": "integer", "description": "identifiant", "minimum": 1}},
                   required=("conversation",), keywords=("annuler ce que tu as fait", "défaire la conversation")),
-    function_tool("memory_mode", C, "Mémoire d'un moteur d'IA : isolée ou partagée, durée de conservation.",
-                  _memory_mode,
-                  parameters={"engine": {"type": "string", "description": "moteur",
-                                         "pattern": r"^[a-z0-9][a-z0-9-]{1,31}$"},
-                              "mode": {"type": "string", "description": "mode", "enum": ["isole", "partage"]},
-                              "retention_days": {"type": "integer", "description": "jours (0 = illimité)",
-                                                 "minimum": 0, "maximum": 3650}},
-                  required=("engine",), dangerous=True, keywords=("mémoire partagée", "isoler", "rétention")),
     function_tool("history_import", C, "Importe l'historique de Jarvis (par le relais root ou depuis un fichier JSON).",
                   _history_import,
                   parameters={"engine": {"type": "string", "description": "moteur Jarvis",
@@ -645,18 +603,6 @@ TOOLS = [
     function_tool("engines_list", C, "Moteurs d'IA configurés (Ollama local ou distant, Jarvis, OpenAI, Gemini, "
                   "Anthropic…), moteur actif et capacité mesurée.", _engines_list,
                   keywords=("moteurs", "ia disponibles", "jarvis", "cerveaux", "engines")),
-    function_tool("engine_use", C, "Bascule à chaud sur un autre moteur d'IA (la conversation est conservée).",
-                  _engine_use,
-                  parameters={"id": {"type": "string", "description": "identifiant du moteur (engines_list)",
-                                     "pattern": r"^[a-z0-9][a-z0-9-]{1,31}$"}},
-                  required=("id",), keywords=("changer de moteur", "utiliser jarvis", "basculer", "engine")),
-    function_tool("brain_switch", C, "Change de cerveau : Ollama local, machine distante via Tailscale ou API en ligne.",
-                  _brain_switch,
-                  parameters={"provider": {"type": "string", "description": "local, tailscale ou cloud",
-                                           "enum": ["local", "tailscale", "cloud"]},
-                              "model": {"type": "string", "description": "modèle (facultatif)", "pattern": MODEL}},
-                  required=("provider",), dangerous=True,
-                  keywords=("changer de cerveau", "mac mini", "tailscale", "gemini", "openai", "cloud", "local")),
     function_tool("model_list", C, "Modèles disponibles sur le cerveau actif.", _model_list,
                   keywords=("modèles", "llm")),
     function_tool("model_recommend", C, "Modèles conseillés pour la mémoire de cette machine.", _model_recommend,
@@ -664,10 +610,10 @@ TOOLS = [
     function_tool("model_pull", C, "Télécharge ou met à jour un modèle Ollama local (ex. qwen2.5:7b).", _model_pull,
                   parameters={"model": {"type": "string", "description": "modèle", "pattern": MODEL}},
                   required=("model",), dangerous=True, keywords=("télécharger modèle", "pull")),
-    function_tool("model_set", C, "Choisit le modèle d'un cerveau (actif par défaut).", _model_set,
+    function_tool("model_set", C, "Choisit le modèle Ollama local (les autres moteurs : réglage humain).",
+                  _model_set,
                   parameters={"model": {"type": "string", "description": "modèle", "pattern": MODEL},
-                              "provider": {"type": "string", "description": "local, tailscale ou cloud",
-                                           "enum": ["local", "tailscale", "cloud"]}},
+                              "provider": {"type": "string", "description": "local", "enum": ["local"]}},
                   required=("model",), keywords=("changer de modèle", "utiliser modèle")),
     function_tool("transactions_list", C, "Dernières modifications du système (journal de transactions : moteur "
                   "d'IA à l'origine, fichiers touchés, état, annulable ou non).", _transactions_list,

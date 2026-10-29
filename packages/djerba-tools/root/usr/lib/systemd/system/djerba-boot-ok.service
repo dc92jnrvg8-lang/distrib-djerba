@@ -1,13 +1,22 @@
-# Djerba OS — démarrage réussi : remet à zéro le compteur de GRUB et
-# rafraîchit le dernier bon état (@djerba-last-good). Lancé par sa minuterie,
-# trois minutes après l'amorçage : jamais sur le chemin critique.
+# Djerba OS — validation du démarrage : remet à zéro le compteur de GRUB et
+# rafraîchit le dernier bon état (@djerba-last-good, générations conservées).
+# Attend la fin du démarrage (systemctl is-system-running --wait) : un
+# démarrage lent n'est pas un échec, mais au-delà de 15 min
+# (DJERBA_BOOT_DEADLINE) il est marqué en échec et un arrêt propre ne le
+# rattrape plus. Pas d'ordre « After=multi-user.target » : un démarrage
+# bloqué n'atteint jamais cette cible, et le délai doit courir quand même.
+# Type=simple : jamais sur le chemin critique.
 [Unit]
-Description=Djerba : démarrage réussi (rollback au démarrage)
+Description=Djerba : validation du démarrage (rollback au démarrage)
 ConditionPathIsMountPoint=/boot/efi
-After=multi-user.target
+RequiresMountsFor=/boot/efi
+After=djerba-boot-guard.service
 
 [Service]
-Type=oneshot
-ExecStart=/usr/libexec/djerba-boot ok
+Type=simple
+ExecStart=/usr/libexec/djerba-boot ok --wait
 Nice=10
 IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

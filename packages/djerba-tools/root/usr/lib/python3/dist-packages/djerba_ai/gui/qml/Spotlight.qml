@@ -53,7 +53,7 @@ Window {
         if (text.trim() === "" || backend.busy) return
         answer = ""; steps = []; active = true
         backend.newConversation()
-        backend.send(text)
+        backend.sendFrom(text, win.mode === "clipboard" ? "clipboard" : "chat")
     }
 
     Connections {
