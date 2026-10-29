@@ -2486,6 +2486,40 @@ class BootRollbackTests(unittest.TestCase):
         self.assertEqual(seen, [False])  # le pilote (ou l'arrêt propre) ne voit « ok » qu'une fois le clone fait
         self.assertTrue((guard.run_dir / "ok").exists())
 
+    def test_make_permanent_from_the_clone_promotes_it(self) -> None:
+        from types import SimpleNamespace
+        from djerba_ai.core import bootguard
+        system = FakeBootSystem()
+        top = system.base / "sommet"
+        for name, content in (("@", "état cassé"), (bootguard.LAST_GOOD, "état sain")):
+            (top / name / "etc").mkdir(parents=True)
+            (top / name / "etc/etat").write_text(content)
+        (top / bootguard.LAST_GOOD / "etc/fstab").write_text("UUID=1 / btrfs subvol=/@djerba-last-good 0 0\n")
+        (top / bootguard.LAST_GOOD / bootguard.MARKER).write_text("clone du 2026-10-29 06:53:57 de /@\n")
+        system.root = "/@djerba-last-good"
+        base_run = system.run
+
+        def run(argv, timeout=120):
+            if argv[:3] == ["btrfs", "subvolume", "snapshot"]:
+                shutil.copytree(argv[3], argv[4], symlinks=True)
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            return base_run(argv, timeout)
+        guard = system.guard()
+        guard.runner = run
+        # Sur le clone, la racine montée (FSROOT) est le clone lui-même, comme le rapporte BtrfsBackend.detect.
+        guard._backend = SimpleNamespace(top=top, source=bootguard.LAST_GOOD)
+        self.assertEqual(guard.normal_root(), "@")
+        message = guard.make_permanent()
+        self.assertIn("@djerba-broken-", message)
+        self.assertEqual((top / "@/etc/etat").read_text(), "état sain")
+        self.assertIn("subvol=/@ ", (top / "@/etc/fstab").read_text())
+        self.assertFalse((top / "@" / bootguard.MARKER).exists())
+        broken = [path for path in top.iterdir() if path.name.startswith("@djerba-broken-")]
+        self.assertEqual([(path / "etc/etat").read_text() for path in broken], ["état cassé"])
+        self.assertEqual((top / bootguard.LAST_GOOD / "etc/etat").read_text(), "état sain")  # clone intact
+        promoted = top / "@" / guard.notice_path.relative_to(guard.notice_path.anchor)
+        self.assertTrue(json.loads(promoted.read_text())["id"].startswith("definitif:@djerba-broken-"))
+
     def test_slow_boot_is_waited_for_not_failed(self) -> None:
         system = FakeBootSystem()
         guard = system.guard()

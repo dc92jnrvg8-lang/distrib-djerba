@@ -314,13 +314,30 @@ class BootGuard:
         except OSError:
             return False
 
+    def normal_root(self) -> str:
+        """Sous-volume du système normal. Sur le clone, la racine montée est @djerba-last-good : le nom
+        d'origine est celui inscrit dans le marqueur du clone (« clone du … de /@ »)."""
+        backend = self.backend
+        if backend is None:
+            return "@"
+        if backend.source != LAST_GOOD:
+            return backend.source
+        try:
+            match = re.search(r" de /(\S+)\s*$", (backend.top / LAST_GOOD / MARKER).read_text())
+        except OSError:
+            match = None
+        return match.group(1) if match and match.group(1) != LAST_GOOD else "@"
+
     def make_permanent(self, force: bool = False) -> str:
         backend = self.backend
         if backend is None:
             raise RuntimeError("racine non Btrfs")
         if not force and not self.booted_from_last_good():
             raise RuntimeError("le système ne tourne pas sur le dernier bon état")
-        source = backend.top / backend.source
+        name = self.normal_root()
+        source = backend.top / name
+        if not source.exists() or name == LAST_GOOD:
+            raise RuntimeError(f"sous-volume normal introuvable ({name})")
         broken = backend.top / f"@djerba-broken-{time.strftime('%Y%m%d%H%M%S')}"
         os.rename(source, broken)
         result = self.runner(["btrfs", "subvolume", "snapshot", str(backend.top / LAST_GOOD), str(source)],
@@ -328,7 +345,7 @@ class BootGuard:
         if result.returncode != 0:
             os.rename(broken, source)
             raise RuntimeError(f"restauration impossible : {result.stderr.strip()[:200]}")
-        point_fstab(source, backend.source)
+        point_fstab(source, name)
         (source / MARKER).unlink(missing_ok=True)
         self.set_tries(0)
         self.notice(f"definitif:{broken.name}", "État restauré conservé",
