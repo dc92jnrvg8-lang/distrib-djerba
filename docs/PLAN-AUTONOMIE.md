@@ -350,9 +350,9 @@ conteneur Debian 13, CI x86_64 et arm64).
 
 - [x] Migrations v1 (clair) → v2 → v3 testées : aucune perte, sauvegarde
       préalable créée (déjà chiffrée).
-- [ ] Base plus récente refusée — **case cochée à tort en phase 4** : le code
-      existait, aucun test ne le vérifiait (relevé par l'audit ; test ajouté
-      en phase 4 bis, voir ci-dessous).
+- [x] Base plus récente refusée — case cochée à tort en phase 4 (aucun test) ;
+      test ajouté en phase 4 bis (`test_newer_database_and_newer_backup_are_refused`),
+      vert en CI x86_64 et arm64 (run 40927872438).
 - [x] Historique filtré par moteur ; recherche plein texte et sémantique ;
       épinglage, renommage, export Markdown/JSON, suppression.
 - [x] Reprise d'une conversation avec un autre moteur : résumé adapté à sa
@@ -470,16 +470,18 @@ consignés dans `tests/garde/derogations.txt`.
 - [x] Tests négatifs : base et sauvegarde plus récentes, imports malformés
       ou trop gros, identifiant réutilisé.
 - [x] Tableau des entrées de `policy.toml`.
-- [ ] Test QEMU réel du rollback au démarrage (`tests/test-boot-rollback.sh`) —
-      **décochée** : pas de CI verte. Run 40778105889 (aa00cae, x86_64, KVM,
-      vrai `grub-install`) : la séquence s'est déroulée (deux paniques de
-      l'init de `@`, puis GRUB démarre seul `@djerba-last-good`, compteur 2),
-      mais l'étape a échoué sur le contrôle du test (écho `INIT-CASSE` absent
-      de la console sous KVM ; la panique fait désormais foi).
-- [ ] Preuves du rollback (démarrage raté défini, `findmnt /`, témoins racine
-      et `/home`, promotion de `@djerba-last-good` avec ancien `@` conservé,
-      avis de session, démarrage lent et arrêt propre non comptés, ESP en
-      lecture seule, `grubenv` corrompu) : codées et testées en unitaire ;
-      étapes VM ajoutées, CI non encore passée.
+- [x] Test QEMU réel du rollback au démarrage (`tests/test-boot-rollback.sh`) :
+      CI run 40927872438 (`cc151bd`), x86_64, KVM, vrai `grub-install`
+      (« Installation finished. No error reported. ») : deux paniques de
+      l'init de `@`, GRUB démarre seul `@djerba-last-good` (compteur 2).
+- [x] Preuves du rollback, même run : `findmnt /`, témoin racine effacé et
+      témoin `/home` conservé, promotion (`@` recréé, ancien `@` en
+      `@djerba-broken-*`, avis), démarrage lent (validé à 205 s) et arrêt
+      propre non comptés, grubenv corrompu recréé, ESP en lecture seule
+      signalée (code 1, avis).
+- [ ] Délai maximal de 15 min, critère de réussite renforcé (cible par
+      défaut, dbus/logind, gestionnaire de connexion stable), générations
+      (`@djerba-last-good` + 2 `@djerba-good-*` espacées de 24 h) : codés et
+      testés en unitaire (`81a0d51`) ; CI non encore passée.
 - [ ] CI verte (x86_64 et arm64) et PR relue.
 
