@@ -244,7 +244,6 @@ class BootGuard:
             return False, "démarrage incomplet : compteur conservé"
         if self.booted_from_last_good():
             # Pas de retour automatique sur l'état qui a échoué : l'utilisateur décide.
-            self._flag("ok")
             counter = self.set_tries(2)
             backend = self.backend
             marker = backend.top / LAST_GOOD / MARKER if backend else None
@@ -258,8 +257,8 @@ class BootGuard:
                         "touchés. Pour conserver cet état : « djerba-ai rollback --make-permanent ».")
             message = ("système restauré au dernier démarrage réussi : « djerba-ai rollback --make-permanent » "
                        "pour le conserver")
+            self._flag("ok")
             return (True, message) if counter else (False, f"{message} ; compteur non écrit ({self.last_error})")
-        self._flag("ok")
         counter = self.set_tries(0)
         error = self.last_error
         message = self.refresh_last_good()
@@ -267,6 +266,8 @@ class BootGuard:
             self.runner(["update-grub"], timeout=600)
             # Le clone reprend le grub.cfg qui contient désormais compteur et entrée (utile après promotion).
             message = self.refresh_last_good()
+        # Drapeau posé une fois tout le travail fait (clone, entrée GRUB) : il signale un démarrage validé.
+        self._flag("ok")
         if not counter:
             self.notice(f"esp:{time.strftime('%Y-%m-%d')}", "Compteur de démarrage non remis à zéro",
                         f"La partition EFI n'accepte pas l'écriture ({error}). Le dernier état sain a été "

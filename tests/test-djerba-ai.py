@@ -2473,6 +2473,19 @@ class BootRollbackTests(unittest.TestCase):
         self.assertTrue((guard.run_dir / "ok").exists())  # démarrage sain : un arrêt propre ne touche à rien
         self.assertEqual(guard.clean_shutdown(), "démarrage déjà validé")
 
+    def test_validated_flag_only_after_work_is_done(self) -> None:
+        system = FakeBootSystem()
+        guard = system.guard()
+        seen: list[bool] = []
+
+        def refresh() -> str:
+            seen.append((guard.run_dir / "ok").exists())
+            return "dernier bon état enregistré"
+        guard.refresh_last_good = refresh
+        self.assertTrue(guard.mark_success()[0])
+        self.assertEqual(seen, [False])  # le pilote (ou l'arrêt propre) ne voit « ok » qu'une fois le clone fait
+        self.assertTrue((guard.run_dir / "ok").exists())
+
     def test_slow_boot_is_waited_for_not_failed(self) -> None:
         system = FakeBootSystem()
         guard = system.guard()
