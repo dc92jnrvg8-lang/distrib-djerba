@@ -2673,6 +2673,15 @@ class BtrfsReversibilityTests(unittest.TestCase):
         message = guard.make_permanent(force=True)
         self.assertIn("@djerba-broken-", message)
         restored = self.top / "@"
+        # Seul ajout attendu au @ promu : l'avis « état conservé » pour la session ; vérifié puis retiré
+        # (rmdir échoue si le dossier contient autre chose), et le reste doit être identique au clone.
+        notice = restored / bootguard.NOTICE.relative_to("/")
+        self.assertTrue(json.loads(notice.read_text())["id"].startswith("definitif:@djerba-broken-"))
+        self.assertFalse((clone / bootguard.NOTICE.relative_to("/")).exists())
+        notice.unlink()
+        for directory in (notice.parent, notice.parent.parent):
+            if not (clone / directory.relative_to(restored)).exists():
+                directory.rmdir()
         self.assertEqual(snapshots.tree_digest(restored, ("etc/fstab", "etc/djerba-last-good")), reference)
         self.assertRegex((restored / "etc/fstab").read_text(), r"^UUID=1 / btrfs \S*subvol=/@(,|\s)")
         self.assertFalse((restored / bootguard.MARKER).exists())
