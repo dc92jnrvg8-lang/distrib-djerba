@@ -2378,6 +2378,10 @@ class FakeBootSystem:
         self.root = "/@"
         self.timeouts: list = []
         self.sleeps: list = []
+        self.target = "active"           # cible par défaut (graphical.target)
+        self.units: dict[str, dict] = {}  # unités critiques : absentes par défaut
+        self.restarts: list[str] = []    # NRestarts successifs du gestionnaire de connexion
+        self.hang = False                # démarrage bloqué jusqu'au délai maximal
 
     def guard(self):
         from djerba_ai.core import bootguard
@@ -2409,13 +2413,27 @@ class FakeBootSystem:
             else:
                 code, err = 1, "grub-editenv: error: invalid environment block."
         elif argv[:2] == ["systemctl", "is-system-running"]:
-            if "--wait" in argv and self.finish_on_wait:
+            if "--wait" in argv and self.hang and timeout is not None:
+                return subprocess.CompletedProcess(argv, 127, "", f"Command {argv} timed out after {timeout} seconds")
+            if "--wait" in argv and (self.finish_on_wait or self.hang):
                 self.state = "running"
             out = self.state
         elif argv[:2] == ["systemctl", "is-enabled"]:
             out = "enabled"
+        elif argv[:2] == ["systemctl", "get-default"]:
+            out = "graphical.target"
+        elif argv[:2] == ["systemctl", "is-active"] and argv[2] != "display-manager.service":
+            out = self.target
         elif argv[:2] == ["systemctl", "is-active"]:
             out = self.manager_sequence.pop(0) if self.manager_sequence else self.manager
+        elif argv[:2] == ["systemctl", "show"]:
+            name = argv[-1]
+            if name == "display-manager.service":
+                info = {"LoadState": "loaded", "ActiveState": self.manager,
+                        "NRestarts": self.restarts.pop(0) if self.restarts else "0"}
+            else:
+                info = self.units.get(name, {"LoadState": "not-found", "ActiveState": "inactive"})
+            out = "\n".join(f"{key}={value}" for key, value in info.items())
         elif argv[0] == "findmnt":
             out = self.root
         return subprocess.CompletedProcess(argv, code, out + "\n", err)
@@ -2528,7 +2546,8 @@ class BootRollbackTests(unittest.TestCase):
         system.finish_on_wait = True
         success, message = guard.mark_success(wait=True)
         self.assertTrue(success, message)
-        self.assertIn((["systemctl", "is-system-running", "--wait"], None), system.timeouts)
+        # Attente bornée par le délai maximal (15 min), pas par une minuterie fixe de 3 min.
+        self.assertIn((["systemctl", "is-system-running", "--wait"], 900), system.timeouts)
         self.assertEqual(guard.tries(), 0)
 
     def test_failed_boot_keeps_counter(self) -> None:
@@ -2549,7 +2568,122 @@ class BootRollbackTests(unittest.TestCase):
         guard = system.guard()
         system.manager_sequence = ["activating", "activating", "active"]
         self.assertTrue(guard.healthy_boot())
-        self.assertEqual(len(system.sleeps), 2)
+        self.assertEqual(system.sleeps, [2, 2, 30])  # deux attentes du démarrage, puis la fenêtre de stabilité
+
+    def test_hung_boot_counts_even_with_clean_shutdown(self) -> None:
+        system = FakeBootSystem()
+        guard = system.guard()
+        guard.set_tries(1)
+        guard.record_start()
+        system.hang = True
+        system.state = "starting"
+        # Le délai expire : drapeau d'échec posé ; un arrêt propre à ce moment ne rattrape rien.
+        original = system.run
+
+        def run(argv, timeout=120):
+            result = original(argv, timeout)
+            if argv[-1] == "--wait" and timeout is None:
+                system.state = "stopping"
+                self.assertIn("conservé", guard.clean_shutdown())
+                self.assertEqual(guard.tries(), 1)
+                self.assertIn('"bloque:', guard.notice_path.read_text())
+                system.state = "running"
+            return result
+        guard.runner = run
+        success, message = guard.mark_success(wait=True)
+        # S'il finit par aboutir et qu'il est sain, il est validé normalement.
+        self.assertTrue(success, message)
+        self.assertEqual(guard.tries(), 0)
+        self.assertFalse((guard.run_dir / "echec").exists())
+
+    def test_strict_success_criteria(self) -> None:
+        cases = (("target", "inactive", "cible graphical.target non atteinte"),
+                 ("units", {"systemd-logind.service": {"LoadState": "loaded", "ActiveState": "failed"}},
+                  "systemd-logind.service en échec"),
+                 ("restarts", ["3", "4"], "instable"))
+        for attribute, value, reason in cases:
+            system = FakeBootSystem()
+            setattr(system, attribute, value)
+            guard = system.guard()
+            self.assertFalse(guard.healthy_boot(), attribute)
+            self.assertIn(reason, guard.health)
+        system = FakeBootSystem()
+        system.units = {"dbus.service": {"LoadState": "loaded", "ActiveState": "active"}}
+        system.restarts = ["2", "2"]
+        self.assertTrue(system.guard().healthy_boot())  # unités absentes ignorées, gestionnaire stable
+
+    def test_generations_rotation_spacing_grub_and_promotion(self) -> None:
+        from types import SimpleNamespace
+        from djerba_ai.core import bootguard
+        system = FakeBootSystem()
+        top = system.base / "sommet"
+        (top / "@/etc").mkdir(parents=True)
+        (top / "@/boot").mkdir()
+        (top / "@/etc/fstab").write_text("UUID=1 / btrfs subvol=/@ 0 0\nUUID=1 /home btrfs subvol=/@home 0 0\n")
+        (top / "@/boot/vmlinuz-6.12.10-amd64").write_text("noyau")
+        (top / "@/boot/initrd.img-6.12.10-amd64").write_text("initrd")
+        base_run = system.run
+
+        def run(argv, timeout=120):
+            if argv[:3] == ["btrfs", "subvolume", "snapshot"]:
+                shutil.copytree(argv[3], argv[4], symlinks=True)
+            elif argv[:3] == ["btrfs", "subvolume", "delete"]:
+                shutil.rmtree(argv[3])
+            elif argv[0] == "cp":
+                shutil.copy(argv[-2], argv[-1])
+            elif argv[0] == "findmnt" and "UUID,SOURCE" in argv:
+                return subprocess.CompletedProcess(argv, 0, "1111-2222 /dev/vda2[/@]\n", "")
+            elif argv[0] == "findmnt" and str(system.base / "esp") in argv:
+                return subprocess.CompletedProcess(argv, 0, "ABCD-EF01\n", "")
+            elif argv[0] == "lsblk":
+                return subprocess.CompletedProcess(argv, 0, "part\n", "")
+            else:
+                return base_run(argv, timeout)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        guard = system.guard()
+        guard.runner = run
+        guard.spacing = 86400
+        guard._backend = SimpleNamespace(top=top, source="@")
+
+        def boot(date: str, content: str) -> str:
+            """Démarrage réussi : le clone sortant (fait au démarrage précédent) est daté de ``date``."""
+            (top / "@/etc/etat").write_text(content)
+            if (top / bootguard.LAST_GOOD).exists():
+                (top / bootguard.LAST_GOOD / bootguard.MARKER).write_text(f"clone du {date} de /@\n")
+            return guard.refresh_last_good()
+
+        boot("2026-10-01 08:00:00", "j0")
+        self.assertEqual(guard.generations(), [])
+        self.assertIn("génération conservée : @djerba-good-20261001080000", boot("2026-10-01 08:00:00", "j1"))
+        boot("2026-10-01 20:00:00", "j1-soir")  # moins de 24 h après la génération conservée : remplacé
+        self.assertEqual(guard.generations(), ["@djerba-good-20261001080000"])
+        boot("2026-10-03 08:00:00", "j3")
+        boot("2026-10-05 08:00:00", "j5")
+        boot("2026-10-07 08:00:00", "j7")
+        # Deux générations conservées au plus, espacées d'au moins 24 h ; la plus ancienne est supprimée.
+        self.assertEqual(guard.generations(), ["@djerba-good-20261007080000", "@djerba-good-20261005080000"])
+        self.assertEqual((top / "@djerba-good-20261007080000/etc/etat").read_text(), "j5")
+        self.assertIn("subvol=/@djerba-good-20261007080000 ", (top / "@djerba-good-20261007080000/etc/fstab")
+                      .read_text())
+        self.assertIn("subvol=/@home", (top / "@djerba-good-20261007080000/etc/fstab").read_text())
+        self.assertFalse((top / f"{bootguard.LAST_GOOD}.nouveau").exists())
+        entry = guard.grub_snippet("entry", {})
+        self.assertIn("--id djerba-last-good", entry)
+        self.assertIn("--id djerba-good-20261007080000", entry)
+        self.assertIn("rootflags=subvol=/@djerba-good-20261005080000", entry)
+        config = system.base / "grub.cfg"
+        config.write_text(entry)
+        self.assertTrue(guard.grub_has_entry(config))
+        config.write_text(entry + "menuentry 'x' --id djerba-good-20260101000000 {\n}\n")
+        self.assertFalse(guard.grub_has_entry(config))  # entrée périmée : update-grub nécessaire
+        # Démarrage manuel sur une génération ancienne, puis promotion : c'est elle qui devient @.
+        system.root = "/@djerba-good-20261005080000"
+        guard._backend = SimpleNamespace(top=top, source="@djerba-good-20261005080000")
+        self.assertTrue(guard.booted_from_last_good())
+        self.assertEqual(guard.normal_root(), "@")
+        guard.make_permanent()
+        self.assertEqual((top / "@/etc/etat").read_text(), "j3")
+        self.assertIn("subvol=/@ ", (top / "@/etc/fstab").read_text())
 
     def test_clean_shutdown_does_not_count(self) -> None:
         system = FakeBootSystem()

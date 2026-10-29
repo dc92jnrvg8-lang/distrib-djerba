@@ -119,7 +119,7 @@ ESP_UUID="$(blkid -s UUID -o value "${ESP_DEV}")"
 # ---------------------------------------------------------------- Système Debian 13 installé
 log "debootstrap trixie (${MIRROR})"
 debootstrap --variant=minbase \
-    --include=systemd-sysv,udev,kmod,util-linux,mount,btrfs-progs,dosfstools,python3,initramfs-tools,ca-certificates \
+    --include=systemd-sysv,dbus,udev,kmod,util-linux,mount,btrfs-progs,dosfstools,python3,initramfs-tools,ca-certificates \
     trixie "${TARGET}" "${MIRROR}" >"${OUT}/rollback-debootstrap.log" 2>&1 \
     || { tail -n 30 "${OUT}/rollback-debootstrap.log"; exit 1; }
 mkdir -p "${TARGET}/boot/efi"
@@ -168,6 +168,23 @@ install -m 0755 "${PACKAGE}/etc/grub.d/09_djerba_bootcount" "${PACKAGE}/etc/grub
 install -m 0644 "${PACKAGE}/usr/lib/systemd/system/djerba-boot-ok.service" \
     "${PACKAGE}/usr/lib/systemd/system/djerba-boot-guard.service" "${TARGET}/usr/lib/systemd/system/"
 chroot "${TARGET}" systemctl enable djerba-boot-guard.service djerba-boot-ok.service >/dev/null 2>&1
+# Générations : espacement ramené à 0 dans la VM (24 h par défaut) pour voir rotation et élagage en un test.
+mkdir -p "${TARGET}/etc/systemd/system/djerba-boot-ok.service.d"
+printf '[Service]\nEnvironment=DJERBA_BOOT_GENERATION_SPACING=0\n' \
+    >"${TARGET}/etc/systemd/system/djerba-boot-ok.service.d/generations.conf"
+# Démarrage bloqué (étape 8) : unité qui ne finit jamais, activée par le pilote le moment venu.
+cat >"${TARGET}/etc/systemd/system/djerba-test-bloque.service" <<'EOF'
+[Unit]
+Description=Djerba : démarrage bloqué simulé
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sleep infinity
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF
 # Démarrage lent (étape 6) : unité de 200 s dans multi-user.target, activée par le pilote le moment venu.
 cat >"${TARGET}/etc/systemd/system/djerba-test-lent.service" <<'EOF'
 [Unit]
@@ -189,6 +206,7 @@ set -u
 dire() { echo "DJERBA-TEST: $*" >/dev/ttyS0; }
 echouer() { dire "ECHEC : $*"; systemctl poweroff; exit 1; }
 boot=/usr/libexec/djerba-boot
+export DJERBA_BOOT_GENERATION_SPACING=0      # comme l'unité (surcharge de test)
 etat=/home/djerba-test                       # sur @home : jamais restauré
 mkdir -p "${etat}"
 etape="$(cat "${etat}/etape" 2>/dev/null || echo 0)"
@@ -201,6 +219,24 @@ valide() {   # attend la décision de djerba-boot-ok.service (unité réelle, ac
     done
     [ -e /run/djerba-boot/ok ] || echouer "démarrage non validé (étape ${etape})"
 }
+if [ "${etape}" = "7" ]; then
+    # Démarrage bloqué : le pilote n'attend pas la fin du démarrage (elle ne vient jamais).
+    n=0
+    while [ ! -e /run/djerba-boot/debut ] && [ "${n}" -lt 120 ]; do sleep 1; n=$((n + 1)); done
+    dire "démarré (étape 7, démarrage bloqué) ; compteur relevé au démarrage : $(cat /run/djerba-boot/debut)"
+    n=0
+    while [ ! -e /run/djerba-boot/echec ] && [ "${n}" -lt 600 ]; do sleep 1; n=$((n + 1)); done
+    [ -e /run/djerba-boot/echec ] || echouer "démarrage bloqué non marqué en échec"
+    dire "marqué en échec $(cut -d' ' -f1 /proc/uptime) s après l'amorçage (délai 60 s) ; $(${boot} status)"
+    dire "avis : $(cat /var/lib/djerba-boot/notice.json)"
+    grep -q '"bloque:' /var/lib/djerba-boot/notice.json || echouer "avis de démarrage bloqué absent"
+    systemctl disable djerba-test-bloque.service >/dev/null 2>&1
+    rm -f /etc/systemd/system/djerba-boot-ok.service.d/delai.conf
+    suivante 8
+    dire "arrêt propre pendant le blocage"
+    systemctl reboot
+    exit 0
+fi
 systemctl is-system-running --wait >/dev/null 2>&1
 racine="$(findmnt -n -o FSROOT /)"
 dire "démarré depuis ${racine} (étape ${etape}) ; $(${boot} status)"
@@ -286,6 +322,27 @@ case "${etape}" in
     dire "avis : $(cat /var/lib/djerba-boot/notice.json)"
     dire "ESP-LECTURE-SEULE-SIGNALEE"
     mount -o remount,rw /boot/efi
+    dire "$(${boot} ok 2>&1)"
+    [ "$(compteur)" = "0" ] || echouer "compteur non remis à zéro après remontage"
+    # Étape suivante : démarrage bloqué, délai maximal ramené à 60 s (900 par défaut).
+    printf '[Service]\nEnvironment=DJERBA_BOOT_DEADLINE=60\n' \
+        >/etc/systemd/system/djerba-boot-ok.service.d/delai.conf
+    systemctl enable djerba-boot-ok.service djerba-test-bloque.service >/dev/null 2>&1
+    suivante 7
+    systemctl reboot ;;
+8)
+    [ "$(cat /run/djerba-boot/debut)" = "2" ] || echouer "le démarrage bloqué n'a pas été compté"
+    dire "BOOT-BLOQUE-COMPTE (1 → 2 malgré l'arrêt propre)"
+    valide
+    dire "$(${boot} status)"
+    generations="$(btrfs subvolume list / | grep -c " path @djerba-good-")"
+    attendues="$(btrfs subvolume list / | sed -n 's/.* path @\(djerba-good-[0-9]*\)$/\1/p' | sort | tr '\n' ' ')"
+    entrees="$(grep -o -- "--id djerba-good-[0-9]*" /boot/grub/grub.cfg | cut -d' ' -f2 | sort | tr '\n' ' ')"
+    dire "générations conservées : ${attendues}; entrées GRUB : ${entrees}"
+    [ "${generations}" = "2" ] || echouer "2 générations conservées attendues (${generations})"
+    [ "${attendues}" = "${entrees}" ] || echouer "entrées GRUB et générations ne correspondent pas"
+    grep -q -- "--id djerba-last-good" /boot/grub/grub.cfg || echouer "entrée du dernier bon état absente"
+    dire "GENERATIONS-OK"
     dire "FIN"
     systemctl poweroff ;;
 *)
@@ -296,7 +353,6 @@ chmod 0755 "${TARGET}/usr/local/sbin/djerba-test-etape"
 cat >"${TARGET}/etc/systemd/system/djerba-test-etape.service" <<'EOF'
 [Unit]
 Description=Djerba : pilote du test de rollback au démarrage
-After=multi-user.target
 
 [Service]
 Type=simple
@@ -423,7 +479,7 @@ expect "[/@djerba-last-good]"
 expect "sur le dernier bon état : True"
 for step in TEMOIN-RACINE-ABSENT TEMOIN-HOME-PRESENT ROLLBACK-REUSSI "état restauré rendu définitif" \
             PROMOTION-REUSSIE BOOT-LENT-VALIDE GRUBENV-REPARE ARRET-PROPRE-NON-COMPTE \
-            ESP-LECTURE-SEULE-SIGNALEE "DJERBA-TEST: FIN"; do
+            ESP-LECTURE-SEULE-SIGNALEE BOOT-BLOQUE-COMPTE GENERATIONS-OK "DJERBA-TEST: FIN"; do
     expect "${step}"
 done
 if grep -qF "ECHEC" <<<"${text}"; then
@@ -433,10 +489,12 @@ if grep -qF "ECHEC" <<<"${text}"; then
 fi
 pattern="ETAPE1-OK|Attempted to kill init! exitcode=0x00000100|démarré depuis /@djerba-last-good|ROLLBACK-REUSSI"
 pattern+="|PROMOTION-REUSSIE|BOOT-LENT-VALIDE"
-pattern+="|GRUBENV-REPARE|ARRET-PROPRE-NON-COMPTE|ESP-LECTURE-SEULE-SIGNALEE|DJERBA-TEST: FIN"
+pattern+="|GRUBENV-REPARE|ARRET-PROPRE-NON-COMPTE|ESP-LECTURE-SEULE-SIGNALEE|BOOT-BLOQUE-COMPTE|GENERATIONS-OK"
+pattern+="|DJERBA-TEST: FIN"
 order="$(grep -aoE "${pattern}" <<<"${text}" | sed 's/^Attempted to kill init.*/PANIQUE/' | tr '\n' '|')"
 expected="ETAPE1-OK|PANIQUE|PANIQUE|démarré depuis /@djerba-last-good|ROLLBACK-REUSSI|PROMOTION-REUSSIE|"
-expected+="BOOT-LENT-VALIDE|GRUBENV-REPARE|ARRET-PROPRE-NON-COMPTE|ESP-LECTURE-SEULE-SIGNALEE|DJERBA-TEST: FIN|"
+expected+="BOOT-LENT-VALIDE|GRUBENV-REPARE|ARRET-PROPRE-NON-COMPTE|ESP-LECTURE-SEULE-SIGNALEE|"
+expected+="BOOT-BLOQUE-COMPTE|GENERATIONS-OK|DJERBA-TEST: FIN|"
 [[ "${order}" == "${expected}" ]] || { echo "[rollback] ÉCHEC : ordre inattendu : ${order}" >&2; exit 1; }
 log "journal du pilote (console série brute complète : ${SERIAL}, artefact qemu-logs-amd64) :"
 grep -a "DJERBA-TEST" <<<"${text}"
