@@ -479,9 +479,12 @@ consignés dans `tests/garde/derogations.txt`.
       `@djerba-broken-*`, avis), démarrage lent (validé à 205 s) et arrêt
       propre non comptés, grubenv corrompu recréé, ESP en lecture seule
       signalée (code 1, avis).
-- [ ] Délai maximal de 15 min, critère de réussite renforcé (cible par
+- [x] Délai maximal de 15 min, critère de réussite renforcé (cible par
       défaut, dbus/logind, gestionnaire de connexion stable), générations
-      (`@djerba-last-good` + 2 `@djerba-good-*` espacées de 24 h) : codés et
-      testés en unitaire (`81a0d51`) ; CI non encore passée.
+      (`@djerba-last-good` + 2 `@djerba-good-*` espacées de 24 h) : CI run
+      40933412278 (`b949821`), deux architectures ; VM x86_64 : démarrage
+      bloqué marqué en échec à 65,6 s (délai de test 60 s) et compté malgré
+      l'arrêt propre (1 → 2), 2 générations = 2 entrées GRUB. Délai compté
+      depuis l'amorçage du noyau : `75f3b76`, en attente de CI.
 - [ ] CI verte (x86_64 et arm64) et PR relue.
 
