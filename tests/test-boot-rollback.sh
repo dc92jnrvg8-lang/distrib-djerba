@@ -412,8 +412,11 @@ expect() {
 }
 expect "DJERBA-TEST: démarré depuis /@ (étape 0)"
 expect "ETAPE1-OK"
-[[ "$(grep -c "DJERBA-TEST: INIT-CASSE" <<<"${text}")" -eq 2 ]] \
-    || { echo "[rollback] ÉCHEC : deux démarrages cassés attendus avant la restauration" >&2
+# Démarrage cassé = panique du noyau sur l'init de @ qui sort avec le code 1 (0x100). L'écho « INIT-CASSE »
+# de l'init cassé n'atteint pas toujours la console série (vu sous KVM) : la panique fait foi.
+PANIQUE="Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000100"
+[[ "$(grep -cF "${PANIQUE}" <<<"${text}")" -eq 2 ]] \
+    || { echo "[rollback] ÉCHEC : deux démarrages cassés (panique de l'init de @) attendus avant la restauration" >&2
          grep -a "DJERBA-TEST" <<<"${text}" >&2; exit 1; }
 expect "DJERBA-TEST: démarré depuis /@djerba-last-good (étape 1)"
 expect "[/@djerba-last-good]"
@@ -428,10 +431,11 @@ if grep -qF "ECHEC" <<<"${text}"; then
     grep -a "DJERBA-TEST" <<<"${text}" >&2
     exit 1
 fi
-pattern="ETAPE1-OK|INIT-CASSE|démarré depuis /@djerba-last-good|ROLLBACK-REUSSI|PROMOTION-REUSSIE|BOOT-LENT-VALIDE"
+pattern="ETAPE1-OK|Attempted to kill init! exitcode=0x00000100|démarré depuis /@djerba-last-good|ROLLBACK-REUSSI"
+pattern+="|PROMOTION-REUSSIE|BOOT-LENT-VALIDE"
 pattern+="|GRUBENV-REPARE|ARRET-PROPRE-NON-COMPTE|ESP-LECTURE-SEULE-SIGNALEE|DJERBA-TEST: FIN"
-order="$(grep -aoE "${pattern}" <<<"${text}" | tr '\n' '|')"
-expected="ETAPE1-OK|INIT-CASSE|INIT-CASSE|démarré depuis /@djerba-last-good|ROLLBACK-REUSSI|PROMOTION-REUSSIE|"
+order="$(grep -aoE "${pattern}" <<<"${text}" | sed 's/^Attempted to kill init.*/PANIQUE/' | tr '\n' '|')"
+expected="ETAPE1-OK|PANIQUE|PANIQUE|démarré depuis /@djerba-last-good|ROLLBACK-REUSSI|PROMOTION-REUSSIE|"
 expected+="BOOT-LENT-VALIDE|GRUBENV-REPARE|ARRET-PROPRE-NON-COMPTE|ESP-LECTURE-SEULE-SIGNALEE|DJERBA-TEST: FIN|"
 [[ "${order}" == "${expected}" ]] || { echo "[rollback] ÉCHEC : ordre inattendu : ${order}" >&2; exit 1; }
 log "journal du pilote (console série brute complète : ${SERIAL}, artefact qemu-logs-amd64) :"
