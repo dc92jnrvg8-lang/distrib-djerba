@@ -2440,6 +2440,84 @@ class FakeBootSystem:
         return subprocess.CompletedProcess(argv, code, out + "\n", err)
 
 
+class FakeBrokenOs:
+    """Système avec des défauts réels simulés ; les outils de réparation les corrigent (ou non)."""
+
+    def __init__(self) -> None:
+        self.half = True  # paquet décompacté, non configuré
+        self.broken = True
+        self.failed = {"cups.service", "obstine.service"}
+        self.stubborn = {"obstine.service"}  # redémarre puis retombe en échec
+        self.disk = 93
+        self.pending = ["gimp"]
+        self.calls: list = []
+
+    def run(self, argv: list[str]) -> subprocess.CompletedProcess:
+        out, code = "", 0
+        if argv[0] == "dpkg-query":
+            out = "ii  bash\n" + ("iU  djerba-test-panne\n" if self.half else "") + "rc  ancien\n"
+        elif argv[:2] == ["apt-get", "check"]:
+            code = 100 if self.broken else 0
+        elif argv[:2] == ["systemctl", "--failed"]:
+            out = "".join(f"{unit} loaded failed failed X\n" for unit in sorted(self.failed))
+        elif argv[:2] == ["systemctl", "is-active"]:
+            out = "failed" if argv[2] in self.failed else "active"
+        elif argv[0] == "djerba-apps":
+            out = json.dumps({"install": self.pending})
+        return subprocess.CompletedProcess(argv, code, out, "")
+
+    def execute(self, name: str, params: dict, request: str = "") -> dict:
+        self.calls.append((name, params))
+        if name == "dpkg_configure_pending":
+            self.half = False
+        elif name == "apt_fix_broken":
+            self.broken = False
+        elif name == "service_restart" and params["unit"] not in self.stubborn:
+            self.failed.discard(params["unit"])
+        elif name == "apt_clean":
+            self.disk = 80
+        elif name == "apps_retry_pending":
+            self.pending = []
+        return {"success": True, "message": f"{name} fait", "transaction": {"id": f"tx-{len(self.calls)}"}}
+
+
+class OsRepairTests(unittest.TestCase):
+    def test_each_defect_is_fixed_by_its_tool_and_rechecked(self) -> None:
+        from djerba_ai.core import repair
+        system = FakeBrokenOs()
+        result = repair.repair(system, runner=system.run, disk=lambda: system.disk)
+        self.assertEqual([call[0] for call in system.calls],
+                         ["dpkg_configure_pending", "apt_fix_broken", "service_restart", "service_restart",
+                          "apt_clean", "journal_vacuum", "apps_retry_pending"])
+        self.assertIn(("journal_vacuum", {"days": 14}), system.calls)
+        restarts = {action["params"]["unit"]: action["verified"] for action in result["actions"]
+                    if action["tool"] == "service_restart"}
+        self.assertEqual(restarts, {"cups.service": True, "obstine.service": False})
+        # Seul le service qui retombe en échec reste ; il n'a été relancé qu'une fois (pas de boucle).
+        self.assertEqual([item["detail"] for item in result["remaining"]], ["obstine.service"])
+        self.assertEqual([action["transaction"] for action in result["actions"]][:2], ["tx-1", "tx-2"])
+        self.assertEqual(result["defects"][0]["detail"], "non configurés : djerba-test-panne")
+
+    def test_dry_run_changes_nothing_and_healthy_system_has_no_defect(self) -> None:
+        from djerba_ai.core import repair
+        system = FakeBrokenOs()
+        result = repair.repair(system, runner=system.run, disk=lambda: system.disk, dry_run=True)
+        self.assertEqual(system.calls, [])
+        self.assertEqual(len(result["defects"]), 5)
+        healthy = FakeBrokenOs()
+        healthy.half, healthy.broken, healthy.failed, healthy.disk, healthy.pending = False, False, set(), 40, []
+        self.assertEqual(repair.diagnose(healthy.run, lambda: healthy.disk), [])
+
+    def test_unusable_status_output_is_not_a_defect(self) -> None:
+        from djerba_ai.core import repair
+        system = FakeBrokenOs()
+        system.half, system.broken, system.failed, system.disk = False, False, set(), 10
+        base = system.run
+        system.run = lambda argv: (subprocess.CompletedProcess(argv, 0, "pas du json", "")
+                                   if argv[0] == "djerba-apps" else base(argv))
+        self.assertEqual(repair.diagnose(system.run, lambda: 10), [])
+
+
 class BootRollbackTests(unittest.TestCase):
     def test_grub_snippets_are_valid(self) -> None:
         guard = FakeBootGuard.make(Path(tempfile.mkdtemp()))

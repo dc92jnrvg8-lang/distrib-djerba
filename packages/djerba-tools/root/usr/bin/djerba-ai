@@ -20,6 +20,8 @@ Usage :
     djerba-ai run OUTIL ['{"param": …}'] [--verbose]
                                       exécute une capacité (JSON des paramètres)
     djerba-ai health                  bilan de santé
+    djerba-ai repair [--dry-run]      corrige les défauts détectés (paquets interrompus, services en
+                                      échec, disque plein, applications en attente), actions annulables
     djerba-ai doctor                  diagnostic : moteur d'IA, démon root, outils manquants
     djerba-ai run-app SLUG [--live]   lance une application du Studio
     djerba-ai daemon                  démon utilisateur (service djerba-ai.service)
@@ -432,6 +434,32 @@ def health() -> int:
     return 0
 
 
+def repair_command(argv: list[str]) -> int:
+    from djerba_ai.core import repair
+    from djerba_ai.core.executor import Executor
+    from djerba_ai.core.memory import Memory
+    from djerba_ai.tools import registry
+    dry_run = "--dry-run" in argv
+    result = repair.repair(Executor(registry(), Memory()), dry_run=dry_run)
+    if not result["defects"]:
+        print("Aucun défaut réparable détecté.")
+        return 0
+    for defect in result["defects"]:
+        print(f"• {defect['title']} — {defect['detail']}")
+    for action in result["actions"]:
+        mark = "\033[32m✓" if action["success"] and action.get("verified", True) else "\033[31m✗"
+        tx = f" (transaction {action['transaction']}, annulable : djerba-ai undo)" if action["transaction"] else ""
+        print(f"  {mark} {action['tool']}\033[0m : {action['message']}{tx}")
+    if dry_run:
+        print("Simulation : rien n'a été modifié.")
+        return 0
+    for defect in result["remaining"]:
+        print(f"\033[33m! Toujours présent : {defect['title']} — {defect['detail']}\033[0m")
+    if not result["remaining"]:
+        print("Tous les défauts détectés sont corrigés.")
+    return 1 if result["remaining"] else 0
+
+
 def doctor() -> int:
     from djerba_ai.core import ipc
     from djerba_ai.core.config import Config
@@ -476,6 +504,8 @@ def main() -> int:
         return run(argv[1], rest[0] if rest else "", verbose)
     if command == "health":
         return health()
+    if command == "repair":
+        return repair_command(argv[1:])
     if command == "transactions":
         return transactions(int(argv[1]) if len(argv) > 1 and argv[1].isdigit() else 30)
     if command == "undo":
