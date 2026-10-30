@@ -40,6 +40,7 @@ from djerba_ai.core.schemas import ChatMessage, SessionState
 from djerba_ai.tools import CATEGORY_LABELS, Registry, registry
 
 MAX_STEPS = 8
+STOPPED = "Arrêté à votre demande. Rien d'autre n'a été lancé ; dites-moi comment continuer."
 ALWAYS = ("tools_search", "health_report", "web_search", "memory_remember", "memory_recall")
 #: actions toujours à haut risque (validation explicite) : système de fichiers, démarrage, pare-feu,
 #: comptes, mises à niveau globales, code déployé
@@ -156,8 +157,12 @@ class Agent:
         return RISK_LABELS[level]
 
     # ---------------------------------------------------------------- Boucle
-    def run(self, request: str, conversation: int, on_event: Event, confirm: Confirm, source: str = "chat") -> str:
+    def run(self, request: str, conversation: int, on_event: Event, confirm: Confirm, source: str = "chat",
+            cancelled: Callable[[], bool] | None = None) -> str:
+        """``cancelled`` : arrêt demandé par l'utilisateur, vérifié avant chaque appel du modèle et chaque
+        outil (une action déjà lancée va à son terme : jamais d'interruption au milieu d'une action root)."""
         started = time.monotonic()
+        stopped = cancelled or (lambda: False)
         telemetry.inc("djerba_agent_turns_total", source=source)
 
         def trace(kind: str, text: str, **extra: Any) -> None:
@@ -232,6 +237,10 @@ class Agent:
             trace("sélection", f"{len(active)} capacités proposées au modèle : {', '.join(sorted(active)[:12])}…")
 
             for step in range(1, MAX_STEPS + 1):
+                if stopped():
+                    answer = STOPPED
+                    trace("arrêt", "arrêt demandé par l'utilisateur")
+                    break
                 tools = [self.registry.get(name).schema() for name in sorted(active) if self.registry.get(name)]
                 on_event("thinking", {"tools": len(tools)})
                 trace("étape", f"étape {step} : le modèle réfléchit ({len(tools)} outils)")
@@ -255,6 +264,9 @@ class Agent:
                           "— session plafonnée au niveau 1.", level="élevé")
                     on_event("guard", {"origin": "moteur distant", "level": "élevé", "findings": anomalies})
                 for call in result.tool_calls:
+                    if stopped():
+                        messages.append(ChatMessage(role="tool", content=f"{call.name} non exécuté : arrêt demandé"))
+                        continue
                     outcome = self._call_tool(call.name, call.arguments, prompt.text, state.tainted, on_event, confirm,
                                               trace)
                     if call.name == "tools_search" and outcome.get("success"):
@@ -276,7 +288,8 @@ class Agent:
                 state.active_tools = sorted(active)
                 state.step = step
                 self.engine.persist(state)
-            answer = "J'ai atteint la limite d'étapes pour cette demande ; reformulez-la ou découpez-la."
+            else:
+                answer = "J'ai atteint la limite d'étapes pour cette demande ; reformulez-la ou découpez-la."
         except LLMError as exc:
             trace("moteur", f"indisponible : {exc}")
             return self.degraded(prompt.text, conversation, on_event, str(exc))

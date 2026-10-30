@@ -31,7 +31,7 @@ Rectangle {
         font.pixelSize: 13
         contentItem: Text {
             text: chatButton.text; font: chatButton.font
-            color: chatButton.primary ? win.night : (chatButton.enabled ? win.white : win.muted)
+            color: chatButton.primary ? win.textOnAccent : (chatButton.enabled ? win.white : win.muted)
             horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
         }
         background: Rectangle {
@@ -277,7 +277,69 @@ Rectangle {
             }
         }
 
-        // Saisie
+        // Activité de l'agent : toujours visible pendant le travail (phase, durée, file d'attente, Arrêter).
+        Rectangle {
+            id: activityBar
+            objectName: "activityBar"
+            Layout.fillWidth: true
+            visible: backend.busy
+            implicitHeight: 44
+            radius: 12
+            color: win.field
+            border.width: 1
+            border.color: win.turquoise
+            property int seconds: 0
+            Timer {
+                interval: 1000; repeat: true; triggeredOnStart: true
+                running: backend.busy
+                onTriggered: activityBar.seconds = Math.max(0, Math.round((Date.now() - backend.busySince) / 1000))
+            }
+            RowLayout {
+                anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 6; spacing: 10
+                Row {
+                    spacing: 4
+                    Repeater {
+                        model: 3
+                        Rectangle {
+                            required property int index
+                            width: 7; height: 7; radius: 4; color: win.turquoise
+                            SequentialAnimation on opacity {
+                                running: backend.busy; loops: Animation.Infinite
+                                PauseAnimation { duration: index * 160 }
+                                NumberAnimation { to: 0.25; duration: 380 }
+                                NumberAnimation { to: 1; duration: 380 }
+                                PauseAnimation { duration: (2 - index) * 160 }
+                            }
+                        }
+                    }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: backend.activityText + (backend.busySince > 0 ? "  ·  " + activityBar.seconds + " s" : "")
+                          + (backend.queued > 0 ? "  ·  " + backend.queued + " message(s) en attente" : "")
+                    color: win.white; font.pixelSize: 13; elide: Text.ElideRight
+                }
+                Button {
+                    id: stopButton
+                    objectName: "stopButton"
+                    text: "Arrêter"
+                    enabled: backend.activity !== "s'arrête"
+                    implicitHeight: 32
+                    onClicked: backend.stop()
+                    contentItem: Text {
+                        text: stopButton.text; color: win.textOnCoral; font.pixelSize: 13; font.weight: Font.DemiBold
+                        horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                    }
+                    background: Rectangle {
+                        radius: 9; implicitWidth: 92
+                        color: stopButton.down ? Qt.darker(win.coral, 1.2) : win.coral
+                        opacity: stopButton.enabled ? 1 : 0.6
+                    }
+                }
+            }
+        }
+
+        // Saisie : toujours active ; pendant le travail, le message part en file d'attente.
         RowLayout {
             Layout.fillWidth: true
             spacing: 10
@@ -286,11 +348,11 @@ Rectangle {
                 Layout.preferredHeight: Math.min(140, Math.max(48, input.implicitHeight + 8))
                 TextArea {
                     id: input
-                    placeholderText: backend.busy ? "Djerba travaille…" : "Demandez quelque chose à Djerba…  (Entrée pour envoyer, Maj+Entrée pour un saut de ligne)"
+                    placeholderText: backend.busy ? "Écrivez la suite : elle partira quand Djerba aura fini"
+                                                  : "Demandez quelque chose à Djerba…  (Entrée pour envoyer, Maj+Entrée pour un saut de ligne)"
                     color: win.white; font.pixelSize: 14; wrapMode: TextArea.Wrap
                     placeholderTextColor: win.muted
-                    enabled: !backend.busy
-                    background: Rectangle { radius: 14; color: win.veil(0.08); border.color: input.activeFocus ? win.turquoise : win.veil(0.2) }
+                    background: Rectangle { radius: 14; color: win.field; border.color: input.activeFocus ? win.turquoise : win.veil(0.25) }
                     Keys.onReturnPressed: function (event) {
                         if (event.modifiers & Qt.ShiftModifier) { event.accepted = false; return }
                         backend.send(input.text); input.text = ""
@@ -298,11 +360,11 @@ Rectangle {
                 }
             }
             ChatButton {
-                text: backend.busy ? "…" : "Envoyer"
-                enabled: !backend.busy && input.text.trim() !== ""
+                text: backend.busy ? "Mettre en file" : "Envoyer"
+                enabled: input.text.trim() !== ""
                 primary: true
                 implicitHeight: 46
-                implicitWidth: 110
+                implicitWidth: 130
                 onClicked: { backend.send(input.text); input.text = "" }
             }
         }

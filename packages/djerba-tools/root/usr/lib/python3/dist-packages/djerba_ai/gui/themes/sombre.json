@@ -1,0 +1,21 @@
+{
+  "name": "Djerba sombre",
+  "dark": true,
+  "night": "#070B18",
+  "deep": "#0A1F3D",
+  "deepEnd": "#0E3A52",
+  "surface": "#0F1A30",
+  "field": "#13213B",
+  "turquoise": "#00C2CB",
+  "accentText": "#00C2CB",
+  "textOnAccent": "#04161A",
+  "aqua": "#5EEAD4",
+  "coral": "#FF7A59",
+  "textOnCoral": "#1A0A05",
+  "sand": "#F4E1C1",
+  "white": "#F8FAFC",
+  "muted": "#A7B4C6",
+  "veil": "#FFFFFF",
+  "panelOpacity": 0.96,
+  "windowOpacity": 1.0
+}

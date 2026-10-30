@@ -117,6 +117,9 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "telemetry.port": {"type": "integer", "default": 9464, "minimum": 1024, "maximum": 65535},
     # Interface
     "ui.onboarded": {"type": "boolean", "default": False},
+    "ui.theme": {"type": "string", "default": "auto", "enum": ["auto", "sombre", "clair"]},
+    # Panneaux translucides (flou de KWin) : désactivés par défaut, illisibles sans compositeur (X11, VM).
+    "ui.translucent": {"type": "boolean", "default": False},
 }
 
 CLOUD_ENDPOINTS = {

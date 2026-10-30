@@ -153,6 +153,7 @@ check "Agent IA : greffon Gedit" sq_has "/usr/share/djerba-ai/integrations/gedit
 check "Agent IA : détection d'intrusion (service)" sq_has "/usr/lib/systemd/system/djerba-ai-ids.service"
 check "Paquets : réparation de dpkg (outil, minuterie, veille de session)" sh -c "grep -q ' squashfs-root/usr/libexec/djerba-dpkg-repair\$' '${WORK}/rootfs.list' && grep -q ' squashfs-root/usr/lib/systemd/system/djerba-dpkg-repair.timer\$' '${WORK}/rootfs.list' && grep -q ' squashfs-root/etc/xdg/autostart/djerba-dpkg-watch.desktop\$' '${WORK}/rootfs.list'"
 check "Réversibilité : journal de transactions et instantanés (modules de l'agent)" sh -c "grep -q ' squashfs-root/usr/lib/python3/dist-packages/djerba_ai/core/transactions.py\$' '${WORK}/rootfs.list' && grep -q ' squashfs-root/usr/lib/python3/dist-packages/djerba_ai/core/snapshots.py\$' '${WORK}/rootfs.list'"
+check "Apparence : schémas de couleurs Djerba et outil de contraste livrés" sh -c "grep -q ' squashfs-root/usr/share/color-schemes/DjerbaSombre.colors\$' '${WORK}/rootfs.list' && grep -q ' squashfs-root/usr/share/color-schemes/DjerbaClair.colors\$' '${WORK}/rootfs.list' && grep -q ' squashfs-root/usr/libexec/djerba-contrast\$' '${WORK}/rootfs.list'"
 check "Réversibilité : rollback au démarrage (djerba-boot, scripts GRUB, minuterie)" sh -c "grep -q ' squashfs-root/usr/libexec/djerba-boot\$' '${WORK}/rootfs.list' && grep -q ' squashfs-root/etc/grub.d/09_djerba_bootcount\$' '${WORK}/rootfs.list' && grep -q ' squashfs-root/etc/grub.d/42_djerba_rollback\$' '${WORK}/rootfs.list' && grep -q ' squashfs-root/usr/lib/systemd/system/djerba-boot-ok.timer\$' '${WORK}/rootfs.list'"
 check "Réversibilité : scripts GRUB exécutables" sh -c "[ \"\$(printf '%s' '$(sq_mode /etc/grub.d/42_djerba_rollback)' | cut -c4)\" = x ]"
 check "Réversibilité : actions polkit undo et rollback" sh -c "unsquashfs -cat '${SQUASHFS}' /usr/share/polkit-1/actions/org.djerba.ai.policy | grep -q 'org.djerba.ai.undo' && unsquashfs -cat '${SQUASHFS}' /usr/share/polkit-1/actions/org.djerba.tools.policy | grep -q 'org.djerba.boot-rollback'"
@@ -253,6 +254,9 @@ except PermissionError: sys.exit(0)
 sys.exit(1)'
     check "Agent IA : détection d'intrusion activée" in_chroot systemctl is-enabled djerba-ai-ids.service
     check "Paquets : minuterie de réparation de dpkg activée" in_chroot systemctl is-enabled djerba-dpkg-repair.timer
+    # Palette Qt réellement vue par les applications KDE (plasma-integration de l'image) pour un nouvel utilisateur.
+    # shellcheck disable=SC2016  # développé dans le chroot
+    check "Apparence : palette KDE d'un nouvel utilisateur lisible (contraste AA, 26 paires)" in_chroot sh -c 'h=$(mktemp -d) && cp -a /etc/skel/. "$h"/ && HOME="$h" /usr/libexec/djerba-contrast'
     check "Réversibilité : minuterie de validation du démarrage activée" in_chroot systemctl is-enabled djerba-boot-ok.timer
     check "Réversibilité : journal de transactions utilisable (root)" in_chroot env DJERBA_TX_DB=/tmp/djerba-tx-test.db python3 -c 'from djerba_ai.core import transactions, snapshots; j = transactions.Journal(backend=snapshots.FilesBackend()); assert j.list() == []'
     check "Paquets : dpkg cohérent dans l'image (dpkg --audit vide)" sh -c "test -z \"\$(chroot '${WORK}/root' dpkg --audit)\""

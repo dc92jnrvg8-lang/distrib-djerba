@@ -471,6 +471,8 @@ Fichier root 0600, écrit uniquement par le démon root (`config.set`) ; vue pub
 | `context.interval` / `context.window_titles` | `5` / `true` | Bus de contexte |
 | `telemetry.enabled` / `telemetry.port` | `true` / `9464` | Prometheus |
 | `ui.onboarded` | `false` | Assistant de premier lancement |
+| `ui.theme` | `auto` | Thème de l'interface : `auto` (suit Plasma), `sombre`, `clair` ; jetons dans `gui/themes/*.json` (valeurs de style seulement, schéma vérifié, contraste AA testé) |
+| `ui.translucent` | `false` | Panneaux translucides (flou de KWin) ; opaques par défaut, lisibles sans compositeur (X11, machines virtuelles) |
 | `mcp.enabled` / `mcp.port` | `false` / `8765` | Serveur MCP lié à l'adresse Tailscale |
 
 ---

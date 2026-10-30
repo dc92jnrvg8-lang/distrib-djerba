@@ -1124,6 +1124,29 @@ class AgentSecurityTests(unittest.TestCase):
         self.assertTrue(any("Vous utilisez Djerba OS" in message.get("content", "") for message in sent))
         self.assertIn("bascule à chaud", [payload["kind"] for kind, payload in events if kind == "trace"])
 
+    def test_stop_ends_the_turn_before_the_next_model_call_or_tool(self) -> None:
+        from djerba_ai.core.agent import STOPPED
+        FakeOllama.requests.clear()
+        FakeOllama.script = [
+            {"tool_calls": [{"function": {"name": "os_info", "arguments": {}}}]},
+            {"tool_calls": [{"function": {"name": "os_info", "arguments": {}}}]},
+            {"content": "jamais lu"},
+        ]
+        events: list = []
+        stop = {"asked": False}
+
+        def on_event(kind: str, payload: dict) -> None:
+            events.append((kind, payload))
+            if kind == "tool_result":
+                stop["asked"] = True  # l'utilisateur clique « Arrêter » pendant la première action
+
+        answer = self.agent.run("infos système", self.memory.new_conversation("t"), on_event, lambda *_: True,
+                                cancelled=lambda: stop["asked"])
+        self.assertEqual(answer, STOPPED)
+        self.assertEqual([payload["tool"] for kind, payload in events if kind == "tool_start"], ["os_info"])
+        self.assertEqual(len(FakeOllama.requests), 1)  # pas de nouvel appel au modèle après l'arrêt
+        self.assertEqual([payload["text"] for kind, payload in events if kind == "final"], [STOPPED])
+
     def test_risk_levels(self) -> None:
         reg = registry()
         self.assertEqual(self.agent.risk(reg.get("os_info"), False), "faible")
@@ -1542,7 +1565,12 @@ class InterfaceTests(unittest.TestCase):
             "from PyQt6.QtCore import QTimer, QUrl\n"
             "from PyQt6.QtWidgets import QApplication\n"
             "from PyQt6.QtQml import QQmlApplicationEngine\n"
+            "from PyQt6.QtCore import QObject, QPointF\n"
             "from djerba_ai.gui import app as gui\n"
+            "from djerba_ai.core.memory import Memory\n"
+            "memory = Memory()\n"
+            "for index in range(12):\n"
+            "    memory.new_conversation(f'discussion {index}')\n"
             "application = QApplication(sys.argv)\n"
             "backend = gui.Backend('chat', True, application)\n"
             "application.aboutToQuit.connect(backend.shutdown)\n"
@@ -1568,6 +1596,29 @@ class InterfaceTests(unittest.TestCase):
             "    if len(backend.hudActions) < 3: errors.append('anneau d action vide')\n"
             "    backend.spotlightRequested.emit('', 'ask')\n"
             "    application.processEvents()\n"
+            # P8 : à la taille minimale de hauteur, la liste des discussions reste visible et utilisable.
+            "    main.setProperty('page', 0)\n"
+            "    main.setProperty('width', 980)\n"
+            "    main.setProperty('height', 660)\n"
+            "    for _ in range(5): application.processEvents()\n"
+            "    listing = main.findChild(QObject, 'conversationList')\n"
+            "    if listing is None or not listing.property('visible') or listing.property('height') < 150:\n"
+            "        errors.append('liste des discussions trop petite : ' + str(listing and listing.property('height')))\n"
+            "    button = main.findChild(QObject, 'newConversation')\n"
+            "    bottom = button.mapToItem(None, QPointF(0, button.property('height'))).y() if button else 1e9\n"
+            "    if bottom > 660: errors.append(f'« Nouvelle discussion » hors de la fenêtre ({bottom:.0f} > 660)')\n"
+            # P7 : pendant le travail, phase, bouton Arrêter et saisie active (file d'attente).
+            "    backend._busy = True\n"
+            "    backend._busy_since = 1.0\n"
+            "    backend.busyChanged.emit()\n"
+            "    backend._set_activity('agit', 'Recherche')\n"
+            "    for _ in range(5): application.processEvents()\n"
+            "    bar, stop = main.findChild(QObject, 'activityBar'), main.findChild(QObject, 'stopButton')\n"
+            "    if not bar or not bar.property('visible'): errors.append('barre d activité absente')\n"
+            "    if not stop or not stop.property('visible') or not stop.property('enabled'): errors.append('Arrêter absent')\n"
+            "    if 'agit : Recherche' not in backend.activityText: errors.append('phase non affichée')\n"
+            "    backend.send('suite')\n"
+            "    if backend.queued != 1: errors.append('message non mis en file pendant le travail')\n"
             "    print('\\n'.join(errors))\n"
             "    application.exit(1 if errors or len(root) != 3 else 0)\n"
             "QTimer.singleShot(2500, finish)\n"
@@ -2336,6 +2387,60 @@ class FakeBootGuard:
             def facts(self):
                 return {"root_uuid": "1111-2222", "esp_uuid": "ABCD-EF01"}
         return Guard(backend=None, esp=esp)
+
+
+class InterfaceThemeTests(unittest.TestCase):
+    """Jetons de style de l'interface et schémas de couleurs KDE livrés (P9, P10)."""
+
+    def test_shipped_themes_are_valid_and_readable(self) -> None:
+        from djerba_ai.gui import themes
+        loaded = themes.all_themes()
+        self.assertEqual(set(loaded), {"sombre", "clair"})
+        for name, theme in loaded.items():
+            failed = [row for row in themes.check_contrast(theme) if not row["ok"]]
+            self.assertEqual(failed, [], name)
+
+    def test_theme_files_hold_style_values_only(self) -> None:
+        from djerba_ai.gui import themes
+        base = themes.load("sombre")
+        for change in ({"script": "Qt.quit()"}, {"white": "red"}, {"white": "#FFF; Qt.quit()"},
+                       {"panelOpacity": 0.2}, {"dark": "oui"}, {"name": "x" * 41}):
+            with self.assertRaises(themes.ThemeError, msg=str(change)):
+                themes.validate({**base, **change})
+        missing = dict(base)
+        del missing["muted"]
+        with self.assertRaises(themes.ThemeError):
+            themes.validate(missing)
+        with self.assertRaises(themes.ThemeError):
+            themes.load("../../etc/passwd")
+
+    def test_kde_color_schemes_complete_and_used_by_default(self) -> None:
+        import configparser
+        schemes = PACKAGE_ROOT.parent.parent / "djerba-branding" / "root" / "usr" / "share" / "color-schemes"
+        groups = {"Colors:Button", "Colors:Complementary", "Colors:Header", "Colors:Header][Inactive",
+                  "Colors:Selection", "Colors:Tooltip", "Colors:View", "Colors:Window", "ColorEffects:Disabled",
+                  "ColorEffects:Inactive"}
+        roles = {"BackgroundNormal", "BackgroundAlternate", "ForegroundNormal", "ForegroundInactive",
+                 "ForegroundActive", "ForegroundLink", "ForegroundVisited", "ForegroundNegative", "ForegroundNeutral",
+                 "ForegroundPositive", "DecorationFocus", "DecorationHover"}
+        for name in ("DjerbaSombre", "DjerbaClair"):
+            scheme = configparser.RawConfigParser()
+            scheme.optionxform = str
+            scheme.read(schemes / f"{name}.colors")
+            self.assertTrue(groups <= set(scheme.sections()), name)
+            for group in [section for section in scheme.sections() if section.startswith("Colors:")]:
+                self.assertTrue(roles <= set(scheme[group]), f"{name} {group}")
+        skel = configparser.RawConfigParser(strict=False)
+        skel.optionxform = str
+        skel.read(ROOT / "config" / "includes.chroot" / "etc" / "skel" / ".config" / "kdeglobals")
+        self.assertEqual(skel["General"]["ColorScheme"], "DjerbaSombre")
+        dark = configparser.RawConfigParser()
+        dark.optionxform = str
+        dark.read(schemes / "DjerbaSombre.colors")
+        for group in [section for section in dark.sections() if section.startswith(("Colors:", "ColorEffects:"))]:
+            self.assertEqual(dict(skel[group]), dict(dark[group]), group)  # palette complète dès la 1re session
+        # L'accent égale la sélection : Plasma recolore la sélection avec l'accent (turquoise vif illisible).
+        self.assertEqual(skel["General"]["AccentColor"], dark["Colors:Selection"]["BackgroundNormal"])
 
 
 class BootRollbackTests(unittest.TestCase):

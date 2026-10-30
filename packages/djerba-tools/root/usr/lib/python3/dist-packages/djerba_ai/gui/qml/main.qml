@@ -9,43 +9,58 @@ ApplicationWindow {
     id: win
     width: 1280
     height: 840
-    minimumWidth: 980
+    minimumWidth: 760
     minimumHeight: 660
     visible: backend.startVisible
     title: "Djerba"
     color: "transparent"
     font.family: "Inter"
 
-    // Palette adaptative : suit le jeu de couleurs de Plasma (clair ou sombre).
+    // Thème : réglage « ui.theme » (auto, sombre, clair) ; en « auto », suit le jeu de couleurs de Plasma
+    // (sous GNOME, la préférence GSettings fait foi : Qt ne suit pas toujours le thème).
     SystemPalette { id: system; colorGroup: SystemPalette.Active }
-    // Sous GNOME, Qt ne suit pas toujours le thème : la préférence GSettings fait foi.
-    readonly property bool dark: backend.followsDesktopTheme ? backend.prefersDark : system.window.hslLightness < 0.5
-    readonly property color night: dark ? "#070B18" : "#F1F5F9"
-    readonly property color deep: dark ? "#0A1F3D" : "#E0F2F1"
-    readonly property color surface: dark ? "#0B1426" : "#FFFFFF"
-    readonly property color turquoise: dark ? "#00C2CB" : "#0E9AA7"
-    readonly property color aqua: dark ? "#5EEAD4" : "#0F766E"
-    readonly property color coral: dark ? "#FF7A59" : "#C2410C"
-    readonly property color sand: dark ? "#F4E1C1" : "#92400E"
-    readonly property color white: dark ? "#F8FAFC" : "#0F172A"
-    readonly property color muted: dark ? "#94A3B8" : "#475569"
+    readonly property string themeChoice: backend.settings["ui.theme"] || "auto"
+    readonly property bool dark: themeChoice === "sombre" ? true : themeChoice === "clair" ? false
+        : (backend.followsDesktopTheme ? backend.prefersDark : system.window.hslLightness < 0.5)
+    // Jetons de style (gui/themes/*.json, contraste AA vérifié par les tests) : aucune couleur en dur ici.
+    readonly property var theme: dark ? backend.themes["sombre"] : backend.themes["clair"]
+    readonly property color night: theme.night
+    readonly property color deep: theme.deep
+    readonly property color deepEnd: theme.deepEnd
+    readonly property color surface: theme.surface
+    readonly property color field: theme.field
+    readonly property color turquoise: theme.turquoise
+    readonly property color accentText: theme.accentText
+    readonly property color textOnAccent: theme.textOnAccent
+    readonly property color aqua: theme.aqua
+    readonly property color coral: theme.coral
+    readonly property color textOnCoral: theme.textOnCoral
+    readonly property color sand: theme.sand
+    readonly property color white: theme.white
+    readonly property color muted: theme.muted
+    // Panneaux opaques par défaut (lisibles sous X11 sans flou) ; transparence et flou en option (ui.translucent).
+    readonly property bool translucent: backend.settings["ui.translucent"] === true
+    readonly property real panelOpacity: translucent ? 0.62 : theme.panelOpacity
     function veil(alpha) { return dark ? Qt.rgba(1, 1, 1, alpha) : Qt.rgba(0.06, 0.09, 0.16, alpha * 0.7) }
     function stateColor(state) {
         return state === "ok" ? "#2DD4BF" : state === "fallback" ? "#F59E0B" : state === "busy" ? "#38BDF8" : "#F43F5E"
     }
     readonly property var pages: ["chat", "dashboard", "system", "selfheal", "studio", "tools", "settings"]
     property int page: Math.max(0, pages.indexOf(backend.startPage))
+    // Repliée d'office dans une fenêtre étroite ; le bouton « » » la déplie quand même.
+    property bool sidebarCollapsed: width < 900
+    property real sidebarWidth: 260
     property string progressText: ""
     property int progressValue: 0
 
     // Fond translucide aux coins arrondis (flou de KWin derrière, si disponible).
     background: Rectangle {
         radius: 18
-        opacity: 0.94
+        opacity: win.translucent ? 0.94 : win.theme.windowOpacity
         gradient: Gradient {
             GradientStop { position: 0.0; color: win.night }
             GradientStop { position: 0.7; color: win.deep }
-            GradientStop { position: 1.0; color: win.dark ? "#0E3A52" : "#CCFBF1" }
+            GradientStop { position: 1.0; color: win.deepEnd }
         }
     }
 
@@ -68,28 +83,59 @@ ApplicationWindow {
         anchors.margins: 20
         spacing: 18
 
-        // Barre latérale
+        // Barre latérale : repliable (icônes seules) et redimensionnable ; la liste des discussions garde
+        // toujours une hauteur minimale (l'orbe se réduit puis disparaît dans les petites fenêtres).
         Glass {
-            Layout.preferredWidth: 260
+            id: sidebar
+            objectName: "sidebar"
+            Layout.preferredWidth: win.sidebarCollapsed ? 64 : win.sidebarWidth
             Layout.fillHeight: true
+            readonly property bool compact: win.height < 900
+            readonly property bool tiny: win.height < 760
             ColumnLayout {
                 anchors.fill: parent
-                anchors.margins: 16
-                spacing: 6
+                anchors.margins: win.sidebarCollapsed ? 8 : 14
+                spacing: sidebar.compact ? 4 : 6
 
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: !win.sidebarCollapsed
+                    Text {
+                        Layout.fillWidth: true
+                        visible: sidebar.tiny
+                        text: "Djerba"; color: win.white; font.pixelSize: 18; font.weight: Font.Bold
+                    }
+                    Item { Layout.fillWidth: true; visible: !sidebar.tiny }
+                    ToolButton {
+                        objectName: "collapseSidebar"
+                        text: "«"; font.pixelSize: 18; palette.buttonText: win.white
+                        ToolTip.visible: hovered; ToolTip.text: "Replier la barre latérale"
+                        onClicked: win.sidebarCollapsed = true
+                    }
+                }
+                ToolButton {
+                    Layout.alignment: Qt.AlignHCenter
+                    visible: win.sidebarCollapsed
+                    text: "»"; font.pixelSize: 18; palette.buttonText: win.white
+                    ToolTip.visible: hovered; ToolTip.text: "Déplier la barre latérale"
+                    onClicked: win.sidebarCollapsed = false
+                }
                 Loader {
                     Layout.alignment: Qt.AlignHCenter
-                    Layout.preferredWidth: 170
-                    Layout.preferredHeight: 150
+                    visible: !sidebar.tiny && !win.sidebarCollapsed
+                    Layout.preferredWidth: sidebar.compact ? 110 : 170
+                    Layout.preferredHeight: visible ? (sidebar.compact ? 96 : 150) : 0
                     source: backend.softwareRendering ? "Orb2D.qml" : "Orb3D.qml"
                     onLoaded: item.active = Qt.binding(function () { return backend.busy })
                 }
                 Text {
                     Layout.alignment: Qt.AlignHCenter
-                    text: "Djerba"; color: win.white; font.pixelSize: 26; font.weight: Font.Bold
+                    visible: !sidebar.tiny && !win.sidebarCollapsed
+                    text: "Djerba"; color: win.white; font.pixelSize: sidebar.compact ? 20 : 26; font.weight: Font.Bold
                 }
                 RowLayout {
                     Layout.alignment: Qt.AlignHCenter
+                    visible: !win.sidebarCollapsed
                     spacing: 6
                     Rectangle {
                         width: 9; height: 9; radius: 5; color: win.stateColor(backend.state)
@@ -105,7 +151,7 @@ ApplicationWindow {
                         HoverHandler { id: stateHover }
                     }
                 }
-                Item { Layout.preferredHeight: 10 }
+                Item { Layout.preferredHeight: sidebar.compact ? 2 : 8 }
 
                 Repeater {
                     model: [
@@ -121,46 +167,161 @@ ApplicationWindow {
                         required property var modelData
                         required property int index
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 42
-                        radius: 12
-                        color: win.page === index ? Qt.rgba(0, 0.76, 0.8, 0.22) : win.veil(hover.hovered ? 0.07 : 0)
+                        Layout.preferredHeight: sidebar.compact ? 34 : 42
+                        radius: 10
+                        color: win.page === index ? Qt.rgba(win.turquoise.r, win.turquoise.g, win.turquoise.b, 0.22)
+                                                  : win.veil(hover.hovered ? 0.07 : 0)
                         border.width: win.page === index ? 1 : 0
-                        border.color: Qt.rgba(0, 0.76, 0.8, 0.6)
+                        border.color: win.turquoise
                         Behavior on color { ColorAnimation { duration: 150 } }
                         HoverHandler { id: hover; cursorShape: Qt.PointingHandCursor }
                         TapHandler { onTapped: win.page = index }
+                        ToolTip.visible: win.sidebarCollapsed && hover.hovered; ToolTip.text: modelData.label
                         RowLayout {
-                            anchors.fill: parent; anchors.leftMargin: 12; spacing: 10
-                            Image { Layout.preferredWidth: 20; Layout.preferredHeight: 20; source: "image://icon/" + modelData.icon; sourceSize: Qt.size(40, 40) }
-                            Text { Layout.fillWidth: true; text: modelData.label; color: win.white; font.pixelSize: 14 }
+                            anchors.fill: parent; anchors.leftMargin: win.sidebarCollapsed ? 0 : 12; spacing: 10
+                            Image {
+                                Layout.alignment: win.sidebarCollapsed ? Qt.AlignHCenter : Qt.AlignLeft
+                                Layout.fillWidth: win.sidebarCollapsed
+                                Layout.preferredWidth: 20; Layout.preferredHeight: 20
+                                fillMode: Image.PreserveAspectFit
+                                source: "image://icon/" + modelData.icon; sourceSize: Qt.size(40, 40)
+                            }
+                            Text {
+                                Layout.fillWidth: true; visible: !win.sidebarCollapsed
+                                text: modelData.label; color: win.white; font.pixelSize: 14; elide: Text.ElideRight
+                            }
                         }
                     }
                 }
 
-                Text { text: "Discussions"; color: win.turquoise; font.pixelSize: 12; Layout.topMargin: 12; visible: win.page === 0 }
+                // Discussions : recherche, liste défilante (hauteur minimale garantie), actions par discussion.
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: sidebar.compact ? 4 : 10
+                    visible: win.page === 0 && !win.sidebarCollapsed
+                    Text { text: "Discussions"; color: win.accentText; font.pixelSize: 12; font.weight: Font.DemiBold }
+                    Item { Layout.fillWidth: true }
+                    Text { text: conversationList.count; color: win.muted; font.pixelSize: 12 }
+                }
+                TextField {
+                    id: conversationSearch
+                    objectName: "conversationSearch"
+                    Layout.fillWidth: true
+                    visible: win.page === 0 && !win.sidebarCollapsed
+                    placeholderText: "Rechercher une discussion"
+                    placeholderTextColor: win.muted
+                    color: win.white; font.pixelSize: 12
+                    background: Rectangle { radius: 8; color: win.field; border.color: conversationSearch.activeFocus ? win.turquoise : win.veil(0.2) }
+                    onTextChanged: searchDelay.restart()
+                    Timer { id: searchDelay; interval: 250; onTriggered: backend.filterHistory("", conversationSearch.text) }
+                }
                 ListView {
+                    id: conversationList
+                    objectName: "conversationList"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
+                    Layout.minimumHeight: visible ? 150 : 0
                     clip: true
-                    visible: win.page === 0
+                    spacing: 2
+                    visible: win.page === 0 && !win.sidebarCollapsed
                     model: backend.conversations
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
                     delegate: Rectangle {
+                        id: conversationRow
                         required property var modelData
-                        width: ListView.view.width
-                        height: 32
+                        width: ListView.view.width - 8
+                        height: 34
                         radius: 8
-                        color: backend.conversation === modelData.id ? win.veil(0.1) : "transparent"
-                        Text {
-                            anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8
-                            verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
-                            text: modelData.title; color: win.muted; font.pixelSize: 12
+                        color: backend.conversation === modelData.id ? Qt.rgba(win.turquoise.r, win.turquoise.g, win.turquoise.b, 0.18)
+                                                                      : win.veil(rowHover.hovered ? 0.07 : 0)
+                        HoverHandler { id: rowHover; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: { chat.clear(); backend.openConversation(conversationRow.modelData.id) } }
+                        ToolTip.visible: rowHover.hovered && rowTitle.truncated
+                        ToolTip.text: modelData.title
+                        RowLayout {
+                            anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 2; spacing: 4
+                            Image {
+                                visible: conversationRow.modelData.pinned
+                                Layout.preferredWidth: 14; Layout.preferredHeight: 14
+                                source: "image://icon/pin"; sourceSize: Qt.size(28, 28)
+                            }
+                            Text {
+                                id: rowTitle
+                                Layout.fillWidth: true
+                                verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+                                text: conversationRow.modelData.title; color: win.white; font.pixelSize: 13
+                            }
+                            ToolButton {
+                                visible: rowHover.hovered || rowMenu.opened
+                                text: "⋮"; implicitWidth: 26; implicitHeight: 26
+                                ToolTip.visible: hovered; ToolTip.text: "Épingler, renommer, supprimer"
+                                onClicked: rowMenu.open()
+                                Menu {
+                                    id: rowMenu
+                                    MenuItem {
+                                        text: conversationRow.modelData.pinned ? "Désépingler" : "Épingler"
+                                        onTriggered: backend.pinConversation(conversationRow.modelData.id, !conversationRow.modelData.pinned)
+                                    }
+                                    MenuItem {
+                                        text: "Renommer…"
+                                        onTriggered: { renameDialog.conversationId = conversationRow.modelData.id; renameField.text = conversationRow.modelData.title; renameDialog.open() }
+                                    }
+                                    MenuItem {
+                                        text: "Supprimer…"
+                                        onTriggered: { deleteDialog.conversationId = conversationRow.modelData.id; deleteDialog.conversationTitle = conversationRow.modelData.title; deleteDialog.open() }
+                                    }
+                                }
+                            }
                         }
-                        TapHandler { onTapped: { chat.clear(); backend.openConversation(modelData.id) } }
+                    }
+                    Text {
+                        anchors.centerIn: parent
+                        visible: conversationList.count === 0
+                        text: conversationSearch.text ? "Aucune discussion trouvée" : "Aucune discussion"
+                        color: win.muted; font.pixelSize: 12
                     }
                 }
-                Item { Layout.fillHeight: true; visible: win.page !== 0 }
-                ActionButton { Layout.fillWidth: true; text: "+ Nouvelle discussion"; onClicked: { chat.clear(); backend.newConversation(); win.page = 0 } }
+                Item { Layout.fillHeight: true; visible: win.page !== 0 || win.sidebarCollapsed }
+                ActionButton {
+                    objectName: "newConversation"
+                    Layout.fillWidth: true
+                    text: win.sidebarCollapsed ? "+" : "+ Nouvelle discussion"
+                    ToolTip.visible: win.sidebarCollapsed && hovered; ToolTip.text: "Nouvelle discussion"
+                    onClicked: { chat.clear(); backend.newConversation(); win.page = 0 }
+                }
             }
+            // Poignée de redimensionnement (bord droit)
+            MouseArea {
+                visible: !win.sidebarCollapsed
+                anchors { top: parent.top; bottom: parent.bottom; right: parent.right; rightMargin: -10 }
+                width: 10
+                cursorShape: Qt.SplitHCursor
+                property real startX: 0
+                onPressed: function (mouse) { startX = mouse.x }
+                onPositionChanged: function (mouse) {
+                    if (pressed) win.sidebarWidth = Math.max(220, Math.min(420, win.sidebarWidth + mouse.x - startX))
+                }
+            }
+        }
+
+        Dialog {
+            id: renameDialog
+            property int conversationId: 0
+            parent: Overlay.overlay; anchors.centerIn: parent
+            modal: true; title: "Renommer la discussion"
+            standardButtons: Dialog.Ok | Dialog.Cancel
+            TextField { id: renameField; width: 320; selectByMouse: true }
+            onAccepted: if (renameField.text.trim() !== "") backend.renameConversation(conversationId, renameField.text.trim())
+        }
+        Dialog {
+            id: deleteDialog
+            property int conversationId: 0
+            property string conversationTitle: ""
+            parent: Overlay.overlay; anchors.centerIn: parent
+            modal: true; title: "Supprimer la discussion ?"
+            standardButtons: Dialog.Yes | Dialog.No
+            Label { width: 340; wrapMode: Text.WordWrap; text: "« " + deleteDialog.conversationTitle + " » sera effacée définitivement (messages, sauvegardes et index compris)." }
+            onAccepted: backend.deleteConversation(conversationId)
         }
 
         // Pages
@@ -350,7 +511,7 @@ ApplicationWindow {
         }
     }
 
-    Onboarding { id: onboarding }
+    Onboarding { id: onboarding; objectName: "onboarding" }
 
     // ---------------------------------------------------------------- Dialogues
     Dialog {

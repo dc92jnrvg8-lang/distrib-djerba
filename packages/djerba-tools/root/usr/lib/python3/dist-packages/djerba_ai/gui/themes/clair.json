@@ -1,0 +1,21 @@
+{
+  "name": "Djerba clair",
+  "dark": false,
+  "night": "#F1F5F9",
+  "deep": "#E0F2F1",
+  "deepEnd": "#CCFBF1",
+  "surface": "#FFFFFF",
+  "field": "#F8FAFC",
+  "turquoise": "#0E9AA7",
+  "accentText": "#0A6F79",
+  "textOnAccent": "#04161A",
+  "aqua": "#0F766E",
+  "coral": "#C2410C",
+  "textOnCoral": "#FFFFFF",
+  "sand": "#92400E",
+  "white": "#0F172A",
+  "muted": "#475569",
+  "veil": "#0F172A",
+  "panelOpacity": 0.97,
+  "windowOpacity": 1.0
+}

@@ -6,7 +6,8 @@ import QtQuick.Layouts
 
 Rectangle {
     radius: 22
-    color: win.veil(0.06)
+    // Panneau opaque par défaut (jeton « surface ») : lisible même sans flou (X11, VM).
+    color: Qt.rgba(win.surface.r, win.surface.g, win.surface.b, win.panelOpacity)
     border.width: 1
     border.color: win.veil(0.13)
 }
