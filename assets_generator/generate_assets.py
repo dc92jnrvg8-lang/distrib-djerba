@@ -358,9 +358,13 @@ def generate_wallpaper(ctx: Context) -> Path:
 # --------------------------------------------------------------------------
 # Plasma : Look-and-Feel « Djerba » (Breeze sombre + fond Djerba)
 # --------------------------------------------------------------------------
+# Schéma « Djerba Sombre » (packages/djerba-branding/.../color-schemes) : sélection turquoise foncé lisible
+# (texte blanc 5,1:1), textes désactivés à 3:1 au moins (tests/…/djerba-contrast). L'accent égale la couleur de
+# sélection : Plasma recolore la sélection avec l'accent, et le turquoise vif ne porte pas un texte blanc (2,2:1).
+SELECTION_DARK = "0,122,130"
 LOOK_AND_FEEL_DEFAULTS = """\
 [kdeglobals][General]
-ColorScheme=BreezeDark
+ColorScheme=DjerbaSombre
 AccentColor={accent}
 
 [kdeglobals][Icons]
@@ -481,9 +485,8 @@ def build_look_and_feel(ctx: Context, wallpaper: Path, package_id: str, name: st
     }
     write_text(base / "metadata.json", json.dumps(metadata, indent=4, ensure_ascii=False))
     if defaults is None:
-        accent = ",".join(str(v) for v in hex_to_rgb(COLORS["turquoise"]))
         defaults = LOOK_AND_FEEL_DEFAULTS.format(
-            accent=accent,
+            accent=SELECTION_DARK,
             night=",".join(str(v) for v in hex_to_rgb(COLORS["night"])),
             white=",".join(str(v) for v in hex_to_rgb(COLORS["white"])),
             muted=",".join(str(v) for v in hex_to_rgb(COLORS["muted"])),

@@ -1,0 +1,90 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Djerba OS — contraste de la palette Qt vue par les applications KDE.
+
+Charge une QApplication avec le thème de plateforme KDE (plasma-integration),
+qui lit ``~/.config/kdeglobals`` comme le font Configuration du système,
+KNewStuff, Dolphin ou Kate, puis mesure le contraste WCAG 2.1 de chaque paire
+(texte, fond) de la palette, dans les groupes actif, inactif et désactivé.
+
+``BrightText`` est mesuré sur ``Dark`` (définition Qt : texte vif sur fond sombre).
+
+Seuils : 4,5 (AA, texte normal) pour les textes actifs et inactifs ; 3,0 pour
+les textes d'aide (PlaceholderText) et désactivés (WCAG les exempte, Djerba
+exige qu'ils restent lisibles).
+
+Usage : djerba-contrast [--json]   (HOME doit contenir .config/kdeglobals)
+Code de retour : 0 si toutes les paires passent, 1 sinon.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("QT_QPA_PLATFORMTHEME", "kde")
+os.environ.setdefault("XDG_CURRENT_DESKTOP", "KDE")
+os.environ.setdefault("KDE_FULL_SESSION", "true")
+os.environ.setdefault("KDE_SESSION_VERSION", "6")
+
+from PyQt6.QtGui import QColor, QGuiApplication, QPalette  # noqa: E402
+from PyQt6.QtWidgets import QApplication  # noqa: E402
+
+R = QPalette.ColorRole
+PAIRS = [
+    ("WindowText", "Window", 4.5), ("Text", "Base", 4.5), ("Text", "AlternateBase", 4.5),
+    ("ButtonText", "Button", 4.5), ("HighlightedText", "Highlight", 4.5), ("ToolTipText", "ToolTipBase", 4.5),
+    ("PlaceholderText", "Base", 3.0), ("BrightText", "Dark", 3.0), ("Link", "Base", 3.0),
+]
+GROUPS = [("actif", QPalette.ColorGroup.Active, 1.0), ("inactif", QPalette.ColorGroup.Inactive, 1.0),
+          ("désactivé", QPalette.ColorGroup.Disabled, 0.0)]
+
+
+def luminance(color: QColor) -> float:
+    def channel(value: float) -> float:
+        return value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+    return 0.2126 * channel(color.redF()) + 0.7152 * channel(color.greenF()) + 0.0722 * channel(color.blueF())
+
+
+def contrast(first: QColor, second: QColor) -> float:
+    light, dark = sorted((luminance(first), luminance(second)), reverse=True)
+    return (light + 0.05) / (dark + 0.05)
+
+
+def measure(palette: QPalette) -> list[dict]:
+    rows = []
+    for group_name, group, factor in GROUPS:
+        for text, background, minimum in PAIRS:
+            if group_name == "désactivé":
+                minimum = 3.0
+            if text == "BrightText" and factor == 0.0:
+                continue
+            fore, back = palette.color(group, getattr(R, text)), palette.color(group, getattr(R, background))
+            ratio = contrast(fore, back)
+            rows.append({"groupe": group_name, "texte": text, "fond": background, "texte_couleur": fore.name(),
+                         "fond_couleur": back.name(), "contraste": round(ratio, 2), "minimum": minimum,
+                         "ok": ratio >= minimum})
+    return rows
+
+
+def main() -> int:
+    application = QApplication(sys.argv[:1])
+    theme = QGuiApplication.platformName(), os.environ.get("QT_QPA_PLATFORMTHEME")
+    rows = measure(application.palette())
+    if "--json" in sys.argv:
+        print(json.dumps({"plateforme": theme, "paires": rows}, ensure_ascii=False, indent=1))
+    else:
+        print(f"plateforme {theme[0]}, thème {theme[1]}, kdeglobals {os.path.expanduser('~/.config/kdeglobals')}")
+        for row in rows:
+            mark = "ok  " if row["ok"] else "ÉCHEC"
+            print(f"{mark} {row['groupe']:<10} {row['texte']:<16} {row['texte_couleur']} sur {row['fond']:<14} "
+                  f"{row['fond_couleur']} : {row['contraste']:>5} (min {row['minimum']})")
+        failed = [row for row in rows if not row["ok"]]
+        print(f"{len(rows) - len(failed)}/{len(rows)} paires lisibles")
+    return 0 if all(row["ok"] for row in rows) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

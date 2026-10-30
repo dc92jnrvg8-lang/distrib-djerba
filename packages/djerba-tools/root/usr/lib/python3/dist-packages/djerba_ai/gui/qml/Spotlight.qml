@@ -17,15 +17,27 @@ Window {
     // Même palette adaptative que la fenêtre principale (composants partagés).
     SystemPalette { id: system; colorGroup: SystemPalette.Active }
     // Sous GNOME, Qt ne suit pas toujours le thème : la préférence GSettings fait foi.
-    readonly property bool dark: backend.followsDesktopTheme ? backend.prefersDark : system.window.hslLightness < 0.5
-    readonly property color night: dark ? "#070B18" : "#F1F5F9"
-    readonly property color surface: dark ? "#0B1426" : "#FFFFFF"
-    readonly property color turquoise: dark ? "#00C2CB" : "#0E9AA7"
-    readonly property color aqua: dark ? "#5EEAD4" : "#0F766E"
-    readonly property color coral: dark ? "#FF7A59" : "#C2410C"
-    readonly property color sand: dark ? "#F4E1C1" : "#92400E"
-    readonly property color white: dark ? "#F8FAFC" : "#0F172A"
-    readonly property color muted: dark ? "#94A3B8" : "#475569"
+    readonly property string themeChoice: backend.settings["ui.theme"] || "auto"
+    readonly property bool dark: themeChoice === "sombre" ? true : themeChoice === "clair" ? false
+        : (backend.followsDesktopTheme ? backend.prefersDark : system.window.hslLightness < 0.5)
+    // Mêmes jetons que la fenêtre principale (gui/themes/*.json, contraste AA vérifié par les tests).
+    readonly property var theme: dark ? backend.themes["sombre"] : backend.themes["clair"]
+    readonly property color night: theme.night
+    readonly property color deep: theme.deep
+    readonly property color deepEnd: theme.deepEnd
+    readonly property color surface: theme.surface
+    readonly property color field: theme.field
+    readonly property color turquoise: theme.turquoise
+    readonly property color accentText: theme.accentText
+    readonly property color textOnAccent: theme.textOnAccent
+    readonly property color aqua: theme.aqua
+    readonly property color coral: theme.coral
+    readonly property color textOnCoral: theme.textOnCoral
+    readonly property color sand: theme.sand
+    readonly property color white: theme.white
+    readonly property color muted: theme.muted
+    readonly property bool translucent: backend.settings["ui.translucent"] === true
+    readonly property real panelOpacity: translucent ? 0.62 : theme.panelOpacity
     function veil(alpha) { return dark ? Qt.rgba(1, 1, 1, alpha) : Qt.rgba(0.06, 0.09, 0.16, alpha * 0.7) }
 
     property string mode: "ask"

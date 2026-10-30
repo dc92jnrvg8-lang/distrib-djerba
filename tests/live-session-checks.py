@@ -176,6 +176,8 @@ OFFLINE_CHECKS = [
      "&& sudo djerba-ai run timezone_set '{\"zone\": \"Pacific/Tahiti\"}' | grep -q 'agent en pause' "
      "&& sudo djerba-ai resume && sudo djerba-ai policy | grep -q 'refus' "
      "&& ! sudo djerba-ai policy | grep -q 'EN PAUSE'", 120),
+    ("Apparence : palette KDE de la session live lisible (contraste AA, 26 paires)",
+     f"{SESSION}; /usr/libexec/djerba-contrast", 60),
     ("Moteurs d'IA : registre (Ollama local actif) ; serveur MCP désactivé par défaut",
      f"djerba-ai engines | grep -q '^● local ' && djerba-ai mcp list >/dev/null "
      f"&& {SESSION}; journalctl --user -u djerba-ai-mcp --no-pager -o cat | grep -q 'désactivé'", 60),

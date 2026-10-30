@@ -97,6 +97,9 @@ class Backend(QObject):
     validationsChanged = pyqtSignal()
     suggestions = pyqtSignal("QVariantList", arguments=["items"])
     busyChanged = pyqtSignal()
+    activityChanged = pyqtSignal()
+    #: émis depuis le fil de l'agent, reçu dans le fil de l'interface (connexion différée automatique)
+    activityReported = pyqtSignal(str, str)
     conversationsChanged = pyqtSignal()
     # État
     engineChanged = pyqtSignal()
@@ -142,6 +145,11 @@ class Backend(QObject):
         self._conversation = 0
         self._history_engine, self._history_query = "", ""  # filtre de l'historique
         self._busy = False
+        # Ce que fait l'agent (affiché en continu) : réfléchit, agit, vérifie, écrit, s'arrête.
+        self._activity, self._activity_detail, self._busy_since = "", "", 0.0
+        self._queue: list[str] = []  # messages écrits pendant le travail, envoyés ensuite dans l'ordre
+        self._cancel = threading.Event()
+        self.activityReported.connect(self._set_activity)
         self._engine = {"available": False, "installed": [], "ollama_present": False}
         self._health: dict = {"score": 0, "items": []}
         self._incidents: list = []
@@ -210,6 +218,52 @@ class Backend(QObject):
     @pyqtProperty(bool, notify=busyChanged)
     def busy(self) -> bool:
         return self._busy
+
+    @pyqtProperty(str, notify=activityChanged)
+    def activity(self) -> str:
+        return self._activity
+
+    @pyqtProperty(str, notify=activityChanged)
+    def activityText(self) -> str:
+        """Phrase affichée sous la discussion pendant le travail de l'agent."""
+        labels = {"réfléchit": "Djerba réfléchit…", "écrit": "Djerba écrit sa réponse…",
+                  "vérifie": "Djerba vérifie le résultat…", "s'arrête": "Djerba s'arrête après l'étape en cours…"}
+        if self._activity == "agit":
+            return f"Djerba agit : {self._activity_detail[:80]}…" if self._activity_detail else "Djerba agit…"
+        return labels.get(self._activity, "Djerba travaille…")
+
+    @pyqtProperty(float, notify=activityChanged)
+    def busySince(self) -> float:
+        """Début du travail en cours (millisecondes depuis l'époque), pour la durée affichée."""
+        return self._busy_since * 1000
+
+    @pyqtProperty(int, notify=activityChanged)
+    def queued(self) -> int:
+        return len(self._queue)
+
+    @pyqtProperty("QVariantMap", constant=True)
+    def themes(self) -> dict:
+        """Jetons de style des thèmes de l'interface (fichiers gui/themes/*.json, validés)."""
+        from djerba_ai.gui import themes
+        return themes.all_themes()
+
+    def _set_activity(self, activity: str, detail: str = "") -> None:
+        if (activity, detail) != (self._activity, self._activity_detail):
+            self._activity, self._activity_detail = activity, detail
+            self.activityChanged.emit()
+
+    @pyqtSlot()
+    def stop(self) -> None:
+        """Arrêt demandé : l'agent s'arrête avant le prochain appel du modèle ou le prochain outil ; les
+        validations en attente sont refusées ; les messages en file sont abandonnés."""
+        if not self._busy:
+            return
+        self._cancel.set()
+        self._queue.clear()
+        for event, answer in list(self._confirm_events.values()):
+            answer[0] = False
+            event.set()
+        self._set_activity("s'arrête")
 
     @pyqtProperty(int, constant=True)
     def toolCount(self) -> int:
@@ -454,18 +508,31 @@ class Backend(QObject):
     @pyqtSlot(str)
     def send(self, text: str) -> None:
         text = text.strip()
-        if not text or self._busy:
+        if not text:
+            return
+        if self._busy:
+            self._queue.append(text)  # envoyé à la fin du travail en cours
+            self.activityChanged.emit()
             return
         if not self._conversation:
             self._conversation = self.memory.new_conversation(text[:60])
             self.conversationsChanged.emit()
         self._busy = True
+        self._cancel.clear()
+        self._busy_since = time.time()
+        self._set_activity("réfléchit")
         self.busyChanged.emit()
         self.stateChanged.emit()
         self.messageAdded.emit("user", text)
         conversation = self._conversation
 
         def on_event(kind: str, payload: dict) -> None:
+            if not self._cancel.is_set():
+                activity = {"thinking": ("réfléchit", ""), "token": ("écrit", ""),
+                            "tool_start": ("agit", str(payload.get("label", ""))),
+                            "tool_result": ("vérifie", "")}.get(kind)
+                if activity:
+                    self.activityReported.emit(*activity)
             if kind == "token":
                 self.tokenAppended.emit(payload["text"])
             elif kind == "tool_start":
@@ -482,13 +549,14 @@ class Backend(QObject):
                 self.traceAdded.emit(payload.get("kind", ""), payload.get("text", ""), payload.get("time", ""),
                                      payload.get("level", payload.get("risk", "")))
             elif kind == "guard":
-                self.notify.emit(f"Garde anti-injection ({payload['origin']}) : risque {payload['level']}.")
+                self.notify.emit("Un contenu externe contenait des consignes suspectes : je les ignore. "
+                                 f"(détail : {payload['origin']}, risque {payload['level']})")
             elif kind == "notice":
                 # Bascule transparente sur le modèle local (fournisseur distant injoignable).
                 self._fell_back = True
                 self.notify.emit(payload["text"])
                 self.systemNotice.emit("Djerba : repli sur le modèle local", payload["text"])
-                QTimer.singleShot(0, self.stateChanged.emit)
+                self.stateChanged.emit()  # signal : livré dans le fil de l'interface (le minuteur ne l'était pas)
 
         def confirm(tool: str, params: dict, description: dict) -> bool:
             event, answer = threading.Event(), [False]
@@ -501,7 +569,7 @@ class Backend(QObject):
                      "root": bool(description.get("requires_root")), "time": time.strftime("%H:%M:%S"),
                      "status": "en attente"}
             self._pending[request_id] = entry
-            QTimer.singleShot(0, self.validationsChanged.emit)
+            self.validationsChanged.emit()  # depuis le fil de l'agent : signal livré dans celui de l'interface
             self.confirmRequested.emit(request_id, tool, entry["label"], entry["params"], entry["root"], risk)
             if risk == "élevé":
                 self.systemNotice.emit("Djerba : validation explicite requise",
@@ -512,19 +580,22 @@ class Backend(QObject):
             self._pending.pop(request_id, None)
             self._validations.insert(0, entry)
             del self._validations[50:]
-            QTimer.singleShot(0, self.validationsChanged.emit)
+            self.validationsChanged.emit()  # depuis le fil de l'agent : signal livré dans celui de l'interface
             return answer[0]
 
         def work():
-            return self.agent.run(text, conversation, on_event, confirm)
+            return self.agent.run(text, conversation, on_event, confirm, cancelled=self._cancel.is_set)
 
         def finished(result) -> None:
             if isinstance(result, dict) and result.get("success") is False:
                 self.messageAdded.emit("final", f"Une erreur interne m'a interrompu : {result.get('message')}")
             self._busy = False
+            self._set_activity("")
             self.busyChanged.emit()
             self.stateChanged.emit()
             self.conversationsChanged.emit()
+            if self._queue and not self._cancel.is_set():
+                QTimer.singleShot(0, lambda: self.send(self._queue.pop(0)))
             QTimer.singleShot(500, self.refreshHealth)
             if self._fell_back:
                 QTimer.singleShot(1000, self.refreshBrains)

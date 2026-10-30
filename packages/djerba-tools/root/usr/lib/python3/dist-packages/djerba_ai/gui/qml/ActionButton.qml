@@ -12,7 +12,7 @@ Button {
     font.pixelSize: 13
     contentItem: Text {
         text: action.text; font: action.font
-        color: action.primary ? win.night : (action.enabled ? win.white : win.muted)
+        color: action.primary ? win.textOnAccent : (action.enabled ? win.white : win.muted)
         horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
     }
     background: Rectangle {
