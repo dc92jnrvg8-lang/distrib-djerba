@@ -2444,7 +2444,7 @@ class FakeBrokenOs:
     """Système avec des défauts réels simulés ; les outils de réparation les corrigent (ou non)."""
 
     def __init__(self) -> None:
-        self.audit = "Les paquets suivants ne sont que décompactés :\n djerba-test-panne\n"
+        self.half = True  # paquet décompacté, non configuré
         self.broken = True
         self.failed = {"cups.service", "obstine.service"}
         self.stubborn = {"obstine.service"}  # redémarre puis retombe en échec
@@ -2454,8 +2454,8 @@ class FakeBrokenOs:
 
     def run(self, argv: list[str]) -> subprocess.CompletedProcess:
         out, code = "", 0
-        if argv[:2] == ["dpkg", "--audit"]:
-            out = self.audit
+        if argv[0] == "dpkg-query":
+            out = "ii  bash\n" + ("iU  djerba-test-panne\n" if self.half else "") + "rc  ancien\n"
         elif argv[:2] == ["apt-get", "check"]:
             code = 100 if self.broken else 0
         elif argv[:2] == ["systemctl", "--failed"]:
@@ -2469,7 +2469,7 @@ class FakeBrokenOs:
     def execute(self, name: str, params: dict, request: str = "") -> dict:
         self.calls.append((name, params))
         if name == "dpkg_configure_pending":
-            self.audit = ""
+            self.half = False
         elif name == "apt_fix_broken":
             self.broken = False
         elif name == "service_restart" and params["unit"] not in self.stubborn:
@@ -2496,6 +2496,7 @@ class OsRepairTests(unittest.TestCase):
         # Seul le service qui retombe en échec reste ; il n'a été relancé qu'une fois (pas de boucle).
         self.assertEqual([item["detail"] for item in result["remaining"]], ["obstine.service"])
         self.assertEqual([action["transaction"] for action in result["actions"]][:2], ["tx-1", "tx-2"])
+        self.assertEqual(result["defects"][0]["detail"], "non configurés : djerba-test-panne")
 
     def test_dry_run_changes_nothing_and_healthy_system_has_no_defect(self) -> None:
         from djerba_ai.core import repair
@@ -2504,13 +2505,13 @@ class OsRepairTests(unittest.TestCase):
         self.assertEqual(system.calls, [])
         self.assertEqual(len(result["defects"]), 5)
         healthy = FakeBrokenOs()
-        healthy.audit, healthy.broken, healthy.failed, healthy.disk, healthy.pending = "", False, set(), 40, []
+        healthy.half, healthy.broken, healthy.failed, healthy.disk, healthy.pending = False, False, set(), 40, []
         self.assertEqual(repair.diagnose(healthy.run, lambda: healthy.disk), [])
 
     def test_unusable_status_output_is_not_a_defect(self) -> None:
         from djerba_ai.core import repair
         system = FakeBrokenOs()
-        system.audit, system.broken, system.failed, system.disk = "", False, set(), 10
+        system.half, system.broken, system.failed, system.disk = False, False, set(), 10
         base = system.run
         system.run = lambda argv: (subprocess.CompletedProcess(argv, 0, "pas du json", "")
                                    if argv[0] == "djerba-apps" else base(argv))

@@ -7,7 +7,8 @@ transactions annulable, audit) ; elles ne dépendent pas d'un modèle d'IA.
 
 Défauts corrigés :
 
-* paquets à moitié installés (``dpkg --audit``) → ``dpkg_configure_pending``,
+* paquets à moitié installés (état dpkg lu par ``dpkg-query``, sans droits root ;
+  ``dpkg --audit`` exige le verrou de la base) → ``dpkg_configure_pending``,
   puis ``apt_fix_broken`` si ``apt-get check`` échoue encore ;
 * services système en échec → ``service_restart`` (une fois), puis vérifié ;
 * disque presque plein (``DISK_FULL`` %) → ``apt_clean`` et
@@ -27,6 +28,9 @@ import subprocess
 from typing import Any, Callable
 
 DISK_FULL = 90
+# Second caractère de ${db:Status-Abbrev} : décompacté, à moitié installé, à moitié configuré, déclencheurs
+# en attente ; troisième : réinstallation requise.
+HALF_STATES = set("UHFWt")
 MAX_SERVICES = 10
 
 Runner = Callable[[list[str]], subprocess.CompletedProcess]
@@ -47,13 +51,15 @@ def _disk_percent() -> int:
 def diagnose(runner: Runner = _run, disk: Callable[[], int] = _disk_percent) -> list[dict[str, Any]]:
     """Défauts réparables : [{"kind", "title", "detail", "actions": [(outil, paramètres)]}]."""
     defects: list[dict[str, Any]] = []
-    audit = runner(["dpkg", "--audit"])
+    query = runner(["dpkg-query", "-W", "-f", "${db:Status-Abbrev} ${Package}\n"])
+    half = [line.split()[-1] for line in query.stdout.splitlines()
+            if len(line) > 3 and (line[1] in HALF_STATES or line[2] == "R")]
     broken = runner(["apt-get", "check", "-q"]).returncode != 0
-    if audit.stdout.strip() or broken:
+    if half or broken:
         actions: list[tuple[str, dict]] = [("dpkg_configure_pending", {})]
         if broken:
             actions.append(("apt_fix_broken", {}))
-        detail = audit.stdout.strip().splitlines()[0] if audit.stdout.strip() else "dépendances cassées"
+        detail = "non configurés : " + ", ".join(half[:5]) if half else "dépendances cassées"
         defects.append({"kind": "paquets", "title": "Paquets à moitié installés", "detail": detail[:200],
                         "actions": actions})
     failed = runner(["systemctl", "--failed", "--no-legend", "--plain", "--type=service"])

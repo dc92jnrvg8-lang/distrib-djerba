@@ -180,8 +180,10 @@ OFFLINE_CHECKS = [
     ("Réparation de l'OS : installation de paquet interrompue (dpkg) terminée par djerba-ai repair",
      "d=$(mktemp -d) && mkdir -p $d/p/DEBIAN && printf 'Package: djerba-test-panne\\nVersion: 1.0\\n"
      "Architecture: all\\nMaintainer: Djerba <ci@djerba.invalid>\\nDescription: paquet de test\\n' "
-     "> $d/p/DEBIAN/control && dpkg-deb -b $d/p $d/t.deb >/dev/null && sudo dpkg --unpack $d/t.deb >/dev/null "
-     "&& dpkg --audit | grep -q djerba-test-panne && { sudo djerba-ai repair; true; } && test -z \"$(dpkg --audit)\" "
+     "> $d/p/DEBIAN/control && dpkg-deb --root-owner-group -b $d/p $d/t.deb >/dev/null "
+     "&& sudo dpkg --unpack $d/t.deb >/dev/null && sudo dpkg --audit | grep -q djerba-test-panne "
+     "&& djerba-ai repair --dry-run | grep -q 'non configurés : djerba-test-panne' "
+     "&& { sudo djerba-ai repair; true; } && test -z \"$(sudo dpkg --audit)\" "
      "&& dpkg-query -W -f='${Status}' djerba-test-panne | grep -q 'install ok installed' "
      "&& sudo djerba-ai transactions 10 | grep -q 'dpkg_configure_pending'; rc=$?; "
      "sudo dpkg --purge djerba-test-panne >/dev/null 2>&1; exit $rc", 300),
